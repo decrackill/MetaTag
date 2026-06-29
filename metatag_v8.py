@@ -1971,7 +1971,7 @@ class MetaTagApp(tk.Tk):
 
         list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
                               highlightthickness=1)
-        list_frame.pack(side="top", fill="both", padx=14, pady=(0, 8))
+        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
 
         canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
         vsb    = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
@@ -2042,6 +2042,9 @@ class MetaTagApp(tk.Tk):
                 row.bind("<Leave>", _leave)
                 cb.bind("<Enter>", _enter)
                 cb.bind("<Leave>", _leave)
+
+        win.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
         self.wait_window(win)
         return result[0]
