@@ -1904,43 +1904,114 @@ class MetaTagApp(tk.Tk):
 
     # ── Selección de columnas para lote ──
     def _batch_pick_columns(self, all_cols: list, img_col: str = "") -> list | None:
+        S = C
+        sc = self.current_scale
         win = tk.Toplevel(self)
         win.title("Seleccionar columnas de metadatos")
-        win.configure(bg=C["surface"])
-        win.geometry(f"{int(380*self.current_scale)}x{min(500, int(80 + len(all_cols)*32)*self.current_scale):.0f}")
+        win.configure(bg=S["bg"])
+        win.geometry(f"{int(400*sc)}x{min(560, int(100 + len(all_cols)*34)*sc):.0f}")
         win.resizable(False, True)
         win.attributes("-topmost", True)
 
-        tk.Label(win, text="¿Qué columnas escribir como metadatos?",
-                 bg=C["surface"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(14, 6))
-        tk.Label(win, text="Desmarca las que no quieras incluir",
-                 bg=C["surface"], fg=C["text3"], font=FONTS["TINY"]).pack()
+        hdr = tk.Frame(win, bg=S["header_bg"])
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="  Columnas de metadatos", bg=S["header_bg"],
+                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
 
-        frame = tk.Frame(win, bg=C["surface"])
-        frame.pack(fill="both", expand=True, padx=14, pady=8)
+        tk.Label(win, text="Selecciona las columnas que se escribirán en los metadatos",
+                 bg=S["bg"], fg=S["text3"], font=FONTS["TINY"],
+                 wraplength=int(360*sc)).pack(pady=(12, 4), padx=14)
 
-        canvas = tk.Canvas(frame, bg=C["surface"], highlightthickness=0)
-        vsb    = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
-        inner  = tk.Frame(canvas, bg=C["surface"])
+        sel_count_var = tk.StringVar(value=f"{len([c for c in all_cols if c != img_col])} / {len(all_cols)}")
+        tk.Label(win, textvariable=sel_count_var, bg=S["bg"], fg=S["accent"],
+                 font=FONTS["LABEL_B"]).pack(pady=(0, 6))
+
+        actions = tk.Frame(win, bg=S["bg"])
+        actions.pack(fill="x", padx=14)
+        def select_all():
+            for c, v in col_vars.items(): v.set(True)
+            _update_count()
+        def deselect_all():
+            for c, v in col_vars.items(): v.set(False)
+            _update_count()
+        def invert_sel():
+            for c, v in col_vars.items():
+                if c != img_col: v.set(not v.get())
+            _update_count()
+        tk.Button(actions, text="Todas", bg=S["btn_ghost_bg"], fg=S["accent"],
+                  font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
+                  command=select_all).pack(side="left", padx=(0, 4))
+        tk.Button(actions, text="Ninguna", bg=S["btn_guest_bg"] if "guest" in S else S["btn_ghost_bg"], fg=S["text3"],
+                  font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
+                  command=deselect_all).pack(side="left", padx=(0, 4))
+        tk.Button(actions, text="Invertir", bg=S["btn_ghost_bg"], fg=S["text3"],
+                  font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
+                  command=invert_sel).pack(side="left")
+
+        tk.Frame(win, bg=S["border_light"], height=1).pack(fill="x", padx=14, pady=8)
+
+        list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
+                              highlightthickness=1)
+        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+        canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
+        vsb    = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        inner  = tk.Frame(canvas, bg=S["surface"])
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.create_window((0, 0), window=inner, anchor="nw", width=int(360*sc))
         canvas.configure(yscrollcommand=vsb.set)
         canvas.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
         col_vars = {}
-        for col in all_cols:
-            var = tk.BooleanVar(value=(col != img_col))
+        def _update_count():
+            n = sum(1 for v in col_vars.values() if v.get())
+            sel_count_var.set(f"{n} / {len(all_cols)}")
+
+        for idx, col in enumerate(all_cols):
+            is_img = (col == img_col)
+            var = tk.BooleanVar(value=(not is_img))
             col_vars[col] = var
-            cb = tk.Checkbutton(inner, text=col, variable=var,
-                                bg=C["surface"], fg=C["text"],
-                                selectcolor=C["surface"],
-                                activebackground=C["surface"],
-                                font=FONTS["LABEL"], anchor="w",
-                                cursor="hand2")
-            cb.pack(fill="x", padx=4, pady=2)
-            if col == img_col:
-                cb.configure(fg=C["text3"], text=f"{col}  (columna de imagen)")
+
+            row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
+            row = tk.Frame(inner, bg=row_bg)
+            row.pack(fill="x")
+
+            var.trace_add("write", lambda *_: _update_count())
+
+            if is_img:
+                indicator = tk.Frame(row, bg=S["text3"], width=4)
+                indicator.pack(side="left", fill="y")
+                cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
+                                    bg=row_bg, fg=S["text3"],
+                                    selectcolor=S["surface"],
+                                    activebackground=row_bg,
+                                    font=FONTS["LABEL"], anchor="w",
+                                    cursor="hand2", disabledforeground=S["text3"])
+                cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
+                tk.Label(row, text="imagen", bg=row_bg, fg=S["text3"],
+                         font=FONTS["TINY"]).pack(side="right", padx=8)
+            else:
+                indicator = tk.Frame(row, bg=S["accent"], width=4)
+                indicator.pack(side="left", fill="y")
+                cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
+                                    bg=row_bg, fg=S["text"],
+                                    selectcolor=S["surface"],
+                                    activebackground=row_bg,
+                                    font=FONTS["LABEL"], anchor="w",
+                                    cursor="hand2")
+                cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
+
+                def _enter(e, r=row, ind=indicator):
+                    r.configure(bg=S["accent_pale"])
+                    ind.configure(bg=S["accent_hover"])
+                def _leave(e, r=row, ind=indicator, bg=row_bg):
+                    r.configure(bg=bg)
+                    ind.configure(bg=S["accent"])
+                row.bind("<Enter>", _enter)
+                row.bind("<Leave>", _leave)
+                cb.bind("<Enter>", _enter)
+                cb.bind("<Leave>", _leave)
 
         result = [None]
         def on_ok():
@@ -1949,45 +2020,82 @@ class MetaTagApp(tk.Tk):
         def on_cancel():
             win.destroy()
 
-        btn_frame = tk.Frame(win, bg=C["surface"])
-        btn_frame.pack(fill="x", padx=14, pady=(4, 12))
-        tk.Button(btn_frame, text="Aceptar", bg=C["accent"], fg="#FFF5E8",
+        tk.Frame(win, bg=S["border"], height=1).pack(fill="x")
+        btn_frame = tk.Frame(win, bg=S["bg"])
+        btn_frame.pack(fill="x", padx=14, pady=10)
+        tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
                   font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
-                  command=on_ok).pack(side="left", expand=True, fill="x", padx=(0, 4))
-        tk.Button(btn_frame, text="Cancelar", bg=C["btn_ghost_bg"], fg=C["text"],
+                  activebackground=S["accent_hover"],
+                  command=on_ok).pack(side="left", expand=True, fill="x", padx=(0, 4), ipady=4)
+        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
                   font=FONTS["LABEL"], relief="flat", cursor="hand2",
-                  command=on_cancel).pack(side="left", expand=True, fill="x")
+                  command=on_cancel).pack(side="left", expand=True, fill="x", ipady=4)
 
         self.wait_window(win)
         return result[0]
 
     # ── Selección de orden de fotos ──
     def _batch_pick_sort(self) -> str | None:
+        S = C
+        sc = self.current_scale
         win = tk.Toplevel(self)
         win.title("Orden de las fotos")
-        win.configure(bg=C["surface"])
-        win.geometry(f"{int(360*self.current_scale)}x{int(220*self.current_scale)}")
+        win.configure(bg=S["bg"])
+        win.geometry(f"{int(420*sc)}x{int(320*sc)}")
         win.resizable(False, False)
         win.attributes("-topmost", True)
 
-        tk.Label(win, text="¿Cómo ordenar las fotos?",
-                 bg=C["surface"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(18, 10))
+        hdr = tk.Frame(win, bg=S["header_bg"])
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="  Orden de las fotos", bg=S["header_bg"],
+                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+
+        tk.Label(win, text="¿Cómo quieres ordenar las imágenes antes de emparejarlas?",
+                 bg=S["bg"], fg=S["text3"], font=FONTS["TINY"],
+                 wraplength=int(380*sc)).pack(pady=(14, 8), padx=14)
 
         sort_var = tk.StringVar(value="alfabetico")
         options = [
-            ("alfabetico",    "Alfabético (A→Z)"),
-            ("fecha_mod",     "Fecha de modificación (más antigua primero)"),
-            ("fecha_mod_inv", "Fecha de modificación (más reciente primero)"),
-            ("fecha_exif",    "Fecha EXIF de la foto"),
-            ("numeral",       "Por número en el nombre (1, 2, 10, 20…)"),
+            ("alfabetico",    "Alfabético (A → Z)",           "Ordena por nombre de archivo"),
+            ("fecha_mod",     "Fecha de modificación ↑",      "Más antigua primero"),
+            ("fecha_mod_inv", "Fecha de modificación ↓",      "Más reciente primero"),
+            ("fecha_exif",    "Fecha EXIF de la foto",        "Usa la fecha grabada en la foto"),
+            ("numeral",       "Por número en el nombre",      "1, 2, 10, 20… en vez de 1, 10, 2, 20"),
         ]
-        for val, label in options:
-            tk.Radiobutton(win, text=label, variable=sort_var, value=val,
-                           bg=C["surface"], fg=C["text"],
-                           selectcolor=C["surface"],
-                           activebackground=C["surface"],
-                           font=FONTS["LABEL"], anchor="w",
-                           cursor="hand2").pack(fill="x", padx=20, pady=2)
+
+        list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
+                              highlightthickness=1)
+        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+        for idx, (val, label, desc) in enumerate(options):
+            row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
+            row = tk.Frame(list_frame, bg=row_bg)
+            row.pack(fill="x")
+
+            indicator = tk.Frame(row, bg=S["accent"], width=4)
+            indicator.pack(side="left", fill="y")
+
+            rb = tk.Radiobutton(row, text="", variable=sort_var, value=val,
+                                bg=row_bg, selectcolor=S["surface"],
+                                activebackground=row_bg, cursor="hand2")
+            rb.pack(side="left", padx=(8, 0))
+
+            text_frame = tk.Frame(row, bg=row_bg)
+            text_frame.pack(side="left", fill="x", expand=True, pady=6)
+            tk.Label(text_frame, text=label, bg=row_bg, fg=S["text"],
+                     font=FONTS["LABEL_B"], anchor="w").pack(anchor="w")
+            tk.Label(text_frame, text=desc, bg=row_bg, fg=S["text3"],
+                     font=FONTS["TINY"], anchor="w").pack(anchor="w")
+
+            def _enter(e, r=row, ind=indicator):
+                r.configure(bg=S["accent_pale"])
+                ind.configure(bg=S["accent_hover"])
+            def _leave(e, r=row, ind=indicator, bg=row_bg):
+                r.configure(bg=bg)
+                ind.configure(bg=S["accent"])
+            for w in (row, rb, text_frame):
+                w.bind("<Enter>", _enter)
+                w.bind("<Leave>", _leave)
 
         result = [None]
         def on_ok():
@@ -1996,14 +2104,16 @@ class MetaTagApp(tk.Tk):
         def on_cancel():
             win.destroy()
 
-        btn_frame = tk.Frame(win, bg=C["surface"])
-        btn_frame.pack(fill="x", padx=14, pady=(12, 14))
-        tk.Button(btn_frame, text="Aceptar", bg=C["accent"], fg="#FFF5E8",
+        tk.Frame(win, bg=S["border"], height=1).pack(fill="x")
+        btn_frame = tk.Frame(win, bg=S["bg"])
+        btn_frame.pack(fill="x", padx=14, pady=10)
+        tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
                   font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
-                  command=on_ok).pack(side="left", expand=True, fill="x", padx=(0, 4))
-        tk.Button(btn_frame, text="Cancelar", bg=C["btn_ghost_bg"], fg=C["text"],
+                  activebackground=S["accent_hover"],
+                  command=on_ok).pack(side="left", expand=True, fill="x", padx=(0, 4), ipady=4)
+        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
                   font=FONTS["LABEL"], relief="flat", cursor="hand2",
-                  command=on_cancel).pack(side="left", expand=True, fill="x")
+                  command=on_cancel).pack(side="left", expand=True, fill="x", ipady=4)
 
         self.wait_window(win)
         return result[0]
