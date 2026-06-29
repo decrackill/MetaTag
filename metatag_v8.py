@@ -102,6 +102,8 @@ def _native_file_open(title="Seleccionar archivo", filetypes=None):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         cmd = ["kdialog", "--getopenfilename", ".", "--title", title]
@@ -109,6 +111,8 @@ def _native_file_open(title="Seleccionar archivo", filetypes=None):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
     return filedialog.askopenfilename(title=title, filetypes=filetypes)
@@ -121,6 +125,8 @@ def _native_folder_open(title="Seleccionar carpeta"):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         cmd = ["kdialog", "--getexistingdirectory", ".", "--title", title]
@@ -128,6 +134,8 @@ def _native_folder_open(title="Seleccionar carpeta"):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
     return filedialog.askdirectory(title=title)
@@ -1713,8 +1721,8 @@ class MetaTagApp(tk.Tk):
 
         # ── SELECCIÓN DE COLUMNAS ──
         img_col  = self.img_col_var.get()
-        all_cols = [c for c in batch_df.columns if c != img_col] if img_col in batch_df.columns else list(batch_df.columns)
-        meta_cols = self._batch_pick_columns(all_cols)
+        all_cols = list(batch_df.columns)
+        meta_cols = self._batch_pick_columns(all_cols, img_col)
         if meta_cols is None:
             return
 
@@ -1895,13 +1903,13 @@ class MetaTagApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     # ── Selección de columnas para lote ──
-    def _batch_pick_columns(self, all_cols: list) -> list | None:
+    def _batch_pick_columns(self, all_cols: list, img_col: str = "") -> list | None:
         win = tk.Toplevel(self)
         win.title("Seleccionar columnas de metadatos")
         win.configure(bg=C["surface"])
         win.geometry(f"{int(380*self.current_scale)}x{min(500, int(80 + len(all_cols)*32)*self.current_scale):.0f}")
         win.resizable(False, True)
-        win.grab_set()
+        win.attributes("-topmost", True)
 
         tk.Label(win, text="¿Qué columnas escribir como metadatos?",
                  bg=C["surface"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(14, 6))
@@ -1922,7 +1930,7 @@ class MetaTagApp(tk.Tk):
 
         col_vars = {}
         for col in all_cols:
-            var = tk.BooleanVar(value=True)
+            var = tk.BooleanVar(value=(col != img_col))
             col_vars[col] = var
             cb = tk.Checkbutton(inner, text=col, variable=var,
                                 bg=C["surface"], fg=C["text"],
@@ -1931,6 +1939,8 @@ class MetaTagApp(tk.Tk):
                                 font=FONTS["LABEL"], anchor="w",
                                 cursor="hand2")
             cb.pack(fill="x", padx=4, pady=2)
+            if col == img_col:
+                cb.configure(fg=C["text3"], text=f"{col}  (columna de imagen)")
 
         result = [None]
         def on_ok():
@@ -1958,7 +1968,7 @@ class MetaTagApp(tk.Tk):
         win.configure(bg=C["surface"])
         win.geometry(f"{int(360*self.current_scale)}x{int(220*self.current_scale)}")
         win.resizable(False, False)
-        win.grab_set()
+        win.attributes("-topmost", True)
 
         tk.Label(win, text="¿Cómo ordenar las fotos?",
                  bg=C["surface"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(18, 10))
