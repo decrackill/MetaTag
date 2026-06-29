@@ -122,6 +122,9 @@ class ExcelGrid(tk.Frame):
         self.canvas.bind("<MouseWheel>",      self._on_wheel)
         self.canvas.bind("<Button-4>",        self._on_wheel)
         self.canvas.bind("<Button-5>",        self._on_wheel)
+        self.canvas.bind("<Shift-Button-4>",  self._on_shift_wheel)
+        self.canvas.bind("<Shift-Button-5>",  self._on_shift_wheel)
+        self.canvas.bind("<Shift-MouseWheel>", self._on_shift_wheel)
         self.canvas.bind("<Configure>",       self._on_canvas_resize)
 
     # ── Alturas dinámicas ──
@@ -146,6 +149,15 @@ class ExcelGrid(tk.Frame):
             self.canvas.yview_scroll(3, "units")
         else:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._schedule_redraw()
+
+    def _on_shift_wheel(self, event):
+        if event.num == 4:
+            self.canvas.xview_scroll(-3, "units")
+        elif event.num == 5:
+            self.canvas.xview_scroll(3, "units")
+        else:
+            self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
         self._schedule_redraw()
 
     def _on_canvas_resize(self, event):
