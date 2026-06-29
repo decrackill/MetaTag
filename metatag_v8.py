@@ -120,6 +120,8 @@ class ExcelGrid(tk.Frame):
         self.canvas.bind("<Motion>",          self._on_motion)
         self.canvas.bind("<Leave>",           self._on_leave)
         self.canvas.bind("<MouseWheel>",      self._on_wheel)
+        self.canvas.bind("<Button-4>",        self._on_wheel)
+        self.canvas.bind("<Button-5>",        self._on_wheel)
         self.canvas.bind("<Configure>",       self._on_canvas_resize)
 
     # ── Alturas dinámicas ──
@@ -138,7 +140,12 @@ class ExcelGrid(tk.Frame):
         self._schedule_redraw()
 
     def _on_wheel(self, event):
-        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        if event.num == 4:
+            self.canvas.yview_scroll(-3, "units")
+        elif event.num == 5:
+            self.canvas.yview_scroll(3, "units")
+        else:
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         self._schedule_redraw()
 
     def _on_canvas_resize(self, event):
@@ -1132,10 +1139,14 @@ class MetaTagApp(tk.Tk):
                  fg=C["header_bg"], font=FONTS["H2"]).pack(side="left")
 
         def launch_visor():
-            visor_path = str(self.output_base / "visor.py")
-            if not os.path.exists(visor_path):
+            visor_path = None
+            for f in self.output_base.iterdir():
+                if f.name.lower() == "visor.py":
+                    visor_path = str(f)
+                    break
+            if not visor_path:
                 return messagebox.showerror("Error",
-                    f"No se encontró el archivo visor.py en:\n{visor_path}")
+                    f"No se encontró el archivo visor.py en:\n{self.output_base}")
             subprocess.Popen([sys.executable, visor_path, "STANDALONE", CURRENT_THEME])
 
         self._btn_visor = tk.Button(vhdr, text="👁 Visor Pro", bg=C["surface"],
