@@ -1910,7 +1910,7 @@ class MetaTagApp(tk.Tk):
         win.title("Seleccionar columnas de metadatos")
         win.configure(bg=S["bg"])
         win.geometry(f"{int(400*sc)}x{int(420*sc)}")
-        win.resizable(False, True)
+        win.resizable(False, False)
         win.attributes("-topmost", True)
 
         col_vars = {}
