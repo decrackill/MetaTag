@@ -91,6 +91,49 @@ META_GROUP_ORDER = ["Ubicacion", "Descripcion", "Tecnica", "Notas"]
 
 
 # ══════════════════════════════════════════════════════════════════
+#  EXPLORADOR DE ARCHIVOS NATIVO DEL SISTEMA
+# ══════════════════════════════════════════════════════════════════
+def _native_file_open(title="Seleccionar archivo", filetypes=None):
+    if sys.platform == "linux":
+        cmd = ["zenity", "--file-selection", "--title", title]
+        for label, pattern in (filetypes or []):
+            cmd += [f"--file-filter={label} ({pattern})"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        cmd = ["kdialog", "--getopenfilename", ".", "--title", title]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    return filedialog.askopenfilename(title=title, filetypes=filetypes)
+
+
+def _native_folder_open(title="Seleccionar carpeta"):
+    if sys.platform == "linux":
+        cmd = ["zenity", "--file-selection", "--directory", "--title", title]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        cmd = ["kdialog", "--getexistingdirectory", ".", "--title", title]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    return filedialog.askdirectory(title=title)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  TABLA DE CELDAS INDIVIDUALES — OPTIMIZADA PARA 300+ FILAS
 #  (viewport culling: solo pinta las filas visibles en pantalla)
 # ══════════════════════════════════════════════════════════════════
@@ -105,7 +148,18 @@ class ExcelGrid(tk.Frame):
         self.col_widths: list[int]   = []
         self.selected_cells: set     = set()
         self.hovered_row: int | None = None
+        self.hidden_columns: set     = set()
         self._redraw_pending         = False   # evita redraws dobles
+
+        self.unhide_bar = tk.Frame(self, bg=C["accent_pale"])
+        self.unhide_lbl = tk.Label(self.unhide_bar, text="", bg=C["accent_pale"],
+                                   fg=C["accent"], font=FONTS["TINY"], anchor="w")
+        self.unhide_lbl.pack(side="left", padx=8, pady=2)
+        self.unhide_btn = tk.Button(self.unhide_bar, text="Mostrar todas",
+                                    bg=C["accent"], fg="#FFF5E8", font=FONTS["TINY"],
+                                    relief="flat", bd=0, cursor="hand2",
+                                    command=self._show_all_hidden)
+        self.unhide_btn.pack(side="right", padx=8, pady=2)
 
         self.canvas = tk.Canvas(self, bg=C["surface"], highlightthickness=0, cursor="arrow")
         self.vsb = ttk.Scrollbar(self, orient="vertical",   command=self._on_vscroll)
@@ -117,6 +171,7 @@ class ExcelGrid(tk.Frame):
         self.canvas.pack(fill="both", expand=True)
 
         self.canvas.bind("<ButtonRelease-1>", self._on_click)
+        self.canvas.bind("<Button-3>",        self._on_right_click)
         self.canvas.bind("<Motion>",          self._on_motion)
         self.canvas.bind("<Leave>",           self._on_leave)
         self.canvas.bind("<MouseWheel>",      self._on_wheel)
@@ -203,9 +258,13 @@ class ExcelGrid(tk.Frame):
         nrows = len(self.df)
         pad   = int(8 * getattr(self.app_ref, "current_scale", 1.0))
 
-        total_w = sum(self.col_widths) + 1
+        vis_cols = [(ci, col, cw) for ci, (col, cw) in enumerate(zip(cols, self.col_widths))
+                    if col not in self.hidden_columns]
+        total_w = sum(cw for _, _, cw in vis_cols) + 1
         total_h = self.HDR_H + nrows * self.ROW_H + 1
         self.canvas.configure(scrollregion=(0, 0, total_w, total_h))
+
+        self._update_unhide_bar()
 
         # ── Calcular rango de filas visibles ──
         try:
@@ -221,7 +280,7 @@ class ExcelGrid(tk.Frame):
 
         # ── Cabecera (siempre visible) ──
         x = 0
-        for ci, (col, cw) in enumerate(zip(cols, self.col_widths)):
+        for ci, col, cw in vis_cols:
             is_col_sel = self._col_fully_selected(ci)
             bg = C["sel_bg"]    if is_col_sel else C["header_bg"]
             fg = C["sel_fg"]    if is_col_sel else C["header_fg"]
@@ -238,7 +297,7 @@ class ExcelGrid(tk.Frame):
             y   = self.HDR_H + ri * self.ROW_H
             row_bg = C["row_even"] if ri % 2 == 0 else C["row_odd"]
             x = 0
-            for ci, (col, cw) in enumerate(zip(cols, self.col_widths)):
+            for ci, col, cw in vis_cols:
                 is_sel  = (ri, ci) in self.selected_cells
                 col_sel = self._col_fully_selected(ci)
 
@@ -260,8 +319,10 @@ class ExcelGrid(tk.Frame):
 
     def _hit(self, cx, cy):
         if self.df is None: return None, None
+        cols = list(self.df.columns)
         x, ci = 0, None
         for i, cw in enumerate(self.col_widths):
+            if cols[i] in self.hidden_columns: continue
             if x <= cx < x + cw: ci = i; break
             x += cw
         if ci is None: return None, None
@@ -301,9 +362,56 @@ class ExcelGrid(tk.Frame):
         self.hovered_row = None
         self._schedule_redraw()
 
+    def _on_right_click(self, event):
+        if self.df is None: return
+        cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        _, ci = self._hit(cx, cy)
+        if ci is None: return
+        col_name = self.df.columns[ci]
+        menu = tk.Menu(self, tearoff=0, bg=C["surface"], fg=C["text"],
+                       font=FONTS["LABEL"], relief="flat")
+        if col_name in self.hidden_columns:
+            menu.add_command(label=f"Mostrar columna '{col_name}'",
+                             command=lambda c=col_name: self._toggle_col_visibility(c))
+        else:
+            menu.add_command(label=f"Ocultar columna '{col_name}'",
+                             command=lambda c=col_name: self._toggle_col_visibility(c))
+        if self.hidden_columns:
+            menu.add_separator()
+            menu.add_command(label=f"Mostrar todas ({len(self.hidden_columns)} ocultas)",
+                             command=self._show_all_hidden)
+        try: menu.tk_popup(event.x_root, event.y_root)
+        finally: menu.grab_release()
+
+    def _toggle_col_visibility(self, col_name: str):
+        if col_name in self.hidden_columns:
+            self.hidden_columns.discard(col_name)
+        else:
+            self.hidden_columns.add(col_name)
+            to_discard = {k for k in self.selected_cells if self.df.columns[k[1]] == col_name}
+            self.selected_cells -= to_discard
+        self.redraw()
+        if self.on_selection_change: self.on_selection_change()
+
+    def _show_all_hidden(self):
+        self.hidden_columns.clear()
+        self.redraw()
+        if self.on_selection_change: self.on_selection_change()
+
+    def _update_unhide_bar(self):
+        if self.hidden_columns:
+            names = ", ".join(sorted(self.hidden_columns))
+            self.unhide_lbl.configure(text=f"Ocultas: {names}")
+            self.unhide_bar.pack(fill="x", before=self.canvas)
+        else:
+            self.unhide_bar.pack_forget()
+
     def select_row(self, ri: int):
         if self.df is None: return
-        for ci in range(len(self.col_widths)): self.selected_cells.add((ri, ci))
+        cols = list(self.df.columns)
+        for ci in range(len(self.col_widths)):
+            if cols[ci] not in self.hidden_columns:
+                self.selected_cells.add((ri, ci))
         self.redraw()
         if self.on_selection_change: self.on_selection_change()
 
@@ -335,6 +443,7 @@ class ExcelGrid(tk.Frame):
         temp_result = {}
         for (ri, ci) in self.selected_cells:
             if ci == img_col_idx: continue
+            if cols[ci] in self.hidden_columns: continue
             val = self._get_val(self.df.iloc[ri, ci])
             if omit_empty and not val: continue
             temp_result.setdefault(ri, {})[cols[ci]] = val
@@ -342,14 +451,15 @@ class ExcelGrid(tk.Frame):
         if self.app_ref and self.app_ref.locked_columns:
             for ri in temp_result.keys():
                 for col in self.app_ref.locked_columns:
-                    if col in cols:
+                    if col in cols and col not in self.hidden_columns:
                         ci  = cols.index(col)
                         val = self._get_val(self.df.iloc[ri, ci])
                         if omit_empty and not val: continue
                         temp_result[ri][col] = val
 
         for ri, row_data in temp_result.items():
-            result[ri] = {col: row_data[col] for col in cols if col in row_data}
+            result[ri] = {col: row_data[col] for col in cols
+                          if col in row_data and col not in self.hidden_columns}
         return result
 
     def get_row_metadata(self, ri: int, img_col_idx: int) -> dict:
@@ -360,13 +470,14 @@ class ExcelGrid(tk.Frame):
 
         for ci in range(len(cols)):
             if ci == img_col_idx: continue
+            if cols[ci] in self.hidden_columns: continue
             if (ri, ci) in self.selected_cells:
                 val = self._get_val(self.df.iloc[ri, ci])
                 if not omit_empty or val: temp_meta[cols[ci]] = val
 
         if self.app_ref and self.app_ref.locked_columns:
             for col in self.app_ref.locked_columns:
-                if col in cols:
+                if col in cols and col not in self.hidden_columns:
                     ci  = cols.index(col)
                     val = self._get_val(self.df.iloc[ri, ci])
                     if not omit_empty or val: temp_meta[col] = val
@@ -1303,7 +1414,7 @@ class MetaTagApp(tk.Tk):
     #  DIÁLOGOS DE ARCHIVOS
     # ─────────────────────────────────────────────────────────────
     def _browse_csv(self):
-        p = filedialog.askopenfilename(
+        p = _native_file_open(
             title="Seleccionar archivo de datos",
             filetypes=[("Excel / CSV", "*.xlsx *.xls *.csv"), ("Todos", "*.*")])
         if p:
@@ -1312,7 +1423,7 @@ class MetaTagApp(tk.Tk):
                 self.img_folder_var.set(str(Path(p).parent))
 
     def _browse_folder(self):
-        f = filedialog.askdirectory(title="Seleccionar carpeta de imágenes")
+        f = _native_folder_open(title="Seleccionar carpeta de imágenes")
         if f:
             self.img_folder_var.set(f)
             self.browser.load_folder(f)
@@ -1322,7 +1433,7 @@ class MetaTagApp(tk.Tk):
             self._save_config()
 
     def _open_folder(self):
-        f = filedialog.askdirectory(title="Seleccionar carpeta de imágenes")
+        f = _native_folder_open(title="Seleccionar carpeta de imágenes")
         if f:
             self.img_folder_var.set(f)
             self.browser.load_folder(f)
@@ -1332,7 +1443,7 @@ class MetaTagApp(tk.Tk):
             self._save_config()
 
     def _browse_single_image(self):
-        p = filedialog.askopenfilename(
+        p = _native_file_open(
             title="Seleccionar imagen",
             filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp"),
                        ("Todos", "*.*")])
@@ -1555,7 +1666,7 @@ class MetaTagApp(tk.Tk):
         if use_loaded:
             batch_df = self.df.copy()
         else:
-            excel_path = filedialog.askopenfilename(
+            excel_path = _native_file_open(
                 title="Seleccionar Excel con metadatos",
                 filetypes=[("Excel", "*.xlsx *.xlsm *.xls"), ("CSV", "*.csv"), ("Todos", "*.*")])
             if not excel_path: return
@@ -1574,7 +1685,7 @@ class MetaTagApp(tk.Tk):
         # ── Seleccionar carpeta de fotos ──
         folder = self.img_folder_var.get()
         if not folder or not os.path.isdir(folder):
-            folder = filedialog.askdirectory(title="Carpeta con las fotos")
+            folder = _native_folder_open(title="Carpeta con las fotos")
             if not folder: return
             self.img_folder_var.set(folder)
 
