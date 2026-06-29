@@ -622,8 +622,9 @@ class MetaTagApp(tk.Tk):
         self.output_folder = base / "Metadatos_Escritos"
 
         self._build_styles()
+        self._load_config_pre_build()
         self._build_ui()
-        self._load_config()
+        self._load_config_post_build()
         self._toggle_mode()
 
         self.bind("<Up>",   self._nav_up)
@@ -993,7 +994,10 @@ class MetaTagApp(tk.Tk):
                     w.bind("<Button-1>", _click)
             _bind(row, lbl, name, bg_row, fg_row)
 
-        popup.bind("<FocusOut>", lambda e: popup.destroy() if popup.winfo_exists() else None)
+        def _on_focus_out(e):
+            if popup.winfo_exists():
+                popup.after(150, lambda: popup.destroy() if popup.winfo_exists() else None)
+        popup.bind("<FocusOut>", _on_focus_out)
         popup.focus_set()
 
     def _apply_rebuild(self):
@@ -2407,14 +2411,24 @@ class MetaTagApp(tk.Tk):
                 json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception: pass
 
-    def _load_config(self):
+    def _load_config_pre_build(self):
         try:
             cfg_file = self._config_path()
             if not cfg_file.exists(): return
             cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             if cfg.get("theme") and cfg["theme"] in THEMES:
-                self.theme_var.set(cfg["theme"])
-                self._apply_rebuild()
+                global C, CURRENT_THEME
+                CURRENT_THEME = cfg["theme"]
+                C.update(THEMES[CURRENT_THEME])
+                self.configure(bg=C["bg"])
+                self.theme_var.set(CURRENT_THEME)
+        except Exception: pass
+
+    def _load_config_post_build(self):
+        try:
+            cfg_file = self._config_path()
+            if not cfg_file.exists(): return
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             if cfg.get("process_mode"):
                 self.process_mode.set(cfg["process_mode"])
             if cfg.get("csv_path") and Path(cfg["csv_path"]).exists():
