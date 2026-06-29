@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 .vscode/
 Metadatos_Escritos/
+metatag_config.json
+visor_config.json
