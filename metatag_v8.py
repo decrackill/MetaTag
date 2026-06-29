@@ -2005,7 +2005,7 @@ class MetaTagApp(tk.Tk):
                                     bg=row_bg, fg=S["text3"],
                                     selectcolor=S["surface"],
                                     activebackground=row_bg,
-                                    font=FONTS["LABEL"], anchor="w",
+                                    font=FONTS["BODY"], anchor="w",
                                     cursor="hand2", disabledforeground=S["text3"])
                 cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
                 tk.Label(row, text="imagen", bg=row_bg, fg=S["text3"],
@@ -2017,7 +2017,7 @@ class MetaTagApp(tk.Tk):
                                     bg=row_bg, fg=S["text"],
                                     selectcolor=S["surface"],
                                     activebackground=row_bg,
-                                    font=FONTS["LABEL"], anchor="w",
+                                    font=FONTS["BODY"], anchor="w",
                                     cursor="hand2")
                 cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
 
