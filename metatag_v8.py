@@ -368,20 +368,27 @@ class ExcelGrid(tk.Frame):
         _, ci = self._hit(cx, cy)
         if ci is None: return
         col_name = self.df.columns[ci]
-        menu = tk.Menu(self, tearoff=0, bg=C["surface"], fg=C["text"],
-                       font=FONTS["LABEL"], relief="flat")
+        self._col_menu = tk.Menu(self, tearoff=0, bg=C["surface"], fg=C["text"],
+                                 font=FONTS["LABEL"], relief="flat")
         if col_name in self.hidden_columns:
-            menu.add_command(label=f"Mostrar columna '{col_name}'",
-                             command=lambda c=col_name: self._toggle_col_visibility(c))
+            self._col_menu.add_command(label=f"Mostrar columna '{col_name}'",
+                                       command=lambda c=col_name: self._toggle_col_visibility(c))
         else:
-            menu.add_command(label=f"Ocultar columna '{col_name}'",
-                             command=lambda c=col_name: self._toggle_col_visibility(c))
+            self._col_menu.add_command(label=f"Ocultar columna '{col_name}'",
+                                       command=lambda c=col_name: self._toggle_col_visibility(c))
         if self.hidden_columns:
-            menu.add_separator()
-            menu.add_command(label=f"Mostrar todas ({len(self.hidden_columns)} ocultas)",
-                             command=self._show_all_hidden)
-        try: menu.tk_popup(event.x_root, event.y_root)
-        finally: menu.grab_release()
+            self._col_menu.add_separator()
+            self._col_menu.add_command(label=f"Mostrar todas ({len(self.hidden_columns)} ocultas)",
+                                       command=self._show_all_hidden)
+        self._col_menu.post(event.x_root, event.y_root)
+        self.bind("<Button-1>", self._dismiss_col_menu, add=True)
+
+    def _dismiss_col_menu(self, event=None):
+        if hasattr(self, "_col_menu") and self._col_menu:
+            try: self._col_menu.destroy()
+            except Exception: pass
+            self._col_menu = None
+        self.unbind("<Button-1>")
 
     def _toggle_col_visibility(self, col_name: str):
         if col_name in self.hidden_columns:
@@ -1575,8 +1582,11 @@ class MetaTagApp(tk.Tk):
                     v_lower = val.lower()
                     v_stem  = Path(val).stem.lower()
                     if v_lower in (name, stem) or v_stem == stem or \
-                       v_stem.lstrip("#").strip() == stem_clean:
+                       v_stem.lstrip("#").strip() == stem_clean or \
+                       stem in v_lower or stem in v_stem:
                         self.current_row = ri
+                        self.grid.clear_selection()
+                        self.grid.select_row(ri)
                         self.grid.scroll_to_row(ri)
                         self._update_meta_preview()
                         return
