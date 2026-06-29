@@ -1711,12 +1711,19 @@ class MetaTagApp(tk.Tk):
             if not folder: return
             self.img_folder_var.set(folder)
 
-        # ── Fotos ordenadas alfabéticamente ──
-        img_files = sorted(
-            [p for p in Path(folder).iterdir()
-             if p.is_file() and p.suffix.lower() in IMG_EXTS],
-            key=lambda p: p.name.lower()
-        )
+        # ── SELECCIÓN DE COLUMNAS ──
+        img_col  = self.img_col_var.get()
+        all_cols = [c for c in batch_df.columns if c != img_col] if img_col in batch_df.columns else list(batch_df.columns)
+        meta_cols = self._batch_pick_columns(all_cols)
+        if meta_cols is None:
+            return
+
+        # ── ORDEN DE FOTOS ──
+        sort_mode = self._batch_pick_sort()
+        if sort_mode is None:
+            return
+
+        img_files = self._sort_images(folder, sort_mode)
         if not img_files:
             return messagebox.showwarning("Sin imágenes",
                 "La carpeta no contiene imágenes compatibles.")
@@ -1731,16 +1738,35 @@ class MetaTagApp(tk.Tk):
                 f"Se procesarán las primeras {total} parejas. ¿Continuar?"
             ): return
 
-        # ── Determinar columnas a usar (excluir la columna imagen si existe) ──
-        img_col     = self.img_col_var.get()
-        all_cols    = list(batch_df.columns)
-        meta_cols   = [c for c in all_cols if c != img_col] if img_col in all_cols else all_cols
-        omit_empty  = self.omit_empty_var.get()
-        organizado  = self.meta_mode_organized.get()
+        omit_empty = self.omit_empty_var.get()
+        organizado = self.meta_mode_organized.get()
+
+        # ── REANUDAR LOTE ──
+        progress_file = self.output_folder / "_batch_progress.json"
+        start_idx = 0
+        ok_count  = 0
+        errors    = []
+        if progress_file.exists():
+            try:
+                prev = json.loads(progress_file.read_text(encoding="utf-8"))
+                if prev.get("total") == total and prev.get("excel") == str(self.csv_path_var.get()):
+                    done_count = prev.get("done", 0)
+                    if done_count > 0 and done_count < total:
+                        if messagebox.askyesno(
+                            "Lote anterior encontrado",
+                            f"Se procesaron {done_count}/{total} imágenes anteriormente.\n\n"
+                            f"¿Continuar desde la imagen {done_count + 1}?"
+                        ):
+                            start_idx = done_count
+                            ok_count  = prev.get("ok", 0)
+                            errors    = prev.get("errors", [])
+            except Exception:
+                pass
 
         self.output_folder.mkdir(parents=True, exist_ok=True)
 
         # ── Ventana de progreso ──
+        remaining = total - start_idx
         prog_win = tk.Toplevel(self)
         prog_win.title("Lote por Orden — Escribiendo…")
         prog_win.configure(bg=C["panel"])
@@ -1755,17 +1781,15 @@ class MetaTagApp(tk.Tk):
                             bg=C["panel"], fg=C["text2"], font=FONTS["LABEL"])
         lbl_file.pack()
 
-        lbl_count = tk.Label(prog_win, text=f"0 / {total}",
+        lbl_count = tk.Label(prog_win, text=f"{start_idx} / {total}",
                              bg=C["panel"], fg=C["text3"], font=FONTS["TINY"])
         lbl_count.pack()
 
-        # Barra de progreso visual
         bar_outer = tk.Frame(prog_win, bg=C["border"], height=10)
         bar_outer.pack(fill="x", padx=24, pady=12)
         bar_fill  = tk.Frame(bar_outer, bg=C["accent"], height=10)
         bar_fill.place(x=0, y=0, relheight=1, width=0)
 
-        # Necesitamos el ancho real tras dibujar
         prog_win.update_idletasks()
         bar_w = bar_outer.winfo_width() or 432
 
@@ -1776,15 +1800,26 @@ class MetaTagApp(tk.Tk):
             lbl_count.configure(text=f"{done} / {total}")
             prog_win.update_idletasks()
 
-        def worker():
-            ok_count = 0
-            errors   = []
+        cancelled = threading.Event()
 
-            for i in range(total):
+        def on_cancel():
+            cancelled.set()
+            prog_win.destroy()
+
+        btn_cancel = tk.Button(prog_win, text="Cancelar", bg=C["btn_ghost_bg"],
+                               fg=C["text"], font=FONTS["LABEL"], relief="flat",
+                               cursor="hand2", command=on_cancel)
+        btn_cancel.pack(pady=(0, 8))
+
+        def worker():
+            nonlocal ok_count, errors
+
+            for i in range(start_idx, total):
+                if cancelled.is_set():
+                    break
                 img_path = img_files[i]
                 row      = batch_df.iloc[i]
 
-                # Construir dict de metadatos para esta fila
                 meta = {}
                 for col in meta_cols:
                     val = str(row[col]).strip()
@@ -1797,7 +1832,6 @@ class MetaTagApp(tk.Tk):
                         self.after(0, update_ui, i + 1, img_path.name)
                     continue
 
-                # Copiar al output folder y escribir
                 out_path = self.output_folder / img_path.name
                 try:
                     shutil.copy2(str(img_path), str(out_path))
@@ -1806,34 +1840,192 @@ class MetaTagApp(tk.Tk):
                 except Exception as e:
                     errors.append(f"[{img_path.name}]: {e}")
 
-                # Actualizar UI cada 5 fotos (evita flood de after() con 300 imgs)
                 if (i + 1) % 5 == 0 or (i + 1) == total:
                     self.after(0, update_ui, i + 1, img_path.name)
 
+                # ── Guardar progreso cada 10 fotos ──
+                if (i + 1) % 10 == 0:
+                    progress_data = {
+                        "total": total, "done": i + 1, "ok": ok_count,
+                        "errors": errors, "excel": str(self.csv_path_var.get()),
+                        "sort": sort_mode, "meta_cols": meta_cols,
+                    }
+                    progress_file.write_text(
+                        json.dumps(progress_data, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+
+            # Guardar progreso final
+            progress_data = {
+                "total": total, "done": total, "ok": ok_count,
+                "errors": errors, "excel": str(self.csv_path_var.get()),
+                "sort": sort_mode, "meta_cols": meta_cols,
+            }
+            progress_file.write_text(
+                json.dumps(progress_data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+
             def finish():
-                prog_win.destroy()
-                summary = (f"✅ {ok_count} de {total} imágenes procesadas correctamente.\n"
-                           f"📁 Guardadas en: {self.output_folder}")
-                if errors:
-                    summary += f"\n\n⚠ {len(errors)} error(es):\n"
-                    summary += "\n".join(errors[:8])
-                    if len(errors) > 8:
-                        summary += f"\n… y {len(errors)-8} más."
-                messagebox.showinfo("Lote por Orden — Completado", summary)
-                self._log(f"\n✔ Lote por orden: {ok_count}/{total} procesadas. "
-                          f"{len(errors)} errores.\n", "head")
-                self.status_var.set(f"✔ Lote por orden: {ok_count}/{total} listas")
-                # Recargar imagen actual si fue modificada
+                if cancelled.is_set():
+                    self._log(f"\n⏹ Lote cancelado: {ok_count}/{total} procesadas.\n", "info")
+                    self.status_var.set(f"⏹ Lote cancelado: {ok_count}/{total}")
+                else:
+                    try: progress_file.unlink()
+                    except Exception: pass
+                    summary = (f"✅ {ok_count} de {total} imágenes procesadas correctamente.\n"
+                               f"📁 Guardadas en: {self.output_folder}")
+                    if errors:
+                        summary += f"\n\n⚠ {len(errors)} error(es):\n"
+                        summary += "\n".join(errors[:8])
+                        if len(errors) > 8:
+                            summary += f"\n… y {len(errors)-8} más."
+                    messagebox.showinfo("Lote por Orden — Completado", summary)
+                    self._log(f"\n✔ Lote por orden: {ok_count}/{total} procesadas. "
+                              f"{len(errors)} errores.\n", "head")
+                    self.status_var.set(f"✔ Lote por orden: {ok_count}/{total} listas")
                 if self.current_img:
                     cur_name = Path(self.current_img).name
-                    processed_names = {img_files[i].name for i in range(total)}
+                    processed_names = {img_files[j].name for j in range(total)}
                     if cur_name in processed_names:
                         out = self.output_folder / cur_name
                         if out.exists(): self._load_image(str(out), update_loupe=False)
+                prog_win.destroy()
 
             self.after(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ── Selección de columnas para lote ──
+    def _batch_pick_columns(self, all_cols: list) -> list | None:
+        win = tk.Toplevel(self)
+        win.title("Seleccionar columnas de metadatos")
+        win.configure(bg=C["surface"])
+        win.geometry(f"{int(380*self.current_scale)}x{min(500, int(80 + len(all_cols)*32)*self.current_scale):.0f}")
+        win.resizable(False, True)
+        win.grab_set()
+
+        tk.Label(win, text="¿Qué columnas escribir como metadatos?",
+                 bg=C["surface"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(14, 6))
+        tk.Label(win, text="Desmarca las que no quieras incluir",
+                 bg=C["surface"], fg=C["text3"], font=FONTS["TINY"]).pack()
+
+        frame = tk.Frame(win, bg=C["surface"])
+        frame.pack(fill="both", expand=True, padx=14, pady=8)
+
+        canvas = tk.Canvas(frame, bg=C["surface"], highlightthickness=0)
+        vsb    = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        inner  = tk.Frame(canvas, bg=C["surface"])
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        col_vars = {}
+        for col in all_cols:
+            var = tk.BooleanVar(value=True)
+            col_vars[col] = var
+            cb = tk.Checkbutton(inner, text=col, variable=var,
+                                bg=C["surface"], fg=C["text"],
+                                selectcolor=C["surface"],
+                                activebackground=C["surface"],
+                                font=FONTS["LABEL"], anchor="w",
+                                cursor="hand2")
+            cb.pack(fill="x", padx=4, pady=2)
+
+        result = [None]
+        def on_ok():
+            result[0] = [c for c, v in col_vars.items() if v.get()]
+            win.destroy()
+        def on_cancel():
+            win.destroy()
+
+        btn_frame = tk.Frame(win, bg=C["surface"])
+        btn_frame.pack(fill="x", padx=14, pady=(4, 12))
+        tk.Button(btn_frame, text="Aceptar", bg=C["accent"], fg="#FFF5E8",
+                  font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
+                  command=on_ok).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        tk.Button(btn_frame, text="Cancelar", bg=C["btn_ghost_bg"], fg=C["text"],
+                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
+                  command=on_cancel).pack(side="left", expand=True, fill="x")
+
+        self.wait_window(win)
+        return result[0]
+
+    # ── Selección de orden de fotos ──
+    def _batch_pick_sort(self) -> str | None:
+        win = tk.Toplevel(self)
+        win.title("Orden de las fotos")
+        win.configure(bg=C["surface"])
+        win.geometry(f"{int(360*self.current_scale)}x{int(220*self.current_scale)}")
+        win.resizable(False, False)
+        win.grab_set()
+
+        tk.Label(win, text="¿Cómo ordenar las fotos?",
+                 bg=C["surface"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(18, 10))
+
+        sort_var = tk.StringVar(value="alfabetico")
+        options = [
+            ("alfabetico",    "Alfabético (A→Z)"),
+            ("fecha_mod",     "Fecha de modificación (más antigua primero)"),
+            ("fecha_mod_inv", "Fecha de modificación (más reciente primero)"),
+            ("fecha_exif",    "Fecha EXIF de la foto"),
+            ("numeral",       "Por número en el nombre (1, 2, 10, 20…)"),
+        ]
+        for val, label in options:
+            tk.Radiobutton(win, text=label, variable=sort_var, value=val,
+                           bg=C["surface"], fg=C["text"],
+                           selectcolor=C["surface"],
+                           activebackground=C["surface"],
+                           font=FONTS["LABEL"], anchor="w",
+                           cursor="hand2").pack(fill="x", padx=20, pady=2)
+
+        result = [None]
+        def on_ok():
+            result[0] = sort_var.get()
+            win.destroy()
+        def on_cancel():
+            win.destroy()
+
+        btn_frame = tk.Frame(win, bg=C["surface"])
+        btn_frame.pack(fill="x", padx=14, pady=(12, 14))
+        tk.Button(btn_frame, text="Aceptar", bg=C["accent"], fg="#FFF5E8",
+                  font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
+                  command=on_ok).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        tk.Button(btn_frame, text="Cancelar", bg=C["btn_ghost_bg"], fg=C["text"],
+                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
+                  command=on_cancel).pack(side="left", expand=True, fill="x")
+
+        self.wait_window(win)
+        return result[0]
+
+    def _sort_images(self, folder: str, mode: str) -> list:
+        files = [p for p in Path(folder).iterdir()
+                 if p.is_file() and p.suffix.lower() in IMG_EXTS]
+
+        if mode == "alfabetico":
+            return sorted(files, key=lambda p: p.name.lower())
+        elif mode == "fecha_mod":
+            return sorted(files, key=lambda p: p.stat().st_mtime)
+        elif mode == "fecha_mod_inv":
+            return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+        elif mode == "fecha_exif":
+            def exif_date(p):
+                try:
+                    if not PIL_OK: return 0
+                    img = Image.open(str(p))
+                    exif = img._getexif()
+                    if exif and 36867 in exif:
+                        return exif[36867]
+                except Exception:
+                    pass
+                return ""
+            return sorted(files, key=exif_date)
+        elif mode == "numeral":
+            def extract_num(p):
+                nums = re.findall(r'\d+', p.stem)
+                return int(nums[0]) if nums else 0
+            return sorted(files, key=extract_num)
+        return sorted(files, key=lambda p: p.name.lower())
 
     # ─────────────────────────────────────────────────────────────
     #  PROCESAMIENTO NORMAL (MODO INTELIGENTE)
