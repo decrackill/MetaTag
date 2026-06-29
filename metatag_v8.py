@@ -364,6 +364,7 @@ class ExcelGrid(tk.Frame):
 
     def _on_right_click(self, event):
         if self.df is None: return
+        self._dismiss_col_menu()
         cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         _, ci = self._hit(cx, cy)
         if ci is None: return
@@ -381,14 +382,20 @@ class ExcelGrid(tk.Frame):
             self._col_menu.add_command(label=f"Mostrar todas ({len(self.hidden_columns)} ocultas)",
                                        command=self._show_all_hidden)
         self._col_menu.post(event.x_root, event.y_root)
-        self.bind("<Button-1>", self._dismiss_col_menu, add=True)
+        root = self.winfo_toplevel()
+        root.bind("<Button-1>", self._dismiss_col_menu, add=True)
+        root.bind("<Button-3>", self._dismiss_col_menu, add=True)
 
     def _dismiss_col_menu(self, event=None):
         if hasattr(self, "_col_menu") and self._col_menu:
             try: self._col_menu.destroy()
             except Exception: pass
             self._col_menu = None
-        self.unbind("<Button-1>")
+        try:
+            root = self.winfo_toplevel()
+            root.unbind("<Button-1>")
+            root.unbind("<Button-3>")
+        except Exception: pass
 
     def _toggle_col_visibility(self, col_name: str):
         if col_name in self.hidden_columns:
