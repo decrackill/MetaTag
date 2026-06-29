@@ -1912,6 +1912,8 @@ class MetaTagApp(tk.Tk):
         win.geometry(f"{int(400*sc)}x{int(420*sc)}")
         win.resizable(False, False)
         win.attributes("-topmost", True)
+        win.grid_rowconfigure(2, weight=1)
+        win.grid_columnconfigure(0, weight=1)
 
         col_vars = {}
         result = [None]
@@ -1920,22 +1922,6 @@ class MetaTagApp(tk.Tk):
             win.destroy()
         def on_cancel():
             win.destroy()
-
-        hdr = tk.Frame(win, bg=S["header_bg"])
-        hdr.pack(side="top", fill="x")
-        tk.Label(hdr, text="  Columnas de metadatos", bg=S["header_bg"],
-                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
-
-        tk.Label(win, text="Selecciona las columnas que se escribirán en los metadatos",
-                 bg=S["bg"], fg=S["text3"], font=FONTS["TINY"],
-                 wraplength=int(360*sc)).pack(side="top", pady=(12, 4), padx=14)
-
-        sel_count_var = tk.StringVar(value=f"{len([c for c in all_cols if c != img_col])} / {len(all_cols)}")
-        tk.Label(win, textvariable=sel_count_var, bg=S["bg"], fg=S["accent"],
-                 font=FONTS["LABEL_B"]).pack(side="top", pady=(0, 6))
-
-        actions = tk.Frame(win, bg=S["bg"])
-        actions.pack(side="top", fill="x", padx=14)
         def select_all():
             for c, v in col_vars.items(): v.set(True)
             _update_count()
@@ -1946,6 +1932,22 @@ class MetaTagApp(tk.Tk):
             for c, v in col_vars.items():
                 if c != img_col: v.set(not v.get())
             _update_count()
+
+        hdr = tk.Frame(win, bg=S["header_bg"])
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(hdr, text="  Columnas de metadatos", bg=S["header_bg"],
+                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+
+        top_info = tk.Frame(win, bg=S["bg"])
+        top_info.grid(row=1, column=0, sticky="ew", padx=14)
+        tk.Label(top_info, text="Selecciona las columnas que se escribirán en los metadatos",
+                 bg=S["bg"], fg=S["text3"], font=FONTS["TINY"],
+                 wraplength=int(360*sc)).pack(pady=(12, 4))
+        sel_count_var = tk.StringVar(value=f"{len([c for c in all_cols if c != img_col])} / {len(all_cols)}")
+        tk.Label(top_info, textvariable=sel_count_var, bg=S["bg"], fg=S["accent"],
+                 font=FONTS["LABEL_B"]).pack(pady=(0, 6))
+        actions = tk.Frame(top_info, bg=S["bg"])
+        actions.pack()
         tk.Button(actions, text="Todas", bg=S["btn_ghost_bg"], fg=S["accent"],
                   font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
                   command=select_all).pack(side="left", padx=(0, 4))
@@ -1956,28 +1958,15 @@ class MetaTagApp(tk.Tk):
                   font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
                   command=invert_sel).pack(side="left")
 
-        tk.Frame(win, bg=S["border"], height=1).pack(side="bottom", fill="x")
-        btn_frame = tk.Frame(win, bg=S["bg"])
-        btn_frame.pack(side="bottom", fill="x", padx=14, pady=10)
-        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
-                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
-                  command=on_cancel).pack(side="right", ipady=4)
-        tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
-                  font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
-                  activebackground=S["accent_hover"],
-                  command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
-
-        tk.Frame(win, bg=S["border_light"], height=1).pack(side="bottom", fill="x", padx=14, pady=4)
-
         list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
                               highlightthickness=1)
-        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(4, 4))
 
         canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
-        vsb    = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner  = tk.Frame(canvas, bg=S["surface"])
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw", width=int(360*sc))
+        canvas.pack_propagate(False)
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=S["surface"])
+        canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=vsb.set)
         canvas.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
@@ -2043,8 +2032,25 @@ class MetaTagApp(tk.Tk):
                 cb.bind("<Enter>", _enter)
                 cb.bind("<Leave>", _leave)
 
-        win.update_idletasks()
-        canvas.configure(scrollregion=canvas.bbox("all"))
+        def _sync_scroll(e=None):
+            inner.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _sync_scroll)
+        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        win.after(100, _sync_scroll)
+
+        sep = tk.Frame(win, bg=S["border"], height=1)
+        sep.grid(row=3, column=0, sticky="ew")
+
+        btn_frame = tk.Frame(win, bg=S["bg"])
+        btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
+                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
+                  command=on_cancel).pack(side="right", ipady=4)
+        tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
+                  font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
+                  activebackground=S["accent_hover"],
+                  command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
 
         self.wait_window(win)
         return result[0]
