@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+*.swp
+.DS_Store
+.vscode/
+Metadatos_Escritos/
