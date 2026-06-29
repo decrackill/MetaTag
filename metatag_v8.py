@@ -1909,7 +1909,7 @@ class MetaTagApp(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Seleccionar columnas de metadatos")
         win.configure(bg=S["bg"])
-        win.geometry(f"{int(400*sc)}x{min(420, int(100 + len(all_cols)*34)*sc):.0f}")
+        win.geometry(f"{int(400*sc)}x{int(420*sc)}")
         win.resizable(False, True)
         win.attributes("-topmost", True)
 
@@ -1941,7 +1941,7 @@ class MetaTagApp(tk.Tk):
         tk.Button(actions, text="Todas", bg=S["btn_ghost_bg"], fg=S["accent"],
                   font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
                   command=select_all).pack(side="left", padx=(0, 4))
-        tk.Button(actions, text="Ninguna", bg=S["btn_guest_bg"] if "guest" in S else S["btn_ghost_bg"], fg=S["text3"],
+        tk.Button(actions, text="Ninguna", bg=S["btn_ghost_bg"], fg=S["text3"],
                   font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
                   command=deselect_all).pack(side="left", padx=(0, 4))
         tk.Button(actions, text="Invertir", bg=S["btn_ghost_bg"], fg=S["text3"],
@@ -1970,12 +1970,10 @@ class MetaTagApp(tk.Tk):
                 canvas.yview_scroll(-1, "units")
             elif event.num == 5:
                 canvas.yview_scroll(1, "units")
-        canvas.bind("<MouseWheel>", _on_mousewheel)
-        canvas.bind("<Button-4>", _on_mousewheel_linux)
-        canvas.bind("<Button-5>", _on_mousewheel_linux)
-        inner.bind("<MouseWheel>", _on_mousewheel)
-        inner.bind("<Button-4>", _on_mousewheel_linux)
-        inner.bind("<Button-5>", _on_mousewheel_linux)
+        for w in (canvas, inner, list_frame, win):
+            w.bind("<MouseWheel>", _on_mousewheel)
+            w.bind("<Button-4>", _on_mousewheel_linux)
+            w.bind("<Button-5>", _on_mousewheel_linux)
 
         col_vars = {}
         def _update_count():
