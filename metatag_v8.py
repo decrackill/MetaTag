@@ -1909,7 +1909,7 @@ class MetaTagApp(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Seleccionar columnas de metadatos")
         win.configure(bg=S["bg"])
-        win.geometry(f"{int(400*sc)}x{min(560, int(100 + len(all_cols)*34)*sc):.0f}")
+        win.geometry(f"{int(400*sc)}x{min(420, int(100 + len(all_cols)*34)*sc):.0f}")
         win.resizable(False, True)
         win.attributes("-topmost", True)
 
@@ -1962,6 +1962,20 @@ class MetaTagApp(tk.Tk):
         canvas.configure(yscrollcommand=vsb.set)
         canvas.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _on_mousewheel_linux(event):
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<Button-4>", _on_mousewheel_linux)
+        canvas.bind("<Button-5>", _on_mousewheel_linux)
+        inner.bind("<MouseWheel>", _on_mousewheel)
+        inner.bind("<Button-4>", _on_mousewheel_linux)
+        inner.bind("<Button-5>", _on_mousewheel_linux)
 
         col_vars = {}
         def _update_count():
