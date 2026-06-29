@@ -1547,34 +1547,39 @@ class MetaTagApp(tk.Tk):
     def _on_row_click(self, ri: int):
         self.current_row = ri
         if self.process_mode.get() == "Inteligente" and self.grid.df is not None:
-            img_col = self.img_col_var.get()
-            if img_col and img_col in self.grid.df.columns:
-                img_name = str(self.grid.df.iloc[ri][img_col]).strip()
-                folder   = self.img_folder_var.get()
-                if folder and img_name:
-                    img_path = self._find_image(img_name, folder)
-                    if img_path:
-                        self._load_image(img_path)
-                        self.browser.highlight(Path(img_path).name)
+            folder = self.img_folder_var.get()
+            if folder:
+                row = self.grid.df.iloc[ri]
+                for col in self.grid.df.columns:
+                    img_name = str(row[col]).strip()
+                    if img_name and img_name.lower() not in ("nan", "none", ""):
+                        img_path = self._find_image(img_name, folder)
+                        if img_path:
+                            self._load_image(img_path)
+                            self.browser.highlight(Path(img_path).name)
+                            break
         self._update_meta_preview()
 
     def _on_img_select(self, path: str):
         self._load_image(path)
         if self.process_mode.get() == "Inteligente" and self.grid.df is not None:
-            img_col = self.img_col_var.get()
-            if img_col and img_col in self.grid.df.columns:
-                name       = Path(path).name.lower()
-                stem       = Path(path).stem.lower()
-                stem_clean = stem.lstrip("#").strip()
-                for i, val in enumerate(self.grid.df[img_col]):
-                    v_lower = str(val).strip().lower()
-                    v_stem  = Path(str(val).strip()).stem.lower()
+            name       = Path(path).name.lower()
+            stem       = Path(path).stem.lower()
+            stem_clean = stem.lstrip("#").strip()
+            for ri in range(len(self.grid.df)):
+                row = self.grid.df.iloc[ri]
+                for col in self.grid.df.columns:
+                    val = str(row[col]).strip()
+                    if not val or val.lower() in ("nan", "none"):
+                        continue
+                    v_lower = val.lower()
+                    v_stem  = Path(val).stem.lower()
                     if v_lower in (name, stem) or v_stem == stem or \
                        v_stem.lstrip("#").strip() == stem_clean:
-                        self.current_row = i
-                        self.grid.scroll_to_row(i)
+                        self.current_row = ri
+                        self.grid.scroll_to_row(ri)
                         self._update_meta_preview()
-                        break
+                        return
 
     def _select_active_row(self):
         if self.current_row is None:
@@ -1843,15 +1848,22 @@ class MetaTagApp(tk.Tk):
         self._save_config()
         threading.Thread(target=self._process_all, args=(folder, meta_by_row), daemon=True).start()
 
+    def _find_img_name_in_row(self, ri: int) -> str:
+        row = self.grid.df.iloc[ri]
+        for col in self.grid.df.columns:
+            val = str(row[col]).strip()
+            if val and val.lower() not in ("nan", "none", ""):
+                if Path(val).suffix.lower() in IMG_EXTS:
+                    return val
+        return ""
+
     def _process_all(self, folder: str, meta_by_row: dict):
-        img_col_idx        = self._img_col_idx()
-        img_col            = self.grid.df.columns[img_col_idx]
         rows_to_process    = sorted(meta_by_row.keys())
         total, ok, err     = len(rows_to_process) or 1, 0, 0
         organizado         = self.meta_mode_organized.get()
 
         for i, ri in enumerate(rows_to_process):
-            img_name = str(self.grid.df.iloc[ri][img_col]).strip()
+            img_name = self._find_img_name_in_row(ri)
             meta     = meta_by_row[ri]
             self.after(0, lambda i=i, t=total: self.status_var.set(f"Procesando {i+1}/{t}…"))
 
