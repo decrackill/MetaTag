@@ -2032,9 +2032,9 @@ class MetaTagApp(tk.Tk):
         def on_cancel():
             win.destroy()
 
-        tk.Frame(win, bg=S["border"], height=1).pack(fill="x")
+        tk.Frame(win, bg=S["border"], height=1).pack(side="bottom", fill="x")
         btn_frame = tk.Frame(win, bg=S["bg"])
-        btn_frame.pack(fill="x", padx=14, pady=10)
+        btn_frame.pack(side="bottom", fill="x", padx=14, pady=10)
         tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
                   font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
                   activebackground=S["accent_hover"],
