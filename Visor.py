@@ -340,9 +340,7 @@ class VisorApp(tk.Tk):
             if self.folder_images and last_img in self.folder_images:
                 self.load_image(last_img)
                 idx = self.folder_images.index(last_img)
-                self.file_listbox.selection_clear(0, "end")
-                self.file_listbox.selection_set(idx)
-                self.file_listbox.see(idx)
+                self._tree_select_index(idx)
             else:
                 # La imagen existe pero no pertenece a la carpeta cargada
                 self._hide_explorer_pane()
@@ -350,7 +348,7 @@ class VisorApp(tk.Tk):
         elif self.folder_images:
             # Si hay carpeta pero no imagen guardada, cargar la primera
             self.load_image(self.folder_images[0])
-            self.file_listbox.selection_set(0)
+            self._tree_select_index(0)
         else:
             # Si no hay nada, mostrar pantalla de bienvenida
             self._show_welcome()
@@ -416,9 +414,7 @@ class VisorApp(tk.Tk):
             idx = self.folder_images.index(self.current_path)
             if idx > 0:
                 new_idx = idx - 1
-                self.file_listbox.selection_clear(0, "end")
-                self.file_listbox.selection_set(new_idx)
-                self.file_listbox.see(new_idx)
+                self._tree_select_index(new_idx)
                 self.load_image(self.folder_images[new_idx])
         except ValueError:
             pass
@@ -431,9 +427,7 @@ class VisorApp(tk.Tk):
             idx = self.folder_images.index(self.current_path)
             if idx < len(self.folder_images) - 1:
                 new_idx = idx + 1
-                self.file_listbox.selection_clear(0, "end")
-                self.file_listbox.selection_set(new_idx)
-                self.file_listbox.see(new_idx)
+                self._tree_select_index(new_idx)
                 self.load_image(self.folder_images[new_idx])
         except ValueError:
             pass
@@ -701,7 +695,7 @@ class VisorApp(tk.Tk):
         self.after(100, self._bind_zoom_events)
 
     def _build_left_bottom(self, parent):
-        """Construye el explorador de la carpeta."""
+        """Construye el explorador de archivos estilo nativo."""
         # Encabezado del explorador
         exp_hdr = tk.Frame(parent, bg=C["panel"])
         exp_hdr.pack(fill="x", padx=12, pady=(4, 6))
@@ -728,24 +722,30 @@ class VisorApp(tk.Tk):
             fg=C["text"], insertbackground=C["accent"], relief="flat", bd=0, font=F_BODY
         ).pack(side="left", fill="x", expand=True, ipady=6)
 
-        # Lista de archivos (Listbox)
-        listbox_frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1, highlightbackground=C["border"])
-        listbox_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        
-        scrollbar = ttk.Scrollbar(listbox_frame, orient="vertical")
-        
-        self.file_listbox = tk.Listbox(
-            listbox_frame, bg=C["surface"], fg=C["text"], 
-            selectbackground=C["sel_bg"], selectforeground=C["sel_fg"], 
-            relief="flat", bd=0, font=F_BODY, activestyle="none", 
-            yscrollcommand=scrollbar.set
+        # Treeview estilo explorador nativo
+        tree_frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1, highlightbackground=C["border"])
+        tree_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        self.file_tree = ttk.Treeview(
+            tree_frame, columns=("name", "size"), show="headings",
+            selectmode="browse", height=8
         )
-        
-        scrollbar.configure(command=self.file_listbox.yview)
+        self.file_tree.heading("name", text="Nombre", anchor="w")
+        self.file_tree.heading("size", text="Tamaño", anchor="e")
+        self.file_tree.column("name", width=220, anchor="w", minwidth=120)
+        self.file_tree.column("size", width=70, anchor="e", minwidth=50)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.file_tree.yview)
+        self.file_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        self.file_listbox.pack(fill="both", expand=True, padx=2, pady=2)
-        
-        self.file_listbox.bind("<<ListboxSelect>>", self._on_list_select)
+        self.file_tree.pack(fill="both", expand=True)
+
+        # Tags de estilo para filas
+        self.file_tree.tag_configure("odd", background=C["surface"])
+        self.file_tree.tag_configure("even", background=C["row_alt"])
+        self.file_tree.tag_configure("selected", background=C["sel_bg"], foreground=C["sel_fg"])
+
+        self.file_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
     def _build_right(self, parent):
         """Construye la tabla principal de metadatos."""
@@ -858,9 +858,7 @@ class VisorApp(tk.Tk):
             self.load_image(saved_path)
             if saved_path in self.folder_images:
                 idx = self.folder_images.index(saved_path)
-                self.file_listbox.selection_clear(0, "end")
-                self.file_listbox.selection_set(idx)
-                self.file_listbox.see(idx)
+                self._tree_select_index(idx)
         elif not self.folder_images:
             self._show_welcome()
 
@@ -909,8 +907,7 @@ class VisorApp(tk.Tk):
         self._refresh_listbox()
         
         if auto_load:
-            self.file_listbox.selection_clear(0, "end")
-            self.file_listbox.selection_set(0)
+            self._tree_select_index(0)
             self.load_image(self.folder_images[0])
 
     def _filter_folder(self, *_):
@@ -926,27 +923,51 @@ class VisorApp(tk.Tk):
         self._refresh_listbox()
 
     def _refresh_listbox(self):
-        """Actualiza la visualización gráfica del Listbox de archivos mediante carga en bloque."""
-        self.file_listbox.delete(0, "end")
-        
-        # Inserción en bloque para optimizar el rendimiento de la GUI
-        items_to_insert = [f"  {Path(filepath).name}" for filepath in self.folder_images]
-        if items_to_insert:
-            self.file_listbox.insert("end", *items_to_insert)
-            
-        # Aplicar colores alternos a las filas
-        for i in range(len(items_to_insert)):
-            bg_color = C["row_alt"] if i % 2 != 0 else C["surface"]
-            self.file_listbox.itemconfigure(i, background=bg_color)
-            
+        """Actualiza la visualización del explorador de archivos."""
+        self.file_tree.delete(*self.file_tree.get_children())
+
+        items_to_insert = []
+        for filepath in self.folder_images:
+            name = Path(filepath).name
+            size_kb = os.path.getsize(filepath) / 1024
+            if size_kb >= 1024:
+                size_str = f"{size_kb/1024:.1f} MB"
+            else:
+                size_str = f"{size_kb:.0f} KB"
+
+            ext = Path(filepath).suffix.lower()
+            icon = {
+                ".jpg": "🖼", ".jpeg": "🖼", ".png": "🖼",
+                ".tif": "📷", ".tiff": "📷", ".webp": "🖼"
+            }.get(ext, "📄")
+
+            items_to_insert.append((f" {icon}  {name}", size_str, filepath))
+
+        for i, (display_name, size_str, _) in enumerate(items_to_insert):
+            tag = "even" if i % 2 == 0 else "odd"
+            self.file_tree.insert("", "end", values=(display_name, size_str), tags=(tag,))
+
         self._lbl_count.configure(text=f"{len(self.folder_images)} archivos")
 
-    def _on_list_select(self, event):
-        """Evento lanzado al hacer clic en un archivo del explorador."""
-        selection = self.file_listbox.curselection()
+    def _on_tree_select(self, event):
+        """Evento lanzado al seleccionar un archivo en el explorador."""
+        selection = self.file_tree.selection()
         if selection:
-            index = selection[0]
-            self.load_image(self.folder_images[index])
+            item = self.file_tree.item(selection[0])
+            display_name = item["values"][0]
+            for filepath in self.folder_images:
+                name = Path(filepath).name
+                if name in str(display_name):
+                    self.load_image(filepath)
+                    break
+
+    def _tree_select_index(self, idx: int):
+        """Selecciona un elemento del Treeview por índice."""
+        children = self.file_tree.get_children()
+        if 0 <= idx < len(children):
+            self.file_tree.selection_remove(*self.file_tree.get_children())
+            self.file_tree.selection_set(children[idx])
+            self.file_tree.see(children[idx])
 
 
     # ─────────────────────────────────────────────────────────────
