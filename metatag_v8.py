@@ -1784,42 +1784,42 @@ class MetaTagApp(tk.Tk):
 
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
-
-        def get_clean_name(filename):
-            name = filename
+        file_map = {}
+        for f in all_files:
+            name = f.name
             while '.' in name:
                 name = name.rsplit('.', 1)[0]
-            return name.lower().strip()
+            file_map[name.lower()] = f
+            file_map[f.name.lower()] = f
 
-        excel_map = {}
-        for ri in range(len(self.grid.df)):
-            row = self.grid.df.iloc[ri]
+        sorted_df = self.grid.df.copy()
+        for sc in reversed(chosen_cols):
+            sorted_df = sorted_df.sort_values(by=sc, key=lambda s: s.fillna("").astype(str).str.lower())
+
+        ordered_files = []
+        for ri in range(len(sorted_df)):
+            row = sorted_df.iloc[ri]
             val = str(row[img_col]).strip()
             if not val or val.lower() in ("nan", "none", ""):
                 continue
-            clean = get_clean_name(val)
-            sort_parts = []
-            for sc in chosen_cols:
-                v = str(row[sc]).strip()
-                if v.lower() in ("nan", "none", ""):
-                    v = ""
-                sort_parts.append(v.lower())
-            excel_map[clean] = "\x00".join(sort_parts)
+            fname = Path(val).name
+            found = file_map.get(fname.lower())
+            if found is None:
+                stem = fname
+                while '.' in stem:
+                    stem = stem.rsplit('.', 1)[0]
+                found = file_map.get(stem.lower())
+            if found is not None and found not in ordered_files:
+                ordered_files.append(found)
 
-        def _sort_key(path):
-            clean = get_clean_name(path.name)
-            if clean in excel_map:
-                return excel_map[clean]
-            for ek, ev in excel_map.items():
-                if clean.startswith(ek) or ek.startswith(clean):
-                    return ev
-            return "zzz_" + clean
+        for f in all_files:
+            if f not in ordered_files:
+                ordered_files.append(f)
 
-        all_files.sort(key=_sort_key)
-        self.browser.img_files = all_files
+        self.browser.img_files = ordered_files
         self.browser._filter()
-        self.browser.info_lbl.configure(text=f"{len(all_files)} imágenes (orden: {', '.join(chosen_cols)})")
-        self.status_var.set(f"✓ Imágenes reordenadas por {', '.join(chosen_cols)} ({len(all_files)} archivos)")
+        self.browser.info_lbl.configure(text=f"{len(ordered_files)} imágenes (orden: {', '.join(chosen_cols)})")
+        self.status_var.set(f"✓ Imágenes reordenadas por {', '.join(chosen_cols)} ({len(ordered_files)} archivos)")
         self._log(f"✓ Imágenes reordenadas según columnas: {', '.join(chosen_cols)}\n", "ok")
 
     def _pick_sort_columns(self, all_cols: list) -> list | None:
