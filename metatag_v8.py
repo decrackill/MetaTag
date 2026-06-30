@@ -554,6 +554,7 @@ class ImageBrowser(tk.Frame):
             [f for f in Path(folder).iterdir() if f.suffix.lower() in IMG_EXTS],
             key=lambda p: p.name.lower()
         )
+        self._excel_count = None   # reset: ya no hay separación Excel/huérfanas
         self._filter()
         self.info_lbl.configure(text=f"{len(self.img_files)} imágenes en carpeta")
 
@@ -561,7 +562,12 @@ class ImageBrowser(tk.Frame):
         q = self.search_var.get().lower()
         self.listbox.delete(0, "end")
         self._filtered = [f for f in self.img_files if q in f.name.lower()]
-        for f in self._filtered: self.listbox.insert("end", f.name)
+        excel_n = getattr(self, "_excel_count", None)
+        for i, f in enumerate(self._filtered):
+            if excel_n is not None and i >= excel_n:
+                self.listbox.insert("end", f"⚠ {f.name}  [SIN EXCEL]")
+            else:
+                self.listbox.insert("end", f.name)
 
     def _on_select(self, event):
         sel = self.listbox.curselection()
@@ -1180,6 +1186,9 @@ class MetaTagApp(tk.Tk):
         self._btn(parent, "🔄 Reordenar Excel según imágenes",  self._sync_excel_to_images, primary=False)
         self._btn(parent, "🔄 Reordenar imágenes según Excel",  self._sync_images_to_excel, primary=False)
 
+        section("VERIFICACIÓN DE INTEGRIDAD")
+        self._btn(parent, "🔍 Verificar metadatos escritos",    self._verify_all_metadata, primary=False)
+
         section("⚙️ MODO DE TRABAJO")
         self.mode_frame = tk.Frame(parent, bg=C["btn_ghost_bg"], padx=2, pady=2)
         self.mode_frame.pack(fill="x", padx=10, pady=(0, 4))
@@ -1769,8 +1778,9 @@ class MetaTagApp(tk.Tk):
         """
         Hace que las imágenes en el explorador sigan EXACTAMENTE el orden
         de filas que ya tiene el Excel cargado — sin reordenar ni una sola
-        fila del Excel. Solo busca, para cada fila en su posición original,
-        la imagen correspondiente.
+        fila del Excel. Las imágenes que NO tienen fila correspondiente
+        en el Excel se muestran SEPARADAS al final, marcadas claramente,
+        en vez de mezclarse silenciosamente en orden alfabético.
         """
         if self.grid.df is None:
             return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
@@ -1783,11 +1793,10 @@ class MetaTagApp(tk.Tk):
             return messagebox.showwarning("Sin columna de imagen",
                 "Selecciona la columna de imagen en la herramienta principal.")
 
-        # NO se reordena nada. Se usa el DataFrame TAL CUAL está cargado.
         df_actual = self.grid.df
 
-        ordered_files = []
-        no_encontradas = []
+        ordered_files   = []
+        no_encontradas  = []
         for ri in range(len(df_actual)):
             val = str(df_actual.iloc[ri][img_col]).strip()
             if not val or val.lower() in ("nan", "none", ""):
@@ -1804,29 +1813,49 @@ class MetaTagApp(tk.Tk):
             return messagebox.showwarning("Sin coincidencias",
                 "No se encontró ninguna imagen que coincida con la columna seleccionada.")
 
-        # Las imágenes que no aparecen en el Excel se añaden al final,
-        # en orden alfabético, para no perderlas de la carpeta.
+        # ── Imágenes huérfanas: existen en disco pero NO tienen fila en el Excel ──
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
-        restantes = sorted(
+        huerfanas = sorted(
             [f for f in all_files if f not in ordered_files],
             key=lambda p: p.name.lower())
-        ordered_files.extend(restantes)
+
+        # Guardamos el conteo de filas del Excel para poder marcar la
+        # division visual en el explorador (no se mezclan silenciosamente)
+        self._sync_excel_count = len(ordered_files)
+        self._sync_orphan_count = len(huerfanas)
+
+        ordered_files.extend(huerfanas)
 
         self.browser.img_files = ordered_files
+        self.browser._excel_count = self._sync_excel_count   # <-- AÑADIR ESTA LÍNEA
         self.browser._filter()
         # El Excel NO se toca — se queda exactamente como estaba.
 
-        msg = f"{len(ordered_files)} imágenes (orden EXACTO del Excel cargado)"
+        msg = (f"{len(ordered_files)} imágenes  "
+               f"({self._sync_excel_count} del Excel"
+               + (f" + {self._sync_orphan_count} sin fila" if huerfanas else "")
+               + ")")
         self.browser.info_lbl.configure(text=msg)
-        self.status_var.set(f"✓ Imágenes reordenadas según el orden actual del Excel")
+        self.status_var.set("✓ Imágenes reordenadas según el orden actual del Excel")
+
         self._log(
             f"✓ Imágenes reordenadas para coincidir, fila por fila, con el "
-            f"orden ACTUAL del Excel (sin reordenar el Excel).\n", "ok")
+            f"orden ACTUAL del Excel (sin reordenar el Excel).\n"
+            f"  • {self._sync_excel_count} imágenes con fila en el Excel\n",
+            "ok")
+        if huerfanas:
+            self._log(
+                f"  ⚠ {len(huerfanas)} imagen(es) en la carpeta SIN fila "
+                f"correspondiente en el Excel (se muestran al final, marcadas "
+                f"[SIN EXCEL]):\n"
+                f"     {', '.join(f.name for f in huerfanas[:8])}"
+                f"{' …' if len(huerfanas) > 8 else ''}\n", "warn")
         if no_encontradas:
             self._log(
-                f"  ⚠ {len(no_encontradas)} valores de '{img_col}' no tuvieron "
-                f"imagen correspondiente: {', '.join(no_encontradas[:8])}"
+                f"  ⚠ {len(no_encontradas)} valores de '{img_col}' en el Excel "
+                f"no tuvieron imagen correspondiente en disco: "
+                f"{', '.join(no_encontradas[:8])}"
                 f"{' …' if len(no_encontradas) > 8 else ''}\n", "warn")
 
     def _pick_sort_columns(self, all_cols: list) -> list | None:
@@ -2763,6 +2792,129 @@ class MetaTagApp(tk.Tk):
             if v_old and v_old != str(v_new).strip():
                 diffs.append(f"{k}: '{v_old}' → '{v_new}'")
         return diffs
+
+    def _verify_all_metadata(self):
+        """
+        Recorre TODAS las imágenes ya escritas en Metadatos_Escritos/ y
+        las compara contra la fila correspondiente del Excel actualmente
+        cargado. Genera un reporte de cuántas tienen datos divergentes
+        (residuales de corridas anteriores al fix de _check_metadata_divergence).
+        """
+        if self.grid.df is None:
+            return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV primero.")
+        if not self.output_folder.exists():
+            return messagebox.showinfo("Sin datos escritos",
+                "Aún no se ha escrito ninguna imagen en Metadatos_Escritos/.")
+
+        img_col = self.img_col_var.get()
+        if not img_col or img_col not in self.grid.df.columns:
+            return messagebox.showwarning("Sin columna de imagen",
+                "Selecciona la columna de imagen en la herramienta principal.")
+
+        self.config(cursor="watch")
+        self._log("\n🔍 Verificando metadatos escritos vs. Excel actual...\n", "info")
+
+        df = self.grid.df
+        img_col_idx = self._img_col_idx()
+
+        divergentes = []
+        verificadas = 0
+        no_match    = 0
+
+        for ri in range(len(df)):
+            val = str(df.iloc[ri][img_col]).strip()
+            if not val or val.lower() in ("nan", "none", ""):
+                continue
+            written_path = self.output_folder / Path(val).name
+            if not written_path.exists():
+                candidates = list(self.output_folder.glob(f"{Path(val).stem}*"))
+                if candidates:
+                    written_path = candidates[0]
+                else:
+                    no_match += 1
+                    continue
+
+            expected_meta = self.grid.get_row_metadata(ri, img_col_idx)
+            if not expected_meta:
+                continue
+
+            diffs = self._check_metadata_divergence(str(written_path), expected_meta)
+            verificadas += 1
+            if diffs:
+                divergentes.append((written_path.name, diffs))
+
+        self.config(cursor="")
+
+        if not divergentes:
+            self._log(
+                f"✔ Verificación completa: {verificadas} imágenes revisadas, "
+                f"0 con divergencias.\n", "ok")
+            messagebox.showinfo("Verificación completa",
+                f"Se revisaron {verificadas} imágenes ya escritas.\n\n"
+                f"✔ Ninguna tiene datos divergentes respecto al Excel actual.")
+        else:
+            self._log(
+                f"⚠ Verificación completa: {verificadas} revisadas, "
+                f"{len(divergentes)} CON divergencias:\n", "warn")
+            for name, diffs in divergentes[:15]:
+                self._log(f"   • {name}: {' | '.join(diffs)}\n", "warn")
+            if len(divergentes) > 15:
+                self._log(f"   … y {len(divergentes)-15} más.\n", "warn")
+
+            self._last_divergent_list = divergentes
+
+            respuesta = messagebox.askyesno(
+                "Divergencias encontradas",
+                f"Se revisaron {verificadas} imágenes ya escritas.\n\n"
+                f"⚠ {len(divergentes)} tienen datos distintos a los del Excel "
+                f"actual (probablemente residuales de una corrida anterior).\n\n"
+                f"¿Quieres reescribirlas ahora mismo con los valores "
+                f"correctos del Excel?")
+            if respuesta:
+                self._rewrite_divergent(divergentes, img_col_idx)
+
+    def _rewrite_divergent(self, divergentes: list, img_col_idx: int):
+        """Reescribe solo las imágenes que salieron divergentes en la verificación."""
+        df = self.grid.df
+        img_col = self.img_col_var.get()
+        organizado = self.meta_mode_organized.get()
+
+        self.config(cursor="watch")
+        ok = err = 0
+
+        name_to_row = {}
+        for ri in range(len(df)):
+            val = str(df.iloc[ri][img_col]).strip()
+            if val:
+                name_to_row[Path(val).name] = ri
+
+        for filename, _diffs in divergentes:
+            ri = name_to_row.get(filename)
+            if ri is None:
+                stem = Path(filename).stem
+                for name, idx in name_to_row.items():
+                    if Path(name).stem == stem:
+                        ri = idx
+                        break
+            if ri is None:
+                err += 1
+                continue
+
+            meta = self.grid.get_row_metadata(ri, img_col_idx)
+            out_path = self.output_folder / filename
+            try:
+                self._write_meta(str(out_path), meta, organizado)
+                ok += 1
+            except Exception as e:
+                self._log(f"  ✗ Error reescribiendo {filename}: {e}\n", "err")
+                err += 1
+
+        self.config(cursor="")
+        self._log(f"\n🔁 Reescritura de divergentes: {ok} corregidas · {err} errores.\n", "head")
+        self.status_var.set(f"✔ {ok} imágenes corregidas")
+        messagebox.showinfo("Reescritura completa",
+            f"✔ {ok} imágenes corregidas con los valores actuales del Excel.\n"
+            f"{f'✗ {err} con errores.' if err else ''}")
 
     def _write_jpeg(self, path: str, meta: dict, organizado: bool = True):
         img              = Image.open(path)
