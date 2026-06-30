@@ -2191,6 +2191,75 @@ class MetaTagApp(tk.Tk):
         def on_cancel():
             win.destroy()
 
+        hdr = tk.Frame(win, bg=S["header_bg"])
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(hdr, text="  Orden de las fotos", bg=S["header_bg"],
+                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+
+        tk.Label(win, text="¿Cómo quieres ordenar las imágenes antes de emparejarlas?",
+                 bg=S["bg"], fg=S["text3"], font=FONTS["BODY"],
+                 wraplength=int(380*sc)).grid(row=1, column=0, pady=(14, 8), padx=14)
+
+        list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
+                              highlightthickness=1)
+        list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 4))
+
+        canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
+        canvas.pack_propagate(False)
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=S["surface"])
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        def _sync_scroll(e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _sync_scroll)
+        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _on_mousewheel_linux(event):
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+        for w in (canvas, inner, list_frame):
+            w.bind("<MouseWheel>", _on_mousewheel)
+            w.bind("<Button-4>", _on_mousewheel_linux)
+            w.bind("<Button-5>", _on_mousewheel_linux)
+
+        for idx, (val, label, desc) in enumerate(options):
+            row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
+            row = tk.Frame(inner, bg=row_bg)
+            row.pack(fill="x")
+
+            indicator = tk.Frame(row, bg=S["accent"], width=4)
+            indicator.pack(side="left", fill="y")
+
+            rb = tk.Radiobutton(row, text="", variable=sort_var, value=val,
+                                bg=row_bg, selectcolor=S["surface"],
+                                activebackground=row_bg, cursor="hand2")
+            rb.pack(side="left", padx=(8, 0))
+
+            text_frame = tk.Frame(row, bg=row_bg)
+            text_frame.pack(side="left", fill="x", expand=True, pady=6)
+            tk.Label(text_frame, text=label, bg=row_bg, fg=S["text"],
+                     font=FONTS["BODY"], anchor="w").pack(anchor="w")
+            tk.Label(text_frame, text=desc, bg=row_bg, fg=S["text3"],
+                     font=FONTS["TINY"], anchor="w").pack(anchor="w")
+
+            def _enter(e, r=row, ind=indicator):
+                r.configure(bg=S["accent_pale"])
+                ind.configure(bg=S["accent_hover"])
+            def _leave(e, r=row, ind=indicator, bg=row_bg):
+                r.configure(bg=bg)
+                ind.configure(bg=S["accent"])
+            for w in (row, rb, text_frame):
+                w.bind("<Enter>", _enter)
+                w.bind("<Leave>", _leave)
+
         sep = tk.Frame(win, bg=S["border"], height=1)
         sep.grid(row=3, column=0, sticky="ew")
         btn_frame = tk.Frame(win, bg=S["bg"])
