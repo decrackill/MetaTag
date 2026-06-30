@@ -1735,13 +1735,20 @@ class MetaTagApp(tk.Tk):
             return messagebox.showwarning("Sin columna de imagen",
                 "Selecciona la columna de imagen en la herramienta principal.")
 
-        img_order = {p.stem.lower(): i for i, p in enumerate(img_files)}
+        def normalize(s):
+            return s.lower().replace("_", "").replace(" ", "").replace("-", "")
+
+        file_norm_to_idx = {normalize(p.stem): i for i, p in enumerate(img_files)}
 
         def _sort_key(row):
             val = str(row[img_col]).strip()
             if val and val.lower() not in ("nan", "none", ""):
-                key = Path(val).stem.lower()
-                return img_order.get(key, 9999)
+                norm = normalize(Path(val).stem)
+                if norm in file_norm_to_idx:
+                    return file_norm_to_idx[norm]
+                for fn, fi in file_norm_to_idx.items():
+                    if norm in fn or fn in norm:
+                        return fi
             return 9999
 
         new_df = self.grid.df.copy()
@@ -1772,16 +1779,24 @@ class MetaTagApp(tk.Tk):
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
 
-        img_stem_to_row = {}
+        def normalize(s):
+            return s.lower().replace("_", "").replace(" ", "").replace("-", "")
+
+        row_by_norm = {}
         for ri, row in self.grid.df.iterrows():
             val = str(row[img_col]).strip()
             if val and val.lower() not in ("nan", "none", ""):
-                stem = Path(val).stem.lower()
-                img_stem_to_row[stem] = row
+                norm = normalize(Path(val).stem)
+                row_by_norm[norm] = row
 
         def _sort_key(path):
-            stem = path.stem.lower()
-            row = img_stem_to_row.get(stem)
+            file_norm = normalize(path.stem)
+            row = row_by_norm.get(file_norm)
+            if row is None:
+                for norm_key, r in row_by_norm.items():
+                    if file_norm in norm_key or norm_key in file_norm:
+                        row = r
+                        break
             if row is None:
                 return ("zzz",)
             sort_values = []
