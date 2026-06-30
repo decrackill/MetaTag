@@ -1782,33 +1782,53 @@ class MetaTagApp(tk.Tk):
         if not chosen_cols:
             return
 
-        all_files = [f for f in Path(folder).iterdir()
-                     if f.is_file() and f.suffix.lower() in IMG_EXTS]
-        files_by_name = {f.name.lower(): f for f in all_files}
-
         sorted_df = self.grid.df.copy()
         for sc in reversed(chosen_cols):
-            sorted_df = sorted_df.sort_values(by=sc, key=lambda s: s.fillna("").astype(str).str.lower())
+            sorted_df = sorted_df.sort_values(
+                by=sc, key=lambda s: s.fillna("").astype(str).str.lower())
+        sorted_df = sorted_df.reset_index(drop=True)
 
         ordered_files = []
+        no_encontradas = []
         for ri in range(len(sorted_df)):
-            row = sorted_df.iloc[ri]
-            val = str(row[img_col]).strip()
+            val = str(sorted_df.iloc[ri][img_col]).strip()
             if not val or val.lower() in ("nan", "none", ""):
                 continue
-            found = files_by_name.get(val.lower())
-            if found is not None and found not in ordered_files:
-                ordered_files.append(found)
+            found = self._find_image(val, folder)
+            if found:
+                fp = Path(found)
+                if fp not in ordered_files:
+                    ordered_files.append(fp)
+            else:
+                no_encontradas.append(val)
 
-        for f in all_files:
-            if f not in ordered_files:
-                ordered_files.append(f)
+        if not ordered_files:
+            return messagebox.showwarning("Sin coincidencias",
+                "No se encontró ninguna imagen que coincida con la columna seleccionada.")
+
+        all_files = [f for f in Path(folder).iterdir()
+                     if f.is_file() and f.suffix.lower() in IMG_EXTS]
+        restantes = sorted(
+            [f for f in all_files if f not in ordered_files],
+            key=lambda p: p.name.lower())
+        ordered_files.extend(restantes)
 
         self.browser.img_files = ordered_files
         self.browser._filter()
-        self.browser.info_lbl.configure(text=f"{len(ordered_files)} imágenes (orden: {', '.join(chosen_cols)})")
-        self.status_var.set(f"✓ Imágenes reordenadas por {', '.join(chosen_cols)} ({len(ordered_files)} archivos)")
-        self._log(f"✓ Imágenes reordenadas según columnas: {', '.join(chosen_cols)}\n", "ok")
+        self.grid.df = sorted_df
+        self.grid.load(self.grid.df)
+
+        msg = f"{len(ordered_files)} imágenes (orden: {', '.join(chosen_cols)})"
+        self.browser.info_lbl.configure(text=msg)
+        self.status_var.set(f"✓ Imágenes reordenadas según columna '{img_col}'")
+        self._log(
+            f"✓ Imágenes reordenadas siguiendo el orden EXACTO de '{img_col}' "
+            f"(Excel ordenado por: {', '.join(chosen_cols)}).\n", "ok")
+        if no_encontradas:
+            self._log(
+                f"  ⚠ {len(no_encontradas)} valores de '{img_col}' no tuvieron "
+                f"imagen correspondiente: {', '.join(no_encontradas[:5])}"
+                f"{' …' if len(no_encontradas) > 5 else ''}\n", "warn")
 
     def _pick_sort_columns(self, all_cols: list) -> list | None:
         S = C
