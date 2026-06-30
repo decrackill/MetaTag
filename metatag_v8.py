@@ -1183,11 +1183,10 @@ class MetaTagApp(tk.Tk):
         self._btn(parent, "🗂 Lote por Orden (Excel→Fotos)", self._batch_write_by_order, primary=False)
 
         section("SINCRONIZACIÓN DE ORDEN")
-        self._btn(parent, "🔄 Reordenar Excel según imágenes",  self._sync_excel_to_images, primary=False)
         self._btn(parent, "🔄 Reordenar imágenes según Excel",  self._sync_images_to_excel, primary=False)
 
         section("VERIFICACIÓN DE INTEGRIDAD")
-        self._btn(parent, "🔍 Verificar metadatos escritos",    self._verify_all_metadata, primary=False)
+        self._btn(parent, "🔍 Verificar imágenes originales",   self._verify_source_images, primary=False)
 
         section("⚙️ MODO DE TRABAJO")
         self.mode_frame = tk.Frame(parent, bg=C["btn_ghost_bg"], padx=2, pady=2)
@@ -1778,9 +1777,11 @@ class MetaTagApp(tk.Tk):
         """
         Hace que las imágenes en el explorador sigan EXACTAMENTE el orden
         de filas que ya tiene el Excel cargado — sin reordenar ni una sola
-        fila del Excel. Las imágenes que NO tienen fila correspondiente
-        en el Excel se muestran SEPARADAS al final, marcadas claramente,
-        en vez de mezclarse silenciosamente en orden alfabético.
+        fila del Excel. Usa matching EXACTO primero (nombre de archivo
+        idéntico o stem idéntico) para evitar que la búsqueda tolerante
+        haga que dos filas distintas colisionen en la misma imagen.
+        Solo si el matching exacto falla, intenta la búsqueda tolerante
+        de _find_image, marcando esos casos como "aproximados" en el log.
         """
         if self.grid.df is None:
             return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
@@ -1795,17 +1796,48 @@ class MetaTagApp(tk.Tk):
 
         df_actual = self.grid.df
 
-        ordered_files   = []
-        no_encontradas  = []
+        # ── Índice de archivos en disco, por nombre exacto y por stem ──
+        all_files = [f for f in Path(folder).iterdir()
+                     if f.is_file() and f.suffix.lower() in IMG_EXTS]
+        by_exact_name = {f.name.lower(): f for f in all_files}
+        by_stem       = {self._full_stem(f.name).lower(): f for f in all_files}
+
+        ordered_files     = []
+        used_files        = set()     # rutas ya asignadas a una fila (evita colisiones)
+        no_encontradas    = []
+        matches_aprox     = []        # filas que solo encontraron match por tolerancia
+
         for ri in range(len(df_actual)):
             val = str(df_actual.iloc[ri][img_col]).strip()
             if not val or val.lower() in ("nan", "none", ""):
                 continue
-            found = self._find_image(val, folder)
-            if found:
-                fp = Path(found)
-                if fp not in ordered_files:
-                    ordered_files.append(fp)
+
+            found_path = None
+
+            # 1) Coincidencia EXACTA por nombre completo
+            cand = by_exact_name.get(val.lower())
+            if cand and cand not in used_files:
+                found_path = cand
+
+            # 2) Coincidencia EXACTA por stem (sin extensión)
+            if found_path is None:
+                stem = self._full_stem(val).lower()
+                cand = by_stem.get(stem)
+                if cand and cand not in used_files:
+                    found_path = cand
+
+            # 3) Solo si lo anterior falló, usar la búsqueda tolerante
+            if found_path is None:
+                approx = self._find_image(val, folder)
+                if approx:
+                    approx_path = Path(approx)
+                    if approx_path not in used_files:
+                        found_path = approx_path
+                        matches_aprox.append((val, found_path.name))
+
+            if found_path:
+                ordered_files.append(found_path)
+                used_files.add(found_path)
             else:
                 no_encontradas.append(val)
 
@@ -1813,24 +1845,19 @@ class MetaTagApp(tk.Tk):
             return messagebox.showwarning("Sin coincidencias",
                 "No se encontró ninguna imagen que coincida con la columna seleccionada.")
 
-        # ── Imágenes huérfanas: existen en disco pero NO tienen fila en el Excel ──
-        all_files = [f for f in Path(folder).iterdir()
-                     if f.is_file() and f.suffix.lower() in IMG_EXTS]
+        # ── Imágenes huérfanas: existen en disco pero NUNCA fueron asignadas ──
         huerfanas = sorted(
-            [f for f in all_files if f not in ordered_files],
+            [f for f in all_files if f not in used_files],
             key=lambda p: p.name.lower())
 
-        # Guardamos el conteo de filas del Excel para poder marcar la
-        # division visual en el explorador (no se mezclan silenciosamente)
-        self._sync_excel_count = len(ordered_files)
+        self._sync_excel_count  = len(ordered_files)
         self._sync_orphan_count = len(huerfanas)
 
         ordered_files.extend(huerfanas)
 
-        self.browser.img_files = ordered_files
-        self.browser._excel_count = self._sync_excel_count   # <-- AÑADIR ESTA LÍNEA
+        self.browser.img_files    = ordered_files
+        self.browser._excel_count = self._sync_excel_count
         self.browser._filter()
-        # El Excel NO se toca — se queda exactamente como estaba.
 
         msg = (f"{len(ordered_files)} imágenes  "
                f"({self._sync_excel_count} del Excel"
@@ -1842,8 +1869,20 @@ class MetaTagApp(tk.Tk):
         self._log(
             f"✓ Imágenes reordenadas para coincidir, fila por fila, con el "
             f"orden ACTUAL del Excel (sin reordenar el Excel).\n"
-            f"  • {self._sync_excel_count} imágenes con fila en el Excel\n",
-            "ok")
+            f"  • {self._sync_excel_count} imágenes con fila en el Excel "
+            f"({self._sync_excel_count - len(matches_aprox)} exactas, "
+            f"{len(matches_aprox)} por similitud)\n", "ok")
+
+        if matches_aprox:
+            self._log(
+                f"  ⚠ {len(matches_aprox)} fila(s) NO tuvieron nombre de archivo "
+                f"idéntico — se emparejaron por similitud. Verifica que sean "
+                f"correctas:\n", "warn")
+            for excel_val, file_name in matches_aprox[:10]:
+                self._log(f"     '{excel_val}'  →  {file_name}\n", "warn")
+            if len(matches_aprox) > 10:
+                self._log(f"     … y {len(matches_aprox)-10} más.\n", "warn")
+
         if huerfanas:
             self._log(
                 f"  ⚠ {len(huerfanas)} imagen(es) en la carpeta SIN fila "
