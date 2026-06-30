@@ -2177,6 +2177,7 @@ class MetaTagApp(tk.Tk):
 
         sort_var = tk.StringVar(value="alfabetico")
         options = [
+            ("orden_excel",   "Orden del Excel",              "Respeta el orden de las filas tal como están"),
             ("alfabetico",    "Alfabético (A → Z)",           "Ordena por nombre de archivo"),
             ("fecha_mod",     "Fecha de modificación ↑",      "Más antigua primero"),
             ("fecha_mod_inv", "Fecha de modificación ↓",      "Más reciente primero"),
@@ -2256,9 +2257,12 @@ class MetaTagApp(tk.Tk):
             def _leave(e, r=row, ind=indicator, bg=row_bg):
                 r.configure(bg=bg)
                 ind.configure(bg=S["accent"])
+            def _click(e, v=val):
+                sort_var.set(v)
             for w in (row, rb, text_frame):
                 w.bind("<Enter>", _enter)
                 w.bind("<Leave>", _leave)
+                w.bind("<Button-1>", _click)
 
         sep = tk.Frame(win, bg=S["border"], height=1)
         sep.grid(row=3, column=0, sticky="ew")
@@ -2279,7 +2283,8 @@ class MetaTagApp(tk.Tk):
         files = [p for p in Path(folder).iterdir()
                  if p.is_file() and p.suffix.lower() in IMG_EXTS]
 
-        if mode == "alfabetico":
+        if mode in ("alfabetico", "orden_excel"):
+            return sorted(files, key=lambda p: p.name.lower())
             return sorted(files, key=lambda p: p.name.lower())
         elif mode == "fecha_mod":
             return sorted(files, key=lambda p: p.stat().st_mtime)
