@@ -2475,12 +2475,10 @@ class MetaTagApp(tk.Tk):
             }
             try:
                 self.update_idletasks()
-                sashes = []
-                for i in range(self.paned_window.sash_count()):
-                    x = self.paned_window.sash_coord(i)[0]
-                    sashes.append(x)
-                if sashes:
-                    cfg["sash_positions"] = sashes
+                total_w = self.winfo_width()
+                if total_w > 0:
+                    left_w = self.left.winfo_width()
+                    cfg["left_ratio"] = round(left_w / total_w, 3)
             except Exception: pass
             self._config_path().write_text(
                 json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2516,13 +2514,16 @@ class MetaTagApp(tk.Tk):
                     for f in Path(cfg["img_folder"]).rglob("*")
                     if f.is_file() and f.suffix.lower() in IMG_EXTS
                 }
-            if cfg.get("sash_positions"):
+            if cfg.get("left_ratio"):
                 def _apply_sashes():
                     try:
                         self.update_idletasks()
-                        for i, pos in enumerate(cfg["sash_positions"]):
-                            if i < self.paned_window.sash_count():
-                                self.paned_window.sash_place(i, pos, 0)
+                        total_w = self.winfo_width()
+                        if total_w > 0:
+                            left_w = int(total_w * cfg["left_ratio"])
+                            panes = self.paned_window.panes()
+                            if panes:
+                                self.paned_window.paneconfigure(panes[0], width=left_w)
                     except Exception: pass
                 self.after(500, _apply_sashes)
         except Exception: pass
