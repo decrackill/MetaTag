@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title MetaTag v8.9 - Lanzador Profesional
+title MetaTag v10.0 - Lanzador Profesional
 
-set PROGRAMA=MetaTag_v8.py
-set VERSION=v8.9
+set PROGRAMA=metatag_v8.py
+set VERSION=v10.0
 
 echo.
 echo  ============================================================
@@ -11,17 +11,26 @@ echo     MetaTag %VERSION% - Escritor de Metadatos Arqueologicos
 echo  ============================================================
 echo.
 
-python --version >nul 2>&1
-IF %ERRORLEVEL% NEQ 0 (
-    echo  [CRITICO] Python no esta instalado o no se encuentra en el PATH.
-    echo.
-    echo  INSTRUCCIONES PARA EL ARQUEOLOGO:
-    echo  1. Ve a https://www.python.org/downloads/
-    echo  2. Descarga e instala la ultima version.
-    echo  3. IMPORTANTE: Marca la casilla "Add Python to PATH" al instalar.
-    echo.
-    pause
-    exit /b 1
+:: ── Buscar Python: py launcher, python, pythonw ──
+set PYTHON_CMD=
+py --version >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    set PYTHON_CMD=py
+) else (
+    python --version >nul 2>&1
+    if %ERRORLEVEL% EQU 0 (
+        set PYTHON_CMD=python
+    ) else (
+        echo  [CRITICO] Python no esta instalado o no se encuentra en el PATH.
+        echo.
+        echo  INSTRUCCIONES PARA EL ARQUEOLOGO:
+        echo  1. Ve a https://www.python.org/downloads/
+        echo  2. Descarga e instala la ultima version.
+        echo  3. IMPORTANTE: Marca la casilla "Add Python to PATH" al instalar.
+        echo.
+        pause
+        exit /b 1
+    )
 )
 
 if not exist "%~dp0%PROGRAMA%" (
@@ -35,10 +44,10 @@ echo  Verificando librerias necesarias...
 set LIBRERIAS=pandas openpyxl pillow piexif matplotlib numpy reportlab
 
 for %%L in (%LIBRERIAS%) do (
-    python -c "import %%L" >nul 2>&1
+    %PYTHON_CMD% -c "import %%L" >nul 2>&1
     if !errorlevel! neq 0 (
         echo  [INFO] Instalando %%L...
-        python -m pip install %%L --quiet
+        %PYTHON_CMD% -m pip install %%L --quiet
         if !errorlevel! neq 0 (
             echo  [ERROR] No se pudo instalar %%L. Revisa tu conexion a internet.
             pause
@@ -55,6 +64,12 @@ echo  Todo listo. Abriendo MetaTag %VERSION%...
 echo  Esta ventana se cerrara sola en un instante.
 echo.
 
-start "" pythonw "%~dp0%PROGRAMA%"
+:: ── Lanzar con pythonw (sin consola) o python como fallback ──
+where pythonw >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    start "" pythonw "%~dp0%PROGRAMA%"
+) else (
+    start "" %PYTHON_CMD% "%~dp0%PROGRAMA%"
+)
 
 exit

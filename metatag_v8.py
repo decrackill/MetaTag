@@ -1426,6 +1426,8 @@ class MetaTagApp(tk.Tk):
         self.loupe_canvas.bind("<ButtonPress-1>", self._on_loupe_press)
         self.loupe_canvas.bind("<B1-Motion>",     self._on_loupe_drag)
         self.loupe_canvas.bind("<MouseWheel>",    self._on_loupe_zoom)
+        self.loupe_canvas.bind("<Button-4>",      lambda e: self._on_loupe_zoom_linux(e, 1.15))
+        self.loupe_canvas.bind("<Button-5>",      lambda e: self._on_loupe_zoom_linux(e, 1/1.15))
         self._loupe_orig_img = None
         self._loupe_scale    = 1.0
         self._loupe_x = self._loupe_y = 0
@@ -1446,6 +1448,17 @@ class MetaTagApp(tk.Tk):
     def _on_loupe_zoom(self, e):
         if self._loupe_orig_img is None: return
         factor    = 1.15 if e.delta > 0 else (1/1.15)
+        new_scale = max(0.05, min(self._loupe_scale * factor, 15.0))
+        actual_f  = new_scale / self._loupe_scale
+        self._loupe_scale = new_scale
+        self._loupe_x = e.x - (e.x - self._loupe_x) * actual_f
+        self._loupe_y = e.y - (e.y - self._loupe_y) * actual_f
+        self._render_loupe_img(fast=True)
+        if hasattr(self, "_loupe_hq_timer"): self.after_cancel(self._loupe_hq_timer)
+        self._loupe_hq_timer = self.after(200, lambda: self._render_loupe_img(fast=False))
+
+    def _on_loupe_zoom_linux(self, e, factor):
+        if self._loupe_orig_img is None: return
         new_scale = max(0.05, min(self._loupe_scale * factor, 15.0))
         actual_f  = new_scale / self._loupe_scale
         self._loupe_scale = new_scale
@@ -2525,7 +2538,6 @@ class MetaTagApp(tk.Tk):
 
         if mode in ("alfabetico", "orden_excel"):
             return sorted(files, key=lambda p: p.name.lower())
-            return sorted(files, key=lambda p: p.name.lower())
         elif mode == "fecha_mod":
             return sorted(files, key=lambda p: p.stat().st_mtime)
         elif mode == "fecha_mod_inv":
@@ -3010,8 +3022,15 @@ class MetaTagApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     def _open_output_folder(self):
         self.output_folder.mkdir(parents=True, exist_ok=True)
-        try:    os.startfile(str(self.output_folder))
-        except: messagebox.showinfo("Carpeta de salida", str(self.output_folder))
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(self.output_folder))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(self.output_folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(self.output_folder)])
+        except Exception:
+            messagebox.showinfo("Carpeta de salida", str(self.output_folder))
 
     def _config_path(self) -> Path:
         return self.output_base / "metatag_config.json"
