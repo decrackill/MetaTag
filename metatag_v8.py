@@ -2616,6 +2616,26 @@ class MetaTagApp(tk.Tk):
     def _normalize_numbers(self, s: str) -> str:
         return re.sub(r"\d+", lambda m: str(int(m.group())), s)
 
+    def _extract_id_suffix(self, s: str) -> tuple[str, str] | None:
+        """
+        Extrae (numero_pieza, sufijo_vista) de un nombre, sin importar
+        cuántos campos haya en medio. Funciona para CUALQUIER estructura:
+        '0001_UM_C4_UE18_00006_F' -> ('1', 'F')
+        '79_EC_PS_VI_250_R'       -> ('79', 'R')
+        '0061_EC_C4_III_046'      -> ('61', '')   <- sin sufijo de vista
+        '0067_EC_C7_236_P'        -> ('67', 'P')
+        """
+        s = s.strip().lstrip("#").strip("_-").upper()
+        # Número de pieza: el primer bloque de dígitos al inicio
+        m_num = re.match(r"^0*(\d+)", s)
+        if not m_num:
+            return None
+        numero = m_num.group(1)
+        # Sufijo de vista: última letra F, R o P si está al final, separada
+        m_suf = re.search(r"[_\-]([FRP])$", s)
+        sufijo = m_suf.group(1) if m_suf else ""
+        return (numero, sufijo)
+
     def _find_image(self, name: str, folder: str) -> str | None:
         name = name.strip()
         if not name: return None
@@ -2645,6 +2665,15 @@ class MetaTagApp(tk.Tk):
             stem_clean = re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", stem_key)
             if self._normalize_numbers(stem_clean) == name_normalized:
                 return str(fpath)
+
+        # ── ÚLTIMO RECURSO Y MÁS ROBUSTO: comparar solo número + sufijo ──
+        # Ignora completamente cuántos campos tiene cada estructura de nombre.
+        id_excel = self._extract_id_suffix(name)
+        if id_excel:
+            for stem_key, fpath in self._img_cache.items():
+                id_archivo = self._extract_id_suffix(stem_key)
+                if id_archivo and id_archivo == id_excel:
+                    return str(fpath)
 
         for stem_key, fpath in self._img_cache.items():
             if name_stem in stem_key or stem_key in name_stem:
