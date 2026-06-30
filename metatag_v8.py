@@ -1735,26 +1735,26 @@ class MetaTagApp(tk.Tk):
             return messagebox.showwarning("Sin columna de imagen",
                 "Selecciona la columna de imagen en la herramienta principal.")
 
-        def normalize(s):
-            return s.lower().replace("_", "").replace(" ", "").replace("-", "")
-
-        def file_stem(path):
-            name = path.name
+        def get_clean_name(filename):
+            name = filename
             while '.' in name:
                 name = name.rsplit('.', 1)[0]
-            return name
+            return name.lower().strip()
 
-        file_norm_to_idx = {normalize(file_stem(p)): i for i, p in enumerate(img_files)}
+        file_order = {}
+        for i, p in enumerate(img_files):
+            file_order[get_clean_name(p.name)] = i
 
         def _sort_key(row):
             val = str(row[img_col]).strip()
-            if val and val.lower() not in ("nan", "none", ""):
-                norm = normalize(Path(val).stem)
-                if norm in file_norm_to_idx:
-                    return file_norm_to_idx[norm]
-                for fn, fi in file_norm_to_idx.items():
-                    if norm in fn or fn in norm:
-                        return fi
+            if not val or val.lower() in ("nan", "none", ""):
+                return 9999
+            clean = get_clean_name(val)
+            if clean in file_order:
+                return file_order[clean]
+            for fk, fi in file_order.items():
+                if clean.startswith(fk) or fk.startswith(clean):
+                    return fi
             return 9999
 
         new_df = self.grid.df.copy()
@@ -1785,38 +1785,35 @@ class MetaTagApp(tk.Tk):
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
 
-        def norm(s):
-            return s.lower().replace("_", "").replace(" ", "").replace("-", "")
-
-        def get_stem(name):
+        def get_clean_name(filename):
+            name = filename
             while '.' in name:
                 name = name.rsplit('.', 1)[0]
-            return name
+            return name.lower().strip()
 
-        row_by_norm = {}
-        for ri, row in self.grid.df.iterrows():
+        excel_map = {}
+        for ri in range(len(self.grid.df)):
+            row = self.grid.df.iloc[ri]
             val = str(row[img_col]).strip()
-            if val and val.lower() not in ("nan", "none", ""):
-                key = norm(get_stem(val))
-                row_by_norm[key] = row
-
-        def _sort_key(path):
-            file_key = norm(get_stem(path.name))
-            row = row_by_norm.get(file_key)
-            if row is None:
-                for ek, er in row_by_norm.items():
-                    if file_key in ek or ek in file_key:
-                        row = er
-                        break
-            if row is None:
-                return ""
-            parts = []
+            if not val or val.lower() in ("nan", "none", ""):
+                continue
+            clean = get_clean_name(val)
+            sort_parts = []
             for sc in chosen_cols:
-                v = str(row.get(sc, "")).strip()
+                v = str(row[sc]).strip()
                 if v.lower() in ("nan", "none", ""):
                     v = ""
-                parts.append(v.lower())
-            return "\x00".join(parts)
+                sort_parts.append(v.lower())
+            excel_map[clean] = "\x00".join(sort_parts)
+
+        def _sort_key(path):
+            clean = get_clean_name(path.name)
+            if clean in excel_map:
+                return excel_map[clean]
+            for ek, ev in excel_map.items():
+                if clean.startswith(ek) or ek.startswith(clean):
+                    return ev
+            return "zzz_" + clean
 
         all_files.sort(key=_sort_key)
         self.browser.img_files = all_files
