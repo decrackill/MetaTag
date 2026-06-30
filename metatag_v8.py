@@ -2069,15 +2069,8 @@ class MetaTagApp(tk.Tk):
         win.geometry(f"{int(420*sc)}x{int(320*sc)}")
         win.resizable(False, False)
         win.attributes("-topmost", True)
-
-        hdr = tk.Frame(win, bg=S["header_bg"])
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="  Orden de las fotos", bg=S["header_bg"],
-                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
-
-        tk.Label(win, text="¿Cómo quieres ordenar las imágenes antes de emparejarlas?",
-                 bg=S["bg"], fg=S["text3"], font=FONTS["TINY"],
-                 wraplength=int(380*sc)).pack(pady=(14, 8), padx=14)
+        win.grid_rowconfigure(2, weight=1)
+        win.grid_columnconfigure(0, weight=1)
 
         sort_var = tk.StringVar(value="alfabetico")
         options = [
@@ -2088,13 +2081,50 @@ class MetaTagApp(tk.Tk):
             ("numeral",       "Por número en el nombre",      "1, 2, 10, 20… en vez de 1, 10, 2, 20"),
         ]
 
+        result = [None]
+        def on_ok():
+            result[0] = sort_var.get()
+            win.destroy()
+        def on_cancel():
+            win.destroy()
+
+        hdr = tk.Frame(win, bg=S["header_bg"])
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(hdr, text="  Orden de las fotos", bg=S["header_bg"],
+                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+
+        tk.Label(win, text="¿Cómo quieres ordenar las imágenes antes de emparejarlas?",
+                 bg=S["bg"], fg=S["text3"], font=FONTS["BODY"],
+                 wraplength=int(380*sc)).grid(row=1, column=0, pady=(14, 8), padx=14)
+
         list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
                               highlightthickness=1)
-        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 4))
+
+        canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
+        canvas.pack_propagate(False)
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=S["surface"])
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _on_mousewheel_linux(event):
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+        for w in (canvas, inner, list_frame):
+            w.bind("<MouseWheel>", _on_mousewheel)
+            w.bind("<Button-4>", _on_mousewheel_linux)
+            w.bind("<Button-5>", _on_mousewheel_linux)
 
         for idx, (val, label, desc) in enumerate(options):
             row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
-            row = tk.Frame(list_frame, bg=row_bg)
+            row = tk.Frame(inner, bg=row_bg)
             row.pack(fill="x")
 
             indicator = tk.Frame(row, bg=S["accent"], width=4)
@@ -2108,7 +2138,7 @@ class MetaTagApp(tk.Tk):
             text_frame = tk.Frame(row, bg=row_bg)
             text_frame.pack(side="left", fill="x", expand=True, pady=6)
             tk.Label(text_frame, text=label, bg=row_bg, fg=S["text"],
-                     font=FONTS["LABEL_B"], anchor="w").pack(anchor="w")
+                     font=FONTS["BODY"], anchor="w").pack(anchor="w")
             tk.Label(text_frame, text=desc, bg=row_bg, fg=S["text3"],
                      font=FONTS["TINY"], anchor="w").pack(anchor="w")
 
@@ -2122,23 +2152,17 @@ class MetaTagApp(tk.Tk):
                 w.bind("<Enter>", _enter)
                 w.bind("<Leave>", _leave)
 
-        result = [None]
-        def on_ok():
-            result[0] = sort_var.get()
-            win.destroy()
-        def on_cancel():
-            win.destroy()
-
-        tk.Frame(win, bg=S["border"], height=1).pack(fill="x")
+        sep = tk.Frame(win, bg=S["border"], height=1)
+        sep.grid(row=3, column=0, sticky="ew")
         btn_frame = tk.Frame(win, bg=S["bg"])
-        btn_frame.pack(fill="x", padx=14, pady=10)
+        btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
+                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
+                  command=on_cancel).pack(side="right", ipady=4)
         tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
                   font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
                   activebackground=S["accent_hover"],
-                  command=on_ok).pack(side="left", expand=True, fill="x", padx=(0, 4), ipady=4)
-        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
-                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
-                  command=on_cancel).pack(side="left", expand=True, fill="x", ipady=4)
+                  command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
 
         self.wait_window(win)
         return result[0]
