@@ -2099,6 +2099,10 @@ class MetaTagApp(tk.Tk):
 
                 out_path = self.output_folder / img_path.name
                 try:
+                    divergencias = self._check_metadata_divergence(str(img_path), meta)
+                    if divergencias and (i + 1) % 5 == 0:
+                        self._log(
+                            f"  ⚠ {img_path.name}: divergencia detectada y corregida\n", "warn")
                     shutil.copy2(str(img_path), str(out_path))
                     self._write_meta(str(out_path), meta, organizado)
                     ok_count += 1
@@ -2539,6 +2543,13 @@ class MetaTagApp(tk.Tk):
 
             out_path = self.output_folder / Path(img_path).name
             try:
+                divergencias = self._check_metadata_divergence(img_path, meta)
+                if divergencias:
+                    self._log(
+                        f"  ⚠ {Path(img_path).name}: metadatos previos NO coinciden "
+                        f"con el Excel, se sobreescribirán:\n"
+                        f"     {' | '.join(divergencias)}\n", "warn")
+
                 shutil.copy2(img_path, out_path)
                 self._write_meta(str(out_path), meta, organizado)
                 self._log(
@@ -2578,6 +2589,12 @@ class MetaTagApp(tk.Tk):
 
         def task():
             try:
+                divergencias = self._check_metadata_divergence(self.current_img, meta)
+                if divergencias:
+                    self._log(
+                        f"  ⚠ {Path(self.current_img).name}: metadatos previos NO "
+                        f"coinciden con el Excel, se sobreescribirán:\n"
+                        f"     {' | '.join(divergencias)}\n", "warn")
                 shutil.copy2(self.current_img, out_path)
                 self._write_meta(str(out_path), meta, organizado)
                 img_name = Path(self.current_img).name
@@ -2609,21 +2626,27 @@ class MetaTagApp(tk.Tk):
     def _extract_id_suffix(self, s: str) -> tuple[str, str] | None:
         """
         Extrae (numero_pieza, sufijo_vista) de un nombre, sin importar
-        cuántos campos haya en medio. Funciona para CUALQUIER estructura:
-        '0001_UM_C4_UE18_00006_F' -> ('1', 'F')
-        '79_EC_PS_VI_250_R'       -> ('79', 'R')
-        '0061_EC_C4_III_046'      -> ('61', '')   <- sin sufijo de vista
-        '0067_EC_C7_236_P'        -> ('67', 'P')
+        cuántos campos haya en medio, NI si el string trae extensión
+        de archivo incluida (incluso doble, ej. '.jpg.JPG').
+        '0001_UM_C4_UE18_00006_F.jpg' -> ('1', 'F')
+        '79_EC_PS_VI_250_R'           -> ('79', 'R')
+        '0061_EC_C4_III_046'          -> ('61', '')   <- sin sufijo de vista
         """
-        s = s.strip().lstrip("#").strip("_-").upper()
-        # Número de pieza: el primer bloque de dígitos al inicio
+        s = s.strip()
+        changed = True
+        while changed:
+            changed = False
+            for ext in IMG_EXTS:
+                if s.lower().endswith(ext):
+                    s = s[: -len(ext)]
+                    changed = True
+        s = s.lstrip("#").strip("_-").upper()
         m_num = re.match(r"^0*(\d+)", s)
         if not m_num:
             return None
         numero = m_num.group(1)
-        # Sufijo de vista: última letra F, R o P si está al final, separada
-        m_suf = re.search(r"[_\-]([FRP])$", s)
-        sufijo = m_suf.group(1) if m_suf else ""
+        m_suf = re.search(r"[FRP]$", s)
+        sufijo = m_suf.group(0) if m_suf else ""
         return (numero, sufijo)
 
     def _find_image(self, name: str, folder: str) -> str | None:
@@ -2699,6 +2722,47 @@ class MetaTagApp(tk.Tk):
         else:
             try:    self._write_jpeg(path, meta, organizado)
             except: raise RuntimeError(f"Formato no soportado: {ext}")
+
+    def _read_existing_metadata(self, path: str) -> dict:
+        """
+        Lee el JSON de metadatos ya escrito por MetaTag dentro de una imagen
+        (si existe). Devuelve {} si no hay datos previos o no se puede leer.
+        """
+        if not PIL_OK:
+            return {}
+        try:
+            ext = Path(path).suffix.lower()
+            with Image.open(path) as img:
+                info = img.info
+                if ext in (".jpg", ".jpeg") and "exif" in info:
+                    ed = piexif.load(info["exif"])
+                    uc = ed.get("Exif", {}).get(piexif.ExifIFD.UserComment)
+                    if uc:
+                        return json.loads(piexif.helper.UserComment.load(uc))
+                elif ext == ".png":
+                    c = getattr(img, "text", {}).get("Comment", "")
+                    if c:
+                        return json.loads(c)
+        except Exception:
+            pass
+        return {}
+
+    def _check_metadata_divergence(self, path: str, expected_meta: dict) -> list[str]:
+        """
+        Compara los metadatos ya escritos en la imagen contra los valores
+        que el Excel dice que DEBERÍAN estar ahí (expected_meta).
+        Devuelve la lista de campos que divergen, para loguearlos antes
+        de sobreescribir. El Excel siempre se trata como fuente de verdad.
+        """
+        existing = self._read_existing_metadata(path)
+        if not existing:
+            return []
+        diffs = []
+        for k, v_new in expected_meta.items():
+            v_old = str(existing.get(k, "")).strip()
+            if v_old and v_old != str(v_new).strip():
+                diffs.append(f"{k}: '{v_old}' → '{v_new}'")
+        return diffs
 
     def _write_jpeg(self, path: str, meta: dict, organizado: bool = True):
         img              = Image.open(path)
