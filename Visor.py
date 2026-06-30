@@ -695,55 +695,68 @@ class VisorApp(tk.Tk):
         self.after(100, self._bind_zoom_events)
 
     def _build_left_bottom(self, parent):
-        """Construye el explorador de archivos estilo nativo."""
-        # Encabezado del explorador
-        exp_hdr = tk.Frame(parent, bg=C["panel"])
-        exp_hdr.pack(fill="x", padx=12, pady=(4, 6))
-        
-        tk.Label(
-            exp_hdr, text="EXPLORADOR", bg=C["panel"], 
-            fg=C["accent"], font=(FONT_FAMILY, 9, "bold")
-        ).pack(side="left")
-        
-        self._lbl_count = tk.Label(exp_hdr, text="", bg=C["panel"], fg=C["text3"], font=F_MICRO)
-        self._lbl_count.pack(side="right")
+        """Construye el explorador de archivos con diálogo nativo del sistema."""
+        # Barra de ruta estilo nativo
+        path_frame = tk.Frame(parent, bg=C["panel"])
+        path_frame.pack(fill="x", padx=12, pady=(6, 4))
 
-        # Barra de búsqueda de archivos
+        self._folder_path_var = tk.StringVar(value="Sin carpeta abierta")
+        path_icon = tk.Label(path_frame, text="📁", bg=C["panel"], fg=C["accent"], font=F_BODY)
+        path_icon.pack(side="left", padx=(0, 6))
+
+        self._folder_path_label = tk.Label(
+            path_frame, textvariable=self._folder_path_var,
+            bg=C["panel"], fg=C["text2"], font=F_TINY, anchor="w", justify="left"
+        )
+        self._folder_path_label.pack(side="left", fill="x", expand=True)
+
+        btn_cambiar = tk.Button(
+            path_frame, text="Cambiar", font=F_TINY, bg=C["panel2"], fg=C["text"],
+            relief="flat", bd=0, padx=10, pady=3, cursor="hand2",
+            command=self._browse_folder, highlightthickness=1, highlightbackground=C["border"]
+        )
+        btn_cambiar.pack(side="right")
+        btn_cambiar.bind("<Enter>", lambda e: btn_cambiar.configure(bg=C["border"]))
+        btn_cambiar.bind("<Leave>", lambda e: btn_cambiar.configure(bg=C["panel2"]))
+        _ToolTip(btn_cambiar, "Abrir explorador del sistema (Ctrl+F)")
+
+        # Contador de archivos
+        count_frame = tk.Frame(parent, bg=C["panel"])
+        count_frame.pack(fill="x", padx=12, pady=(0, 4))
+        self._lbl_count = tk.Label(count_frame, text="", bg=C["panel"], fg=C["text3"], font=F_MICRO)
+        self._lbl_count.pack(side="left")
+
+        # Barra de búsqueda
         search_frame = tk.Frame(parent, bg=C["panel2"], highlightthickness=1, highlightbackground=C["border"])
-        search_frame.pack(fill="x", padx=12, pady=(0, 8))
-        
+        search_frame.pack(fill="x", padx=12, pady=(0, 6))
+
         tk.Label(search_frame, text=" 🔍 ", bg=C["panel2"], fg=C["text3"], font=F_TINY).pack(side="left")
-        
+
         self._folder_search = tk.StringVar()
         self._folder_search.trace_add("write", self._filter_folder)
-        
-        tk.Entry(
-            search_frame, textvariable=self._folder_search, bg=C["panel2"], 
-            fg=C["text"], insertbackground=C["accent"], relief="flat", bd=0, font=F_BODY
-        ).pack(side="left", fill="x", expand=True, ipady=6)
 
-        # Treeview estilo explorador nativo
-        tree_frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1, highlightbackground=C["border"])
-        tree_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        search_entry = tk.Entry(
+            search_frame, textvariable=self._folder_search, bg=C["panel2"],
+            fg=C["text"], insertbackground=C["accent"], relief="flat", bd=0, font=F_BODY
+        )
+        search_entry.pack(side="left", fill="x", expand=True, ipady=4)
+
+        # Lista de archivos estilo nativo (Treeview limpio)
+        list_frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1, highlightbackground=C["border"])
+        list_frame.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
         self.file_tree = ttk.Treeview(
-            tree_frame, columns=("name", "size"), show="headings",
-            selectmode="browse", height=8
+            list_frame, columns=("name",), show="tree",
+            selectmode="browse", height=6
         )
-        self.file_tree.heading("name", text="Nombre", anchor="w")
-        self.file_tree.heading("size", text="Tamaño", anchor="e")
-        self.file_tree.column("name", width=220, anchor="w", minwidth=120)
-        self.file_tree.column("size", width=70, anchor="e", minwidth=50)
 
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.file_tree.yview)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.file_tree.yview)
         self.file_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.file_tree.pack(fill="both", expand=True)
 
-        # Tags de estilo para filas
         self.file_tree.tag_configure("odd", background=C["surface"])
         self.file_tree.tag_configure("even", background=C["row_alt"])
-        self.file_tree.tag_configure("selected", background=C["sel_bg"], foreground=C["sel_fg"])
 
         self.file_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
@@ -892,20 +905,21 @@ class VisorApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo leer la carpeta:\n{e}")
             return
-            
+
         images = sorted(images, key=lambda p: Path(p).name.lower())
-        
+
         if not images:
             if auto_load:
                 messagebox.showinfo("Carpeta vacía", "No hay imágenes compatibles en esta carpeta.")
             return
-        
+
         self.folder_images = images
         self._all_folder_images = images[:]
-        
+
+        self._folder_path_var.set(str(path_obj))
         self._show_explorer_pane()
         self._refresh_listbox()
-        
+
         if auto_load:
             self._tree_select_index(0)
             self.load_image(self.folder_images[0])
@@ -923,29 +937,19 @@ class VisorApp(tk.Tk):
         self._refresh_listbox()
 
     def _refresh_listbox(self):
-        """Actualiza la visualización del explorador de archivos."""
+        """Actualiza la lista de archivos en el explorador."""
         self.file_tree.delete(*self.file_tree.get_children())
 
-        items_to_insert = []
-        for filepath in self.folder_images:
+        for i, filepath in enumerate(self.folder_images):
             name = Path(filepath).name
-            size_kb = os.path.getsize(filepath) / 1024
-            if size_kb >= 1024:
-                size_str = f"{size_kb/1024:.1f} MB"
-            else:
-                size_str = f"{size_kb:.0f} KB"
-
             ext = Path(filepath).suffix.lower()
             icon = {
                 ".jpg": "🖼", ".jpeg": "🖼", ".png": "🖼",
                 ".tif": "📷", ".tiff": "📷", ".webp": "🖼"
             }.get(ext, "📄")
 
-            items_to_insert.append((f" {icon}  {name}", size_str, filepath))
-
-        for i, (display_name, size_str, _) in enumerate(items_to_insert):
             tag = "even" if i % 2 == 0 else "odd"
-            self.file_tree.insert("", "end", values=(display_name, size_str), tags=(tag,))
+            self.file_tree.insert("", "end", text=f" {icon}  {name}", tags=(tag,))
 
         self._lbl_count.configure(text=f"{len(self.folder_images)} archivos")
 
@@ -953,11 +957,9 @@ class VisorApp(tk.Tk):
         """Evento lanzado al seleccionar un archivo en el explorador."""
         selection = self.file_tree.selection()
         if selection:
-            item = self.file_tree.item(selection[0])
-            display_name = item["values"][0]
+            display_text = self.file_tree.item(selection[0], "text")
             for filepath in self.folder_images:
-                name = Path(filepath).name
-                if name in str(display_name):
+                if Path(filepath).name in display_text:
                     self.load_image(filepath)
                     break
 
