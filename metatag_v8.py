@@ -1731,14 +1731,36 @@ class MetaTagApp(tk.Tk):
             return
 
         # ── ORDEN DE FOTOS ──
-        sort_mode = self._batch_pick_sort()
-        if sort_mode is None:
+        sort_result = self._batch_pick_sort()
+        if sort_result is None:
             return
+
+        sort_mode = sort_result["sort"]
+        sync_excel = sort_result["sync_excel"]
+        sync_images = sort_result["sync_images"]
 
         img_files = self._sort_images(folder, sort_mode)
         if not img_files:
             return messagebox.showwarning("Sin imágenes",
                 "La carpeta no contiene imágenes compatibles.")
+
+        if sync_excel:
+            excel_names = []
+            for _, row in batch_df.iterrows():
+                name = self._find_img_name_in_row_data(row)
+                excel_names.append(name.lower() if name else "")
+            img_files.sort(key=lambda p: (
+                excel_names.index(p.stem.lower()) if p.stem.lower() in excel_names else 9999
+            ))
+
+        if sync_images:
+            img_name_list = [p.stem.lower() for p in img_files]
+            def _sort_key_excel(row):
+                name = self._find_img_name_in_row_data(row)
+                key = name.lower() if name else ""
+                return img_name_list.index(key) if key in img_name_list else 9999
+            sort_keys = batch_df.apply(_sort_key_excel, axis=1)
+            batch_df = batch_df.iloc[sort_keys.argsort().values].reset_index(drop=True)
 
         total = min(len(img_files), len(batch_df))
 
@@ -2074,6 +2096,7 @@ class MetaTagApp(tk.Tk):
 
         sort_var = tk.StringVar(value="alfabetico")
         options = [
+            ("orden_excel",   "Orden del Excel",              "Respeta el orden de las filas tal como están"),
             ("alfabetico",    "Alfabético (A → Z)",           "Ordena por nombre de archivo"),
             ("fecha_mod",     "Fecha de modificación ↑",      "Más antigua primero"),
             ("fecha_mod_inv", "Fecha de modificación ↓",      "Más reciente primero"),
@@ -2082,85 +2105,38 @@ class MetaTagApp(tk.Tk):
         ]
 
         result = [None]
+        sync_excel_var = tk.BooleanVar(value=False)
+        sync_images_var = tk.BooleanVar(value=False)
         def on_ok():
-            result[0] = sort_var.get()
+            result[0] = {
+                "sort": sort_var.get(),
+                "sync_excel": sync_excel_var.get(),
+                "sync_images": sync_images_var.get(),
+            }
             win.destroy()
         def on_cancel():
             win.destroy()
 
-        hdr = tk.Frame(win, bg=S["header_bg"])
-        hdr.grid(row=0, column=0, sticky="ew")
-        tk.Label(hdr, text="  Orden de las fotos", bg=S["header_bg"],
-                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
-
-        tk.Label(win, text="¿Cómo quieres ordenar las imágenes antes de emparejarlas?",
-                 bg=S["bg"], fg=S["text3"], font=FONTS["BODY"],
-                 wraplength=int(380*sc)).grid(row=1, column=0, pady=(14, 8), padx=14)
-
-        list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
-                              highlightthickness=1)
-        list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 4))
-
-        canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
-        canvas.pack_propagate(False)
-        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=S["surface"])
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-
-        def _sync_scroll(e=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        inner.bind("<Configure>", _sync_scroll)
-        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        def _on_mousewheel_linux(event):
-            if event.num == 4:
-                canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                canvas.yview_scroll(1, "units")
-        for w in (canvas, inner, list_frame):
-            w.bind("<MouseWheel>", _on_mousewheel)
-            w.bind("<Button-4>", _on_mousewheel_linux)
-            w.bind("<Button-5>", _on_mousewheel_linux)
-
-        for idx, (val, label, desc) in enumerate(options):
-            row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
-            row = tk.Frame(inner, bg=row_bg)
-            row.pack(fill="x")
-
-            indicator = tk.Frame(row, bg=S["accent"], width=4)
-            indicator.pack(side="left", fill="y")
-
-            rb = tk.Radiobutton(row, text="", variable=sort_var, value=val,
-                                bg=row_bg, selectcolor=S["surface"],
-                                activebackground=row_bg, cursor="hand2")
-            rb.pack(side="left", padx=(8, 0))
-
-            text_frame = tk.Frame(row, bg=row_bg)
-            text_frame.pack(side="left", fill="x", expand=True, pady=6)
-            tk.Label(text_frame, text=label, bg=row_bg, fg=S["text"],
-                     font=FONTS["BODY"], anchor="w").pack(anchor="w")
-            tk.Label(text_frame, text=desc, bg=row_bg, fg=S["text3"],
-                     font=FONTS["TINY"], anchor="w").pack(anchor="w")
-
-            def _enter(e, r=row, ind=indicator):
-                r.configure(bg=S["accent_pale"])
-                ind.configure(bg=S["accent_hover"])
-            def _leave(e, r=row, ind=indicator, bg=row_bg):
-                r.configure(bg=bg)
-                ind.configure(bg=S["accent"])
-            for w in (row, rb, text_frame):
-                w.bind("<Enter>", _enter)
-                w.bind("<Leave>", _leave)
-
         sep = tk.Frame(win, bg=S["border"], height=1)
         sep.grid(row=3, column=0, sticky="ew")
+
+        sync_frame = tk.Frame(win, bg=S["bg"])
+        sync_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=(4, 0))
+        tk.Label(sync_frame, text="Sincronización:", bg=S["bg"], fg=S["text3"],
+                 font=FONTS["TINY"]).pack(anchor="w")
+        cb1 = tk.Checkbutton(sync_frame, text="Reordenar Excel según orden de imágenes",
+                             variable=sync_excel_var, bg=S["bg"], fg=S["text"],
+                             font=FONTS["TINY"], selectcolor=S["surface"],
+                             activebackground=S["bg"], cursor="hand2")
+        cb1.pack(anchor="w", padx=4)
+        cb2 = tk.Checkbutton(sync_frame, text="Reordenar imágenes según orden del Excel",
+                             variable=sync_images_var, bg=S["bg"], fg=S["text"],
+                             font=FONTS["TINY"], selectcolor=S["surface"],
+                             activebackground=S["bg"], cursor="hand2")
+        cb2.pack(anchor="w", padx=4)
+
         btn_frame = tk.Frame(win, bg=S["bg"])
-        btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+        btn_frame.grid(row=5, column=0, sticky="ew", padx=14, pady=10)
         tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
                   font=FONTS["LABEL"], relief="flat", cursor="hand2",
                   command=on_cancel).pack(side="right", ipady=4)
@@ -2176,7 +2152,9 @@ class MetaTagApp(tk.Tk):
         files = [p for p in Path(folder).iterdir()
                  if p.is_file() and p.suffix.lower() in IMG_EXTS]
 
-        if mode == "alfabetico":
+        if mode == "orden_excel":
+            return sorted(files, key=lambda p: p.name.lower())
+        elif mode == "alfabetico":
             return sorted(files, key=lambda p: p.name.lower())
         elif mode == "fecha_mod":
             return sorted(files, key=lambda p: p.stat().st_mtime)
@@ -2233,7 +2211,10 @@ class MetaTagApp(tk.Tk):
 
     def _find_img_name_in_row(self, ri: int) -> str:
         row = self.grid.df.iloc[ri]
-        for col in self.grid.df.columns:
+        return self._find_img_name_in_row_data(row)
+
+    def _find_img_name_in_row_data(self, row) -> str:
+        for col in row.index:
             val = str(row[col]).strip()
             if val and val.lower() not in ("nan", "none", ""):
                 if Path(val).suffix.lower() in IMG_EXTS:
