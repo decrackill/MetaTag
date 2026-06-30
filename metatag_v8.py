@@ -1141,6 +1141,10 @@ class MetaTagApp(tk.Tk):
         self._btn(parent, "📊 Ver Estadísticas (Gráficos)",  self._show_stats,           primary=False)
         self._btn(parent, "🗂 Lote por Orden (Excel→Fotos)", self._batch_write_by_order, primary=False)
 
+        section("SINCRONIZACIÓN DE ORDEN")
+        self._btn(parent, "🔄 Reordenar Excel según imágenes",  self._sync_excel_to_images, primary=False)
+        self._btn(parent, "🔄 Reordenar imágenes según Excel",  self._sync_images_to_excel, primary=False)
+
         section("⚙️ MODO DE TRABAJO")
         self.mode_frame = tk.Frame(parent, bg=C["btn_ghost_bg"], padx=2, pady=2)
         self.mode_frame.pack(fill="x", padx=10, pady=(0, 4))
@@ -1677,6 +1681,70 @@ class MetaTagApp(tk.Tk):
         return cols.index(col) if col in cols else 0
 
     # ─────────────────────────────────────────────────────────────
+    #  SINCRONIZACIÓN DE ORDEN
+    # ─────────────────────────────────────────────────────────────
+    def _sync_excel_to_images(self):
+        if self.grid.df is None:
+            return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
+        folder = self.img_folder_var.get()
+        if not folder or not os.path.isdir(folder):
+            return messagebox.showwarning("Sin carpeta", "Selecciona la carpeta de imágenes.")
+        img_files = sorted(Path(folder).iterdir(),
+                          key=lambda p: p.name.lower())
+        img_files = [f for f in img_files if f.is_file() and f.suffix.lower() in IMG_EXTS]
+        if not img_files:
+            return messagebox.showwarning("Sin imágenes", "La carpeta no contiene imágenes compatibles.")
+
+        img_names = [p.stem.lower() for p in img_files]
+
+        def _sort_key(row):
+            for col in row.index:
+                val = str(row[col]).strip()
+                if val and val.lower() not in ("nan", "none", ""):
+                    if Path(val).suffix.lower() in IMG_EXTS:
+                        key = Path(val).stem.lower()
+                        return img_names.index(key) if key in img_names else 9999
+            return 9999
+
+        sort_keys = self.grid.df.apply(_sort_key, axis=1)
+        self.grid.df = self.grid.df.iloc[sort_keys.argsort().values].reset_index(drop=True)
+        self.grid.load(self.grid.df)
+        self.status_var.set(f"Excel reordenado según imágenes ({len(self.grid.df)} filas)")
+        self._log(f"✓ Excel reordenado según orden de imágenes\n", "ok")
+
+    def _sync_images_to_excel(self):
+        if self.grid.df is None:
+            return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
+        folder = self.img_folder_var.get()
+        if not folder or not os.path.isdir(folder):
+            return messagebox.showwarning("Sin carpeta", "Selecciona la carpeta de imágenes.")
+        img_files = sorted(Path(folder).iterdir(),
+                          key=lambda p: p.name.lower())
+        img_files = [f for f in img_files if f.is_file() and f.suffix.lower() in IMG_EXTS]
+        if not img_files:
+            return messagebox.showwarning("Sin imágenes", "La carpeta no contiene imágenes compatibles.")
+
+        excel_names = []
+        for _, row in self.grid.df.iterrows():
+            name = ""
+            for col in self.grid.df.columns:
+                val = str(row[col]).strip()
+                if val and val.lower() not in ("nan", "none", ""):
+                    if Path(val).suffix.lower() in IMG_EXTS:
+                        name = Path(val).stem.lower()
+                        break
+            excel_names.append(name)
+
+        def _sort_key(path):
+            key = path.stem.lower()
+            return excel_names.index(key) if key in excel_names else 9999
+
+        img_files.sort(key=_sort_key)
+        self.img_files_sorted = img_files
+        self.status_var.set(f"Imágenes reordenadas según Excel ({len(img_files)} archivos)")
+        self._log(f"✓ Imágenes reordenadas según orden del Excel\n", "ok")
+
+    # ─────────────────────────────────────────────────────────────
     #  LOTE POR ORDEN (NUEVA FEATURE v8.9)
     #  Fila 1 del Excel → Foto 1 (alfabética), etc.
     #  Optimizado para 300 fotos: hilo independiente + actualizaciones
@@ -1731,36 +1799,14 @@ class MetaTagApp(tk.Tk):
             return
 
         # ── ORDEN DE FOTOS ──
-        sort_result = self._batch_pick_sort()
-        if sort_result is None:
+        sort_mode = self._batch_pick_sort()
+        if sort_mode is None:
             return
-
-        sort_mode = sort_result["sort"]
-        sync_excel = sort_result["sync_excel"]
-        sync_images = sort_result["sync_images"]
 
         img_files = self._sort_images(folder, sort_mode)
         if not img_files:
             return messagebox.showwarning("Sin imágenes",
                 "La carpeta no contiene imágenes compatibles.")
-
-        if sync_excel:
-            excel_names = []
-            for _, row in batch_df.iterrows():
-                name = self._find_img_name_in_row_data(row)
-                excel_names.append(name.lower() if name else "")
-            img_files.sort(key=lambda p: (
-                excel_names.index(p.stem.lower()) if p.stem.lower() in excel_names else 9999
-            ))
-
-        if sync_images:
-            img_name_list = [p.stem.lower() for p in img_files]
-            def _sort_key_excel(row):
-                name = self._find_img_name_in_row_data(row)
-                key = name.lower() if name else ""
-                return img_name_list.index(key) if key in img_name_list else 9999
-            sort_keys = batch_df.apply(_sort_key_excel, axis=1)
-            batch_df = batch_df.iloc[sort_keys.argsort().values].reset_index(drop=True)
 
         total = min(len(img_files), len(batch_df))
 
@@ -2105,38 +2151,16 @@ class MetaTagApp(tk.Tk):
         ]
 
         result = [None]
-        sync_excel_var = tk.BooleanVar(value=False)
-        sync_images_var = tk.BooleanVar(value=False)
         def on_ok():
-            result[0] = {
-                "sort": sort_var.get(),
-                "sync_excel": sync_excel_var.get(),
-                "sync_images": sync_images_var.get(),
-            }
+            result[0] = sort_var.get()
             win.destroy()
         def on_cancel():
             win.destroy()
 
         sep = tk.Frame(win, bg=S["border"], height=1)
         sep.grid(row=3, column=0, sticky="ew")
-
-        sync_frame = tk.Frame(win, bg=S["bg"])
-        sync_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=(4, 0))
-        tk.Label(sync_frame, text="Sincronización:", bg=S["bg"], fg=S["text3"],
-                 font=FONTS["TINY"]).pack(anchor="w")
-        cb1 = tk.Checkbutton(sync_frame, text="Reordenar Excel según orden de imágenes",
-                             variable=sync_excel_var, bg=S["bg"], fg=S["text"],
-                             font=FONTS["TINY"], selectcolor=S["surface"],
-                             activebackground=S["bg"], cursor="hand2")
-        cb1.pack(anchor="w", padx=4)
-        cb2 = tk.Checkbutton(sync_frame, text="Reordenar imágenes según orden del Excel",
-                             variable=sync_images_var, bg=S["bg"], fg=S["text"],
-                             font=FONTS["TINY"], selectcolor=S["surface"],
-                             activebackground=S["bg"], cursor="hand2")
-        cb2.pack(anchor="w", padx=4)
-
         btn_frame = tk.Frame(win, bg=S["bg"])
-        btn_frame.grid(row=5, column=0, sticky="ew", padx=14, pady=10)
+        btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
         tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
                   font=FONTS["LABEL"], relief="flat", cursor="hand2",
                   command=on_cancel).pack(side="right", ipady=4)
