@@ -1,10 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title MetaTag v8.6 - Lanzador Profesional
+title MetaTag v8.9 - Lanzador Profesional
 
-:: Configuración de nombres (Asegúrate de que el nombre coincida con tu archivo de código)
 set PROGRAMA=MetaTag_v8.py
-set VERSION=v8.6
+set VERSION=v8.9
 
 echo.
 echo  ============================================================
@@ -12,7 +11,6 @@ echo     MetaTag %VERSION% - Escritor de Metadatos Arqueologicos
 echo  ============================================================
 echo.
 
-:: 1. Verificar Python (Sin redirecciones molestas)
 python --version >nul 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     echo  [CRITICO] Python no esta instalado o no se encuentra en el PATH.
@@ -26,7 +24,6 @@ IF %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: 2. Verificar archivo principal
 if not exist "%~dp0%PROGRAMA%" (
     echo  [ERROR] No se encontro el archivo %PROGRAMA%.
     echo  Asegurate de que este .bat este en la misma carpeta que el codigo.
@@ -34,9 +31,8 @@ if not exist "%~dp0%PROGRAMA%" (
     exit /b 1
 )
 
-:: 3. Verificar y actualizar dependencias (Una por una con control de error)
 echo  Verificando librerias necesarias...
-set LIBRERIAS=pandas openpyxl pillow piexif matplotlib
+set LIBRERIAS=pandas openpyxl pillow piexif matplotlib numpy reportlab
 
 for %%L in (%LIBRERIAS%) do (
     python -c "import %%L" >nul 2>&1
@@ -59,8 +55,6 @@ echo  Todo listo. Abriendo MetaTag %VERSION%...
 echo  Esta ventana se cerrara sola en un instante.
 echo.
 
-:: 4. Ejecucion del programa en segundo plano (Magia para ocultar consola)
 start "" pythonw "%~dp0%PROGRAMA%"
 
-:: 5. Cerrar la terminal inmediatamente
 exit
