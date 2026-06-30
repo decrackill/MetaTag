@@ -1784,13 +1784,7 @@ class MetaTagApp(tk.Tk):
 
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
-        file_map = {}
-        for f in all_files:
-            name = f.name
-            while '.' in name:
-                name = name.rsplit('.', 1)[0]
-            file_map[name.lower()] = f
-            file_map[f.name.lower()] = f
+        files_by_name = {f.name.lower(): f for f in all_files}
 
         sorted_df = self.grid.df.copy()
         for sc in reversed(chosen_cols):
@@ -1802,13 +1796,7 @@ class MetaTagApp(tk.Tk):
             val = str(row[img_col]).strip()
             if not val or val.lower() in ("nan", "none", ""):
                 continue
-            fname = Path(val).name
-            found = file_map.get(fname.lower())
-            if found is None:
-                stem = fname
-                while '.' in stem:
-                    stem = stem.rsplit('.', 1)[0]
-                found = file_map.get(stem.lower())
+            found = files_by_name.get(val.lower())
             if found is not None and found not in ordered_files:
                 ordered_files.append(found)
 
