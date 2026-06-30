@@ -1801,6 +1801,15 @@ class MetaTagApp(tk.Tk):
                     ordered_files.append(fp)
             else:
                 no_encontradas.append(val)
+                if "EC" in val.upper():
+                    name_stem = self._full_stem(val).lower()
+                    name_norm = self._normalize_numbers(
+                        re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", name_stem))
+                    similares = [k for k in self._img_cache.keys() if "ec" in k][:3]
+                    self._log(
+                        f"  🔍 DEBUG '{val}':\n"
+                        f"      stem normalizado = '{name_norm}'\n"
+                        f"      claves EC en cache (muestra) = {similares}\n", "warn")
 
         if not ordered_files:
             return messagebox.showwarning("Sin coincidencias",
