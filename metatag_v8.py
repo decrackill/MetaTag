@@ -2474,10 +2474,13 @@ class MetaTagApp(tk.Tk):
                 "process_mode": self.process_mode.get(),
             }
             try:
+                self.update_idletasks()
                 sashes = []
                 for i in range(self.paned_window.sash_count()):
-                    sashes.append(self.paned_window.sash_coord(i)[0])
-                cfg["sash_positions"] = sashes
+                    x = self.paned_window.sash_coord(i)[0]
+                    sashes.append(x)
+                if sashes:
+                    cfg["sash_positions"] = sashes
             except Exception: pass
             self._config_path().write_text(
                 json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2516,10 +2519,12 @@ class MetaTagApp(tk.Tk):
             if cfg.get("sash_positions"):
                 def _apply_sashes():
                     try:
+                        self.update_idletasks()
                         for i, pos in enumerate(cfg["sash_positions"]):
-                            self.paned_window.sash_place(i, pos, 0)
+                            if i < self.paned_window.sash_count():
+                                self.paned_window.sash_place(i, pos, 0)
                     except Exception: pass
-                self.after(200, _apply_sashes)
+                self.after(500, _apply_sashes)
         except Exception: pass
 
 
