@@ -629,6 +629,11 @@ class MetaTagApp(tk.Tk):
 
         self.bind("<Up>",   self._nav_up)
         self.bind("<Down>", self._nav_down)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        self._save_config()
+        self.destroy()
 
     # ─────────────────────────────────────────────────────────────
     #  NAVEGACIÓN CON TECLADO
@@ -2468,6 +2473,12 @@ class MetaTagApp(tk.Tk):
                 "theme":       CURRENT_THEME,
                 "process_mode": self.process_mode.get(),
             }
+            try:
+                sashes = []
+                for i in range(self.paned_window.sash_count()):
+                    sashes.append(self.paned_window.sash_coord(i)[0])
+                cfg["sash_positions"] = sashes
+            except Exception: pass
             self._config_path().write_text(
                 json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception: pass
@@ -2502,6 +2513,13 @@ class MetaTagApp(tk.Tk):
                     for f in Path(cfg["img_folder"]).rglob("*")
                     if f.is_file() and f.suffix.lower() in IMG_EXTS
                 }
+            if cfg.get("sash_positions"):
+                def _apply_sashes():
+                    try:
+                        for i, pos in enumerate(cfg["sash_positions"]):
+                            self.paned_window.sash_place(i, pos, 0)
+                    except Exception: pass
+                self.after(200, _apply_sashes)
         except Exception: pass
 
 
