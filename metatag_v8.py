@@ -1785,11 +1785,10 @@ class MetaTagApp(tk.Tk):
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
 
-        def normalize(s):
+        def norm(s):
             return s.lower().replace("_", "").replace(" ", "").replace("-", "")
 
-        def file_stem(path):
-            name = path.name
+        def get_stem(name):
             while '.' in name:
                 name = name.rsplit('.', 1)[0]
             return name
@@ -1798,26 +1797,26 @@ class MetaTagApp(tk.Tk):
         for ri, row in self.grid.df.iterrows():
             val = str(row[img_col]).strip()
             if val and val.lower() not in ("nan", "none", ""):
-                norm = normalize(Path(val).stem)
-                row_by_norm[norm] = row
+                key = norm(get_stem(val))
+                row_by_norm[key] = row
 
         def _sort_key(path):
-            file_norm = normalize(file_stem(path))
-            row = row_by_norm.get(file_norm)
+            file_key = norm(get_stem(path.name))
+            row = row_by_norm.get(file_key)
             if row is None:
-                for norm_key, r in row_by_norm.items():
-                    if file_norm in norm_key or norm_key in file_norm:
-                        row = r
+                for ek, er in row_by_norm.items():
+                    if file_key in ek or ek in file_key:
+                        row = er
                         break
             if row is None:
-                return ("zzz",)
-            sort_values = []
+                return ""
+            parts = []
             for sc in chosen_cols:
-                sv = str(row[sc]).strip()
-                if sv.lower() in ("nan", "none", ""):
-                    sv = ""
-                sort_values.append(sv.lower())
-            return tuple(sort_values)
+                v = str(row.get(sc, "")).strip()
+                if v.lower() in ("nan", "none", ""):
+                    v = ""
+                parts.append(v.lower())
+            return "\x00".join(parts)
 
         all_files.sort(key=_sort_key)
         self.browser.img_files = all_files
