@@ -1738,7 +1738,13 @@ class MetaTagApp(tk.Tk):
         def normalize(s):
             return s.lower().replace("_", "").replace(" ", "").replace("-", "")
 
-        file_norm_to_idx = {normalize(p.stem): i for i, p in enumerate(img_files)}
+        def file_stem(path):
+            name = path.name
+            while '.' in name:
+                name = name.rsplit('.', 1)[0]
+            return name
+
+        file_norm_to_idx = {normalize(file_stem(p)): i for i, p in enumerate(img_files)}
 
         def _sort_key(row):
             val = str(row[img_col]).strip()
@@ -1782,6 +1788,12 @@ class MetaTagApp(tk.Tk):
         def normalize(s):
             return s.lower().replace("_", "").replace(" ", "").replace("-", "")
 
+        def file_stem(path):
+            name = path.name
+            while '.' in name:
+                name = name.rsplit('.', 1)[0]
+            return name
+
         row_by_norm = {}
         for ri, row in self.grid.df.iterrows():
             val = str(row[img_col]).strip()
@@ -1790,7 +1802,7 @@ class MetaTagApp(tk.Tk):
                 row_by_norm[norm] = row
 
         def _sort_key(path):
-            file_norm = normalize(path.stem)
+            file_norm = normalize(file_stem(path))
             row = row_by_norm.get(file_norm)
             if row is None:
                 for norm_key, r in row_by_norm.items():
