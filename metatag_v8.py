@@ -1054,7 +1054,28 @@ class MetaTagApp(tk.Tk):
         self.paned_window.pack(fill="both", expand=True)
 
         self.left = tk.Frame(self.paned_window, bg=C["panel"])
-        self._build_control_panel(self.left)
+        left_canvas = tk.Canvas(self.left, bg=C["panel"], highlightthickness=0)
+        left_vsb = ttk.Scrollbar(self.left, orient="vertical", command=left_canvas.yview)
+        left_inner = tk.Frame(left_canvas, bg=C["panel"])
+        left_inner.bind("<Configure>", lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        left_canvas.create_window((0, 0), window=left_inner, anchor="nw")
+        left_canvas.configure(yscrollcommand=left_vsb.set)
+        left_canvas.pack(side="left", fill="both", expand=True)
+        left_vsb.pack(side="right", fill="y")
+
+        def _on_left_mousewheel(event):
+            left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _on_left_mousewheel_linux(event):
+            if event.num == 4:
+                left_canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                left_canvas.yview_scroll(1, "units")
+        for w in (left_canvas, left_inner):
+            w.bind("<MouseWheel>", _on_left_mousewheel)
+            w.bind("<Button-4>", _on_left_mousewheel_linux)
+            w.bind("<Button-5>", _on_left_mousewheel_linux)
+
+        self._build_control_panel(left_inner)
         self.paned_window.add(self.left, minsize=int(220*self.current_scale))
 
         center = tk.Frame(self.paned_window, bg=C["bg"])
@@ -2142,7 +2163,6 @@ class MetaTagApp(tk.Tk):
 
         sort_var = tk.StringVar(value="alfabetico")
         options = [
-            ("orden_excel",   "Orden del Excel",              "Respeta el orden de las filas tal como están"),
             ("alfabetico",    "Alfabético (A → Z)",           "Ordena por nombre de archivo"),
             ("fecha_mod",     "Fecha de modificación ↑",      "Más antigua primero"),
             ("fecha_mod_inv", "Fecha de modificación ↓",      "Más reciente primero"),
@@ -2176,9 +2196,7 @@ class MetaTagApp(tk.Tk):
         files = [p for p in Path(folder).iterdir()
                  if p.is_file() and p.suffix.lower() in IMG_EXTS]
 
-        if mode == "orden_excel":
-            return sorted(files, key=lambda p: p.name.lower())
-        elif mode == "alfabetico":
+        if mode == "alfabetico":
             return sorted(files, key=lambda p: p.name.lower())
         elif mode == "fecha_mod":
             return sorted(files, key=lambda p: p.stat().st_mtime)
