@@ -2231,6 +2231,7 @@ class MetaTagApp(tk.Tk):
             w.bind("<Button-4>", _on_mousewheel_linux)
             w.bind("<Button-5>", _on_mousewheel_linux)
 
+        row_refs = []
         for idx, (val, label, desc) in enumerate(options):
             row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
             row = tk.Frame(inner, bg=row_bg)
@@ -2240,8 +2241,9 @@ class MetaTagApp(tk.Tk):
             indicator.pack(side="left", fill="y")
 
             rb = tk.Radiobutton(row, text="", variable=sort_var, value=val,
-                                bg=row_bg, selectcolor=S["surface"],
-                                activebackground=row_bg, cursor="hand2")
+                                bg=row_bg, selectcolor=S["accent"],
+                                activebackground=row_bg, cursor="hand2",
+                                indicatoron=False, width=2)
             rb.pack(side="left", padx=(8, 0))
 
             text_frame = tk.Frame(row, bg=row_bg)
@@ -2250,6 +2252,8 @@ class MetaTagApp(tk.Tk):
                      font=FONTS["BODY"], anchor="w").pack(anchor="w")
             tk.Label(text_frame, text=desc, bg=row_bg, fg=S["text3"],
                      font=FONTS["TINY"], anchor="w").pack(anchor="w")
+
+            row_refs.append((val, row, indicator, row_bg))
 
             def _enter(e, r=row, ind=indicator):
                 r.configure(bg=S["accent_pale"])
@@ -2263,6 +2267,18 @@ class MetaTagApp(tk.Tk):
                 w.bind("<Enter>", _enter)
                 w.bind("<Leave>", _leave)
                 w.bind("<Button-1>", _click)
+
+        def _highlight_selected(*_):
+            sel = sort_var.get()
+            for val, row, ind, bg in row_refs:
+                if val == sel:
+                    row.configure(bg=S["accent_pale"])
+                    ind.configure(bg=S["accent_hover"])
+                else:
+                    row.configure(bg=bg)
+                    ind.configure(bg=S["accent"])
+        sort_var.trace_add("write", _highlight_selected)
+        _highlight_selected()
 
         sep = tk.Frame(win, bg=S["border"], height=1)
         sep.grid(row=3, column=0, sticky="ew")
