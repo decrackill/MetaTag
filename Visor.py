@@ -1,6 +1,7 @@
 """
-MetaTag Visor v9.0 — Edición Definitiva (Código Completo y Expandido)
-Paneles ajustables, Persistencia inteligente, Diseño Premium y Zoom Fluido.
+MetaTag Visor v10.0 — Edición Premium Multiplataforma
+Paneles ajustables, Persistencia inteligente, Diseño Premium, Zoom Fluido.
+Atajos de teclado, Exportación CSV/JSON, Tooltips, Detección de modo oscuro.
 Dependencias: pip install pillow piexif reportlab
 """
 
@@ -11,9 +12,16 @@ import os
 import io
 import json
 import math
+import csv
+import platform
 import datetime
 import threading
+import logging
 from pathlib import Path
+from typing import Optional, List, Tuple, Dict, Any
+
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("MetaTagVisor")
 
 # ══════════════════════════════════════════════════════════════════
 #  VERIFICACIÓN DE DEPENDENCIAS
@@ -39,6 +47,82 @@ try:
     REPORTLAB_OK = True
 except ImportError:
     REPORTLAB_OK = False
+
+
+# ══════════════════════════════════════════════════════════════════
+#  PLATAFORMA Y FUENTES MULTIPLATAFORMA
+# ══════════════════════════════════════════════════════════════════
+_SYSTEM = platform.system()
+FONT_FAMILY = "Segoe UI" if _SYSTEM == "Windows" else "Helvetica Neue" if _SYSTEM == "Darwin" else "Helvetica"
+
+
+def _detect_system_dark_mode() -> bool:
+    """Detecta si el SO está en modo oscuro (Linux/macOS)."""
+    try:
+        if _SYSTEM == "Linux":
+            import subprocess
+            result = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                capture_output=True, text=True, timeout=2
+            )
+            return "dark" in result.stdout.lower()
+        elif _SYSTEM == "Darwin":
+            import subprocess
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=2
+            )
+            return "Dark" in result.stdout
+    except Exception:
+        pass
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════
+#  TOOLTIP MULTIPLATAFORMA
+# ══════════════════════════════════════════════════════════════════
+class _ToolTip:
+    """Tooltip flotante que aparece al pasar el ratón sobre un widget."""
+
+    def __init__(self, widget: tk.Widget, text: str, delay: int = 500):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self._tip_window: Optional[tk.Toplevel] = None
+        self._after_id = None
+        widget.bind("<Enter>", self._on_enter, add="+")
+        widget.bind("<Leave>", self._on_leave, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+
+    def _on_enter(self, event=None):
+        self._after_id = self.widget.after(self.delay, self._show)
+
+    def _on_leave(self, event=None):
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+        self._hide()
+
+    def _show(self):
+        if self._tip_window:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self._tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.configure(bg=C["border"])
+        label = tk.Label(
+            tw, text=self.text, bg=C["panel2"], fg=C["text"],
+            font=(FONT_FAMILY, 9), padx=8, pady=4,
+            highlightthickness=1, highlightbackground=C["border"]
+        )
+        label.pack()
+
+    def _hide(self):
+        if self._tip_window:
+            self._tip_window.destroy()
+            self._tip_window = None
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -147,13 +231,13 @@ except Exception:
 C = dict(THEMES[CURRENT_THEME])
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 
-# Tipografía del programa
-F_TITLE = ("Segoe UI", 14, "bold")
-F_H2    = ("Segoe UI", 11, "bold")
-F_BODY  = ("Segoe UI", 9)
-F_BOLD  = ("Segoe UI", 9, "bold")
-F_TINY  = ("Segoe UI", 8)
-F_MICRO = ("Segoe UI", 7)
+# Tipografía del programa (multiplataforma)
+F_TITLE = (FONT_FAMILY, 14, "bold")
+F_H2    = (FONT_FAMILY, 11, "bold")
+F_BODY  = (FONT_FAMILY, 9)
+F_BOLD  = (FONT_FAMILY, 9, "bold")
+F_TINY  = (FONT_FAMILY, 8)
+F_MICRO = (FONT_FAMILY, 7)
 
 # Constantes del Zoom
 ZOOM_MIN = 0.05
@@ -167,7 +251,7 @@ ZOOM_FIT = -1.0
 # ══════════════════════════════════════════════════════════════════
 class VisorApp(tk.Tk):
 
-    def __init__(self, initial_image=None):
+    def __init__(self, initial_image: Optional[str] = None):
         super().__init__()
 
         # Configuración de la ventana principal
@@ -182,33 +266,43 @@ class VisorApp(tk.Tk):
         self.geometry(f"{window_width}x{window_height}+{pos_x}+{pos_y}")
         self.minsize(960, 640)
         self.configure(bg=C["bg"])
-        self.title("MetaTag Visor v9.0 — Inspector Arqueológico")
+        self.title("MetaTag Visor v10.0 — Inspector Arqueológico")
 
         # Variables de estado de la aplicación
-        self.all_metadata = []
-        self.folder_images = []
-        self._all_folder_images = []
-        self.current_path = None
-        self._pil_image = None
+        self.all_metadata: List[Tuple[str, str, str]] = []
+        self.folder_images: List[str] = []
+        self._all_folder_images: List[str] = []
+        self.current_path: Optional[str] = None
+        self._pil_image: Optional[Image.Image] = None
+
+        # Caché de miniaturas para el listbox
+        self._thumb_cache: Dict[str, ImageTk.PhotoImage] = {}
+        self._thumb_size = (40, 40)
 
         # Variables de estado del Zoom y Paneo
-        self._zoom_level = ZOOM_FIT
-        self._pan_offset = [0, 0]
-        self._pan_start  = [0, 0]
-        self._panning    = False
-        self._zoom_img_tk = None   
-        self._zoom_img_tk_draft = None   
-        self._zoom_debounce_job = None   
-        self._render_gen = 0      
+        self._zoom_level: float = ZOOM_FIT
+        self._pan_offset: List[int] = [0, 0]
+        self._pan_start: List[int] = [0, 0]
+        self._panning: bool = False
+        self._zoom_img_tk: Optional[ImageTk.PhotoImage] = None   
+        self._zoom_img_tk_draft: Optional[ImageTk.PhotoImage] = None   
+        self._zoom_debounce_job: Optional[str] = None   
+        self._render_gen: int = 0      
 
         # Variables del Comparador
-        self._pinned_path = None
-        self._pinned_meta = []
-        self._comp_window = None
+        self._pinned_path: Optional[str] = None
+        self._pinned_meta: List[Tuple[str, str, str]] = []
+        self._comp_window: Optional[tk.Toplevel] = None
 
         # Construcción de la Interfaz
         self._build_styles()
         self._build_ui()
+
+        # Atajos de teclado globales
+        self._bind_shortcuts()
+
+        # Menú contextual derecho
+        self._build_context_menu()
 
         # Iniciar sesión y persistencia
         self._init_session(initial_image)
@@ -280,7 +374,105 @@ class VisorApp(tk.Tk):
 
     def _on_close(self):
         self._save_config()
+        self._release_pil_image()
         self.destroy()
+
+    def _release_pil_image(self):
+        """Libera la imagen PIL de la memoria de forma segura."""
+        if self._pil_image:
+            try:
+                self._pil_image.close()
+            except Exception:
+                pass
+            self._pil_image = None
+        self._thumb_cache.clear()
+
+    # ─────────────────────────────────────────────────────────────
+    #  ATAJOS DE TECLADO
+    # ─────────────────────────────────────────────────────────────
+    def _bind_shortcuts(self):
+        """Registra atajos de teclado globales de la aplicación."""
+        self.bind_all("<Control-o>", lambda e: self._browse())
+        self.bind_all("<Control-O>", lambda e: self._browse())
+        self.bind_all("<Control-f>", lambda e: self._browse_folder())
+        self.bind_all("<Control-F>", lambda e: self._browse_folder())
+        self.bind_all("<Control-e>", lambda e: self._export_pdf())
+        self.bind_all("<Control-E>", lambda e: self._export_pdf())
+        self.bind_all("<Control-Shift-C>", lambda e: self._export_csv())
+        self.bind_all("<Control-Shift-J>", lambda e: self._export_json())
+        self.bind_all("<Up>", lambda e: self._prev_image())
+        self.bind_all("<Down>", lambda e: self._next_image())
+        self.bind_all("<Control-plus>", lambda e: self._zoom_by(ZOOM_STEP))
+        self.bind_all("<Control-minus>", lambda e: self._zoom_by(1 / ZOOM_STEP))
+        self.bind_all("<Control-0>", lambda e: self._zoom_fit())
+        self.bind_all("<Escape>", lambda e: self._on_close())
+        self.bind_all("<Control-q>", lambda e: self._on_close())
+
+    def _prev_image(self):
+        """Navega a la imagen anterior en la carpeta."""
+        if not self.folder_images or not self.current_path:
+            return
+        try:
+            idx = self.folder_images.index(self.current_path)
+            if idx > 0:
+                new_idx = idx - 1
+                self.file_listbox.selection_clear(0, "end")
+                self.file_listbox.selection_set(new_idx)
+                self.file_listbox.see(new_idx)
+                self.load_image(self.folder_images[new_idx])
+        except ValueError:
+            pass
+
+    def _next_image(self):
+        """Navega a la imagen siguiente en la carpeta."""
+        if not self.folder_images or not self.current_path:
+            return
+        try:
+            idx = self.folder_images.index(self.current_path)
+            if idx < len(self.folder_images) - 1:
+                new_idx = idx + 1
+                self.file_listbox.selection_clear(0, "end")
+                self.file_listbox.selection_set(new_idx)
+                self.file_listbox.see(new_idx)
+                self.load_image(self.folder_images[new_idx])
+        except ValueError:
+            pass
+
+    # ─────────────────────────────────────────────────────────────
+    #  MENÚ CONTEXTUAL (CLIC DERECHO)
+    # ─────────────────────────────────────────────────────────────
+    def _build_context_menu(self):
+        """Construye el menú contextual de clic derecho."""
+        self._ctx_menu = tk.Menu(self, tearoff=0, bg=C["panel2"], fg=C["text"],
+                                  activebackground=C["sel_bg"], activeforeground=C["text"],
+                                  font=F_BODY, relief="flat", borderwidth=1)
+        self._ctx_menu.add_command(label="Abrir archivo...       Ctrl+O", command=self._browse)
+        self._ctx_menu.add_command(label="Abrir carpeta...       Ctrl+F", command=self._browse_folder)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="Imagen anterior        ↑", command=self._prev_image)
+        self._ctx_menu.add_command(label="Imagen siguiente       ↓", command=self._next_image)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="Ajustar zoom           Ctrl+0", command=self._zoom_fit)
+        self._ctx_menu.add_command(label="Zoom in                Ctrl++", command=lambda: self._zoom_by(ZOOM_STEP))
+        self._ctx_menu.add_command(label="Zoom out               Ctrl+-", command=lambda: self._zoom_by(1/ZOOM_STEP))
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="Exportar PDF...        Ctrl+E", command=self._export_pdf)
+        self._ctx_menu.add_command(label="Exportar CSV...        Ctrl+Shift+C", command=self._export_csv)
+        self._ctx_menu.add_command(label="Exportar JSON...       Ctrl+Shift+J", command=self._export_json)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="Salir                 Ctrl+Q", command=self._on_close)
+
+        self.bind("<Button-3>", self._show_context_menu)
+        if _SYSTEM == "Darwin":
+            self.bind("<Button-2>", self._show_context_menu)
+            self.bind("<Control-Button-1>", self._show_context_menu)
+
+    def _show_context_menu(self, event):
+        """Muestra el menú contextual en la posición del ratón."""
+        try:
+            self._ctx_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._ctx_menu.grab_release()
 
     # ─────────────────────────────────────────────────────────────
     #  ESTILOS TTK
@@ -393,9 +585,9 @@ class VisorApp(tk.Tk):
         # Logo y Título
         logo_frame = tk.Frame(bar, bg=C["header_bg"])
         logo_frame.pack(side="left", padx=20, pady=10)
-        tk.Label(logo_frame, text="⬡", font=("Segoe UI", 18), bg=C["header_bg"], fg=C["accent"]).pack(side="left")
+        tk.Label(logo_frame, text="⬡", font=(FONT_FAMILY, 18), bg=C["header_bg"], fg=C["accent"]).pack(side="left")
         tk.Label(logo_frame, text="  Visor MetaTag", font=F_TITLE, bg=C["header_bg"], fg=C["header_fg"]).pack(side="left")
-        tk.Label(logo_frame, text="  v9.0", font=F_TINY, bg=C["header_bg"], fg=C["text3"]).pack(side="left", pady=(8, 0))
+        tk.Label(logo_frame, text="  v10.0", font=F_TINY, bg=C["header_bg"], fg=C["text3"]).pack(side="left", pady=(8, 0))
 
         # Contenedor de Botones Derechos
         right_btns_frame = tk.Frame(bar, bg=C["header_bg"])
@@ -419,15 +611,17 @@ class VisorApp(tk.Tk):
 
         # Botones de Acción
         actions = [
-            ("📄 Archivo",      self._browse,          False),
-            ("📁 Carpeta",      self._browse_folder,   False),
-            ("📌 Fijar",        self._pin_current,     False),
-            ("⚖ Comparar",     self._open_comparator, False),
-            ("⬇ PDF",          self._export_pdf,      True),
+            ("📄 Archivo",      self._browse,          False, "Abrir un archivo de imagen (Ctrl+O)"),
+            ("📁 Carpeta",      self._browse_folder,   False, "Abrir una carpeta de estudio (Ctrl+F)"),
+            ("📌 Fijar",        self._pin_current,     False, "Fijar imagen actual como referencia"),
+            ("⚖ Comparar",     self._open_comparator, False, "Comparar imagen actual con la fijada"),
+            ("⬇ PDF",          self._export_pdf,      True,  "Exportar ficha técnica a PDF (Ctrl+E)"),
         ]
         
-        for text, command, is_primary in actions:
-            self._create_friendly_btn(right_btns_frame, text, command, is_primary).pack(side="left", padx=4)
+        for text, command, is_primary, tooltip_text in actions:
+            frame = self._create_friendly_btn(right_btns_frame, text, command, is_primary)
+            frame.pack(side="left", padx=4)
+            _ToolTip(frame, tooltip_text)
 
     def _create_friendly_btn(self, parent, text, command, is_primary=False):
         """Crea un botón con marco dinámico (efecto hover moderno)"""
@@ -472,12 +666,12 @@ class VisorApp(tk.Tk):
         zoom_bar.pack(fill="x", padx=12, pady=(0, 6))
         
         zoom_actions = [
-            ("➕ Zoom In", lambda: self._zoom_by(ZOOM_STEP)), 
-            ("➖ Zoom Out", lambda: self._zoom_by(1 / ZOOM_STEP)), 
-            ("⛶ Ajustar", self._zoom_fit)
+            ("➕ Zoom In", lambda: self._zoom_by(ZOOM_STEP), "Acercar (Ctrl++)"), 
+            ("➖ Zoom Out", lambda: self._zoom_by(1 / ZOOM_STEP), "Alejar (Ctrl+-)"), 
+            ("⛶ Ajustar", self._zoom_fit, "Ajustar a ventana (Ctrl+0)")
         ]
         
-        for text, command in zoom_actions:
+        for text, command, tip in zoom_actions:
             b = tk.Button(
                 zoom_bar, text=text, font=F_TINY, bg=C["panel2"], fg=C["text2"], 
                 relief="flat", bd=0, padx=12, pady=5, cursor="hand2", command=command, 
@@ -486,6 +680,7 @@ class VisorApp(tk.Tk):
             b.pack(side="left", padx=(0, 6))
             b.bind("<Enter>", lambda e, _b=b: _b.configure(bg=C["border"]))
             b.bind("<Leave>", lambda e, _b=b: _b.configure(bg=C["panel2"]))
+            _ToolTip(b, tip)
 
         # Tarjeta de Información Básica
         self.info_card = tk.Frame(parent, bg=C["panel2"], highlightthickness=1, highlightbackground=C["border"])
@@ -493,7 +688,7 @@ class VisorApp(tk.Tk):
         
         tk.Label(
             self.info_card, text="ARCHIVO ACTUAL", bg=C["panel2"], 
-            fg=C["text3"], font=("Segoe UI", 7, "bold")
+            fg=C["text3"], font=(FONT_FAMILY, 7, "bold")
         ).pack(anchor="w", padx=12, pady=(8, 2))
         
         self.lbl_info = tk.Label(
@@ -513,7 +708,7 @@ class VisorApp(tk.Tk):
         
         tk.Label(
             exp_hdr, text="EXPLORADOR", bg=C["panel"], 
-            fg=C["accent"], font=("Segoe UI", 9, "bold")
+            fg=C["accent"], font=(FONT_FAMILY, 9, "bold")
         ).pack(side="left")
         
         self._lbl_count = tk.Label(exp_hdr, text="", bg=C["panel"], fg=C["text3"], font=F_MICRO)
@@ -617,8 +812,9 @@ class VisorApp(tk.Tk):
             
         f.place(relx=0.5, rely=0.5, anchor="center", width=560, height=320)
 
-        tk.Label(f, text="⬡ METATAG PRO", font=("Segoe UI", 28, "bold"), bg=C["surface"], fg=C["accent"]).pack(pady=(50, 5))
-        tk.Label(f, text="Auditoría y Clasificación Cerámica", font=("Segoe UI", 11), bg=C["surface"], fg=C["text2"]).pack(pady=(0, 40))
+        tk.Label(f, text="⬡ METATAG PRO", font=(FONT_FAMILY, 28, "bold"), bg=C["surface"], fg=C["accent"]).pack(pady=(50, 5))
+        tk.Label(f, text="Auditoría y Clasificación Cerámica", font=(FONT_FAMILY, 11), bg=C["surface"], fg=C["text2"]).pack(pady=(0, 5))
+        tk.Label(f, text="v10.0 — Multiplataforma", font=F_TINY, bg=C["surface"], fg=C["text3"]).pack(pady=(0, 40))
 
         row = tk.Frame(f, bg=C["surface"])
         row.pack()
@@ -756,13 +952,18 @@ class VisorApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     #  CARGA DE IMAGEN PRINCIPAL
     # ─────────────────────────────────────────────────────────────
-    def load_image(self, path: str):
+    def load_image(self, path: str) -> None:
         """Carga la imagen, actualiza la información y dispara la extracción de metadatos."""
         if not PIL_OK: 
             messagebox.showerror("Error", "Faltan dependencias. Ejecuta: pip install pillow piexif")
             return
             
         self._hide_welcome()
+
+        if self.current_path == path:
+            return
+
+        self._release_pil_image()
         self.current_path = path
         
         # Resetear variables de zoom
@@ -800,7 +1001,7 @@ class VisorApp(tk.Tk):
         # Iniciar motor de extracción
         self._extract_all_metadata(path)
         self._filter_tree()
-        self.title(f"⬡ MetaTag Visor v9 — {Path(path).name}")
+        self.title(f"⬡ MetaTag Visor v10 — {Path(path).name}")
 
     # ─────────────────────────────────────────────────────────────
     #  MOTOR DE EXTRACCIÓN DE METADATOS
@@ -835,7 +1036,7 @@ class VisorApp(tk.Tk):
         except Exception as e:
             print(f"Error general en metadatos: {e}")
 
-    def _extract_json(self, img, info):
+    def _extract_json(self, img: Image.Image, info: dict) -> None:
         """Extrae el JSON incrustado en el UserComment (jpg) o en Comment (png)."""
         data = None
         ext = Path(self.current_path).suffix.lower()
@@ -849,12 +1050,13 @@ class VisorApp(tk.Tk):
                     data = json.loads(decoded_str)
                     
             elif ext == ".png":
-                # Extracción desde metadatos text de PNG
                 comment = getattr(img, "text", {}).get("Comment", "")
                 if comment:
                     data = json.loads(comment)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.debug("JSON no válido en %s: %s", self.current_path, e)
+        except Exception as e:
+            logger.warning("Error inesperado extrayendo JSON: %s", e)
             
         if data and isinstance(data, dict):
             for key, value in data.items():
@@ -950,7 +1152,8 @@ class VisorApp(tk.Tk):
             if not found_gps:
                 self.all_metadata.append(("gps_val", "Aviso", "El bloque GPS no tiene coordenadas legibles."))
                 
-        except Exception:
+        except Exception as e:
+            logger.warning("Error procesando GPS: %s", e)
             self.all_metadata.append(("gps_val", "Error GPS", "Error procesando el subdirectorio de ubicación."))
 
     def _clean_exif_value(self, value, tag_name: str) -> str:
@@ -1206,19 +1409,18 @@ class VisorApp(tk.Tk):
         if final_pass:
             # ── PASO FINAL: Render de Alta Calidad (LANCZOS) en hilo secundario ──
             def _do_lanczos_thread():
-                if current_gen != self._render_gen: return # Si el usuario movió, abortar
+                if current_gen != self._render_gen: return
                 try:
                     crop = self._pil_image.crop((orig_x0, orig_y0, orig_x1, orig_y1))
                     scaled = crop.resize((crop_render_w, crop_render_h), Image.LANCZOS)
                     
-                    if current_gen != self._render_gen: return # Comprobar de nuevo tras proceso pesado
+                    if current_gen != self._render_gen: return
                     
                     tk_img = ImageTk.PhotoImage(scaled)
                     
-                    # Llamar al hilo principal de UI de forma segura
                     self.after(0, lambda: self._apply_zoom_image_safely(tk_img, place_x, place_y, current_gen))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Error en render LANCZOS: %s", e)
                     
             threading.Thread(target=_do_lanczos_thread, daemon=True).start()
             
@@ -1234,8 +1436,8 @@ class VisorApp(tk.Tk):
                     place_x, place_y, anchor="center", 
                     image=self._zoom_img_tk_draft, tags="img"
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Error en render borrador: %s", e)
 
             # Programamos el paso final
             if self._zoom_debounce_job:
@@ -1484,7 +1686,7 @@ class VisorApp(tk.Tk):
         
         # 1. Cabecera del Documento
         flowables.append(Paragraph("FICHA DE REGISTRO ARQUEOLÓGICO", style_title))
-        flowables.append(Paragraph(f"MetaTag Visor v9.0  —  Fecha de Impresión: {datetime.datetime.now():%d/%m/%Y %H:%M}", style_subtitle))
+        flowables.append(Paragraph(f"MetaTag Visor v10.0  —  Fecha de Impresión: {datetime.datetime.now():%d/%m/%Y %H:%M}", style_subtitle))
         flowables.append(HRFlowable(width="100%", thickness=2, color=CLR_GOLD, spaceAfter=15))
 
         # 2. Inserción Segura de Imagen Fotográfica
@@ -1592,6 +1794,78 @@ class VisorApp(tk.Tk):
         flowables.append(Paragraph("<b>Programa de Conservación Cerámica</b>  •  Universidad del Magdalena", style_subtitle))
         
         document.build(flowables)
+
+    # ─────────────────────────────────────────────────────────────
+    #  EXPORTACIÓN A CSV
+    # ─────────────────────────────────────────────────────────────
+    def _export_csv(self) -> None:
+        """Exporta los metadatos de la imagen actual a un archivo CSV."""
+        if not self.current_path:
+            messagebox.showwarning("Aviso", "Se requiere una imagen cargada para exportar.")
+            return
+
+        default_name = f"Metadatos_{Path(self.current_path).stem}.csv"
+        output_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("Archivo CSV", "*.csv")]
+        )
+
+        if not output_path:
+            return
+
+        try:
+            with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f, delimiter=";")
+                writer.writerow(["Sección", "Campo", "Valor"])
+                for tag_type, key, val in self.all_metadata:
+                    section = tag_type.replace("_val", "").upper() if tag_type != "header" else "HEADER"
+                    writer.writerow([section, key, val])
+            messagebox.showinfo("Exportado", f"CSV guardado en:\n{output_path}")
+        except Exception as e:
+            messagebox.showerror("Error CSV", f"No se pudo exportar:\n{e}")
+
+    # ─────────────────────────────────────────────────────────────
+    #  EXPORTACIÓN A JSON
+    # ─────────────────────────────────────────────────────────────
+    def _export_json(self) -> None:
+        """Exporta los metadatos de la imagen actual a un archivo JSON estructurado."""
+        if not self.current_path:
+            messagebox.showwarning("Aviso", "Se requiere una imagen cargada para exportar.")
+            return
+
+        default_name = f"Metadatos_{Path(self.current_path).stem}.json"
+        output_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            initialfile=default_name,
+            filetypes=[("Archivo JSON", "*.json")]
+        )
+
+        if not output_path:
+            return
+
+        try:
+            sections: Dict[str, Dict[str, str]] = {}
+            current_section = "general"
+
+            for tag_type, key, val in self.all_metadata:
+                if tag_type == "header":
+                    current_section = key
+                    sections[current_section] = {}
+                else:
+                    sections.setdefault(current_section, {})[key] = val
+
+            export_data = {
+                "fuente": Path(self.current_path).name,
+                "fecha_exportacion": datetime.datetime.now().isoformat(),
+                "secciones": sections
+            }
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("Exportado", f"JSON guardado en:\n{output_path}")
+        except Exception as e:
+            messagebox.showerror("Error JSON", f"No se pudo exportar:\n{e}")
 
 
 # ══════════════════════════════════════════════════════════════════
