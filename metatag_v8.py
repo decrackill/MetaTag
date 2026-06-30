@@ -1730,7 +1730,7 @@ class MetaTagApp(tk.Tk):
         if not img_files:
             return messagebox.showwarning("Sin imágenes", "La carpeta no contiene imágenes compatibles.")
 
-        img_names = [p.stem.lower() for p in img_files]
+        img_order = {p.stem.lower(): i for i, p in enumerate(img_files)}
 
         def _sort_key(row):
             for col in row.index:
@@ -1738,13 +1738,15 @@ class MetaTagApp(tk.Tk):
                 if val and val.lower() not in ("nan", "none", ""):
                     if Path(val).suffix.lower() in IMG_EXTS:
                         key = Path(val).stem.lower()
-                        return img_names.index(key) if key in img_names else 9999
+                        return img_order.get(key, 9999)
             return 9999
 
-        sort_keys = self.grid.df.apply(_sort_key, axis=1)
-        self.grid.df = self.grid.df.iloc[sort_keys.argsort().values].reset_index(drop=True)
+        new_df = self.grid.df.copy()
+        new_df["_sort_key"] = new_df.apply(_sort_key, axis=1)
+        new_df = new_df.sort_values("_sort_key").drop(columns=["_sort_key"]).reset_index(drop=True)
+        self.grid.df = new_df
         self.grid.load(self.grid.df)
-        self.status_var.set(f"Excel reordenado según imágenes ({len(self.grid.df)} filas)")
+        self.status_var.set(f"✓ Excel reordenado según imágenes ({len(self.grid.df)} filas)")
         self._log(f"✓ Excel reordenado según orden de imágenes\n", "ok")
 
     def _sync_images_to_excel(self):
@@ -1753,30 +1755,28 @@ class MetaTagApp(tk.Tk):
         folder = self.img_folder_var.get()
         if not folder or not os.path.isdir(folder):
             return messagebox.showwarning("Sin carpeta", "Selecciona la carpeta de imágenes.")
-        img_files = sorted(Path(folder).iterdir(),
-                          key=lambda p: p.name.lower())
-        img_files = [f for f in img_files if f.is_file() and f.suffix.lower() in IMG_EXTS]
-        if not img_files:
-            return messagebox.showwarning("Sin imágenes", "La carpeta no contiene imágenes compatibles.")
 
-        excel_names = []
+        excel_order = {}
+        idx = 0
         for _, row in self.grid.df.iterrows():
-            name = ""
             for col in self.grid.df.columns:
                 val = str(row[col]).strip()
                 if val and val.lower() not in ("nan", "none", ""):
                     if Path(val).suffix.lower() in IMG_EXTS:
-                        name = Path(val).stem.lower()
+                        key = Path(val).stem.lower()
+                        if key not in excel_order:
+                            excel_order[key] = idx
+                            idx += 1
                         break
-            excel_names.append(name)
 
-        def _sort_key(path):
-            key = path.stem.lower()
-            return excel_names.index(key) if key in excel_names else 9999
+        all_files = [f for f in Path(folder).iterdir()
+                     if f.is_file() and f.suffix.lower() in IMG_EXTS]
+        all_files.sort(key=lambda p: excel_order.get(p.stem.lower(), 9999))
 
-        img_files.sort(key=_sort_key)
-        self.img_files_sorted = img_files
-        self.status_var.set(f"Imágenes reordenadas según Excel ({len(img_files)} archivos)")
+        self.browser.img_files = all_files
+        self.browser._filter()
+        self.browser.info_lbl.configure(text=f"{len(all_files)} imágenes (orden Excel)")
+        self.status_var.set(f"✓ Imágenes reordenadas según Excel ({len(all_files)} archivos)")
         self._log(f"✓ Imágenes reordenadas según orden del Excel\n", "ok")
 
     # ─────────────────────────────────────────────────────────────
@@ -2234,49 +2234,51 @@ class MetaTagApp(tk.Tk):
         row_refs = []
         for idx, (val, label, desc) in enumerate(options):
             row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
-            row = tk.Frame(inner, bg=row_bg)
+            row = tk.Frame(inner, bg=row_bg, cursor="hand2")
             row.pack(fill="x")
 
-            indicator = tk.Frame(row, bg=S["accent"], width=4)
+            indicator = tk.Frame(row, bg=S["accent"], width=5)
             indicator.pack(side="left", fill="y")
 
-            rb = tk.Radiobutton(row, text="", variable=sort_var, value=val,
-                                bg=row_bg, selectcolor=S["accent"],
-                                activebackground=row_bg, cursor="hand2",
-                                indicatoron=False, width=2)
-            rb.pack(side="left", padx=(8, 0))
+            mark_lbl = tk.Label(row, text="  ", bg=row_bg, fg=S["accent"],
+                                font=FONTS["BODY"], width=2, anchor="center")
+            mark_lbl.pack(side="left", padx=(4, 0))
 
-            text_frame = tk.Frame(row, bg=row_bg)
+            text_frame = tk.Frame(row, bg=row_bg, cursor="hand2")
             text_frame.pack(side="left", fill="x", expand=True, pady=6)
             tk.Label(text_frame, text=label, bg=row_bg, fg=S["text"],
                      font=FONTS["BODY"], anchor="w").pack(anchor="w")
             tk.Label(text_frame, text=desc, bg=row_bg, fg=S["text3"],
                      font=FONTS["TINY"], anchor="w").pack(anchor="w")
 
-            row_refs.append((val, row, indicator, row_bg))
+            row_refs.append((val, row, indicator, mark_lbl, row_bg))
 
             def _enter(e, r=row, ind=indicator):
                 r.configure(bg=S["accent_pale"])
                 ind.configure(bg=S["accent_hover"])
-            def _leave(e, r=row, ind=indicator, bg=row_bg):
-                r.configure(bg=bg)
-                ind.configure(bg=S["accent"])
+            def _leave(e, r=row, ind=indicator, bg=row_bg, v=val):
+                sel = sort_var.get()
+                if v != sel:
+                    r.configure(bg=bg)
+                    ind.configure(bg=S["accent"])
             def _click(e, v=val):
                 sort_var.set(v)
-            for w in (row, rb, text_frame):
+            for w in (row, text_frame, mark_lbl):
                 w.bind("<Enter>", _enter)
                 w.bind("<Leave>", _leave)
                 w.bind("<Button-1>", _click)
 
         def _highlight_selected(*_):
             sel = sort_var.get()
-            for val, row, ind, bg in row_refs:
+            for val, row, ind, mark, bg in row_refs:
                 if val == sel:
                     row.configure(bg=S["accent_pale"])
                     ind.configure(bg=S["accent_hover"])
+                    mark.configure(text="●", fg=S["accent"])
                 else:
                     row.configure(bg=bg)
                     ind.configure(bg=S["accent"])
+                    mark.configure(text="  ", fg=S["accent"])
         sort_var.trace_add("write", _highlight_selected)
         _highlight_selected()
 
