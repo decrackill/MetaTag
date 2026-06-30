@@ -1785,81 +1785,46 @@ class MetaTagApp(tk.Tk):
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
 
-        def norm(s):
+        def normalize(s):
             return s.lower().replace("_", "").replace(" ", "").replace("-", "")
 
-        def get_stem(name):
+        def file_stem(path):
+            name = path.name
             while '.' in name:
                 name = name.rsplit('.', 1)[0]
             return name
 
-        excel_img_map = {}
+        row_by_norm = {}
         for ri, row in self.grid.df.iterrows():
             val = str(row[img_col]).strip()
             if val and val.lower() not in ("nan", "none", ""):
-                key = norm(get_stem(val))
-                sort_vals = tuple(
-                    str(row[sc]).strip().lower()
-                    if str(row[sc]).strip().lower() not in ("nan", "none", "")
-                    else ""
-                    for sc in chosen_cols
-                )
-                excel_img_map[key] = (ri, sort_vals)
+                norm = normalize(Path(val).stem)
+                row_by_norm[norm] = row
 
         def _sort_key(path):
-            file_key = norm(get_stem(path.name))
-            match = excel_img_map.get(file_key)
-            if match is None:
-                for ek, ev in excel_img_map.items():
-                    if file_key in ek or ek in file_key:
-                        match = ev
+            file_norm = normalize(file_stem(path))
+            row = row_by_norm.get(file_norm)
+            if row is None:
+                for norm_key, r in row_by_norm.items():
+                    if file_norm in norm_key or norm_key in file_norm:
+                        row = r
                         break
-            if match is None:
-                return (9999,)
-            return match[1]
+            if row is None:
+                return ("zzz",)
+            sort_values = []
+            for sc in chosen_cols:
+                sv = str(row[sc]).strip()
+                if sv.lower() in ("nan", "none", ""):
+                    sv = ""
+                sort_values.append(sv.lower())
+            return tuple(sort_values)
 
         all_files.sort(key=_sort_key)
-
-        if not messagebox.askyesno("Renombrar archivos",
-            "¿Deseas renombrar los archivos en la carpeta para que\n"
-            "el nuevo orden se guarde permanentemente?\n\n"
-            "Se actualizará también la columna de imagen en el Excel."):
-            self.browser.img_files = all_files
-            self.browser._filter()
-            self.browser.info_lbl.configure(text=f"{len(all_files)} imágenes (orden: {', '.join(chosen_cols)})")
-            self.status_var.set(f"✓ Imágenes reordenadas por {', '.join(chosen_cols)} ({len(all_files)} archivos)")
-            self._log(f"✓ Imágenes reordenadas según columnas: {', '.join(chosen_cols)}\n", "ok")
-            return
-
-        old_to_new = {}
-        rename_map = {}
-        for new_idx, f in enumerate(all_files, 1):
-            old_name = f.name
-            new_name = f"{new_idx:04d}_{old_name}"
-            old_to_new[old_name.lower()] = new_name
-            rename_map[f] = new_name
-
-        temp_files = []
-        for f in all_files:
-            temp_path = f.parent / (f".tmp_rename_{f.name}")
-            f.rename(temp_path)
-            temp_files.append((temp_path, rename_map[f]))
-
-        for temp_path, new_name in temp_files:
-            final_path = temp_path.parent / new_name
-            temp_path.rename(final_path)
-
-        for ri, row in self.grid.df.iterrows():
-            val = str(row[img_col]).strip()
-            if val and val.lower() not in ("nan", "none", ""):
-                old_lower = Path(val).name.lower()
-                if old_lower in old_to_new:
-                    self.grid.df.at[ri, img_col] = old_to_new[old_lower]
-
-        self.grid.load(self.grid.df)
-        self.browser.load_folder(folder)
-        self.status_var.set(f"✓ {len(temp_files)} archivos renombrados y Excel actualizado")
-        self._log(f"✓ {len(temp_files)} archivos renombrados (prefijo numérico)\n", "ok")
+        self.browser.img_files = all_files
+        self.browser._filter()
+        self.browser.info_lbl.configure(text=f"{len(all_files)} imágenes (orden: {', '.join(chosen_cols)})")
+        self.status_var.set(f"✓ Imágenes reordenadas por {', '.join(chosen_cols)} ({len(all_files)} archivos)")
+        self._log(f"✓ Imágenes reordenadas según columnas: {', '.join(chosen_cols)}\n", "ok")
 
     def _pick_sort_columns(self, all_cols: list) -> list | None:
         S = C
