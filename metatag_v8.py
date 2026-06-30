@@ -1054,7 +1054,7 @@ class MetaTagApp(tk.Tk):
         self.paned_window.pack(fill="both", expand=True)
 
         self.left = tk.Frame(self.paned_window, bg=C["panel"])
-        left_canvas = tk.Canvas(self.left, bg=C["panel"], highlightthickness=0)
+        left_canvas = tk.Canvas(self.left, bg=C["panel"], highlightthickness=0, bd=0)
         left_vsb = ttk.Scrollbar(self.left, orient="vertical", command=left_canvas.yview)
         left_inner = tk.Frame(left_canvas, bg=C["panel"])
         left_inner.bind("<Configure>", lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
@@ -1062,6 +1062,7 @@ class MetaTagApp(tk.Tk):
         left_canvas.configure(yscrollcommand=left_vsb.set)
         left_canvas.pack(side="left", fill="both", expand=True)
         left_vsb.pack(side="right", fill="y")
+        left_vsb.configure(width=0)
 
         def _on_left_mousewheel(event):
             left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -1070,12 +1071,16 @@ class MetaTagApp(tk.Tk):
                 left_canvas.yview_scroll(-1, "units")
             elif event.num == 5:
                 left_canvas.yview_scroll(1, "units")
-        for w in (left_canvas, left_inner):
-            w.bind("<MouseWheel>", _on_left_mousewheel)
-            w.bind("<Button-4>", _on_left_mousewheel_linux)
-            w.bind("<Button-5>", _on_left_mousewheel_linux)
+        def _bind_scroll_recursive(widget):
+            widget.bind("<MouseWheel>", _on_left_mousewheel)
+            widget.bind("<Button-4>", _on_left_mousewheel_linux)
+            widget.bind("<Button-5>", _on_left_mousewheel_linux)
+            for child in widget.winfo_children():
+                _bind_scroll_recursive(child)
+        self._bind_scroll_recursive = _bind_scroll_recursive
 
         self._build_control_panel(left_inner)
+        _bind_scroll_recursive(left_inner)
         self.paned_window.add(self.left, minsize=int(220*self.current_scale))
 
         center = tk.Frame(self.paned_window, bg=C["bg"])
