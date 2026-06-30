@@ -1730,15 +1730,18 @@ class MetaTagApp(tk.Tk):
         if not img_files:
             return messagebox.showwarning("Sin imágenes", "La carpeta no contiene imágenes compatibles.")
 
+        img_col = self.img_col_var.get()
+        if not img_col or img_col not in self.grid.df.columns:
+            return messagebox.showwarning("Sin columna de imagen",
+                "Selecciona la columna de imagen en la herramienta principal.")
+
         img_order = {p.stem.lower(): i for i, p in enumerate(img_files)}
 
         def _sort_key(row):
-            for col in row.index:
-                val = str(row[col]).strip()
-                if val and val.lower() not in ("nan", "none", ""):
-                    if Path(val).suffix.lower() in IMG_EXTS:
-                        key = Path(val).stem.lower()
-                        return img_order.get(key, 9999)
+            val = str(row[img_col]).strip()
+            if val and val.lower() not in ("nan", "none", ""):
+                key = Path(val).stem.lower()
+                return img_order.get(key, 9999)
             return 9999
 
         new_df = self.grid.df.copy()
@@ -1756,6 +1759,11 @@ class MetaTagApp(tk.Tk):
         if not folder or not os.path.isdir(folder):
             return messagebox.showwarning("Sin carpeta", "Selecciona la carpeta de imágenes.")
 
+        img_col = self.img_col_var.get()
+        if not img_col or img_col not in self.grid.df.columns:
+            return messagebox.showwarning("Sin columna de imagen",
+                "Selecciona la columna de imagen en la herramienta principal.")
+
         cols = list(self.grid.df.columns)
         chosen_cols = self._pick_sort_columns(cols)
         if not chosen_cols:
@@ -1764,24 +1772,25 @@ class MetaTagApp(tk.Tk):
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
 
-        col_indices = {col: i for i, col in enumerate(chosen_cols)}
+        img_stem_to_row = {}
+        for ri, row in self.grid.df.iterrows():
+            val = str(row[img_col]).strip()
+            if val and val.lower() not in ("nan", "none", ""):
+                stem = Path(val).stem.lower()
+                img_stem_to_row[stem] = row
 
         def _sort_key(path):
-            img_stem = path.stem.lower()
-            for _, row in self.grid.df.iterrows():
-                for col in self.grid.df.columns:
-                    val = str(row[col]).strip()
-                    if val and val.lower() not in ("nan", "none", ""):
-                        if Path(val).suffix.lower() in IMG_EXTS:
-                            if Path(val).stem.lower() == img_stem:
-                                sort_values = []
-                                for sc in chosen_cols:
-                                    sv = str(row[sc]).strip()
-                                    if sv.lower() in ("nan", "none", ""):
-                                        sv = ""
-                                    sort_values.append(sv.lower())
-                                return tuple(sort_values)
-            return ("zzz",)
+            stem = path.stem.lower()
+            row = img_stem_to_row.get(stem)
+            if row is None:
+                return ("zzz",)
+            sort_values = []
+            for sc in chosen_cols:
+                sv = str(row[sc]).strip()
+                if sv.lower() in ("nan", "none", ""):
+                    sv = ""
+                sort_values.append(sv.lower())
+            return tuple(sort_values)
 
         all_files.sort(key=_sort_key)
         self.browser.img_files = all_files
