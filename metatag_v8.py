@@ -1766,6 +1766,12 @@ class MetaTagApp(tk.Tk):
         self._log(f"✓ Excel reordenado según orden de imágenes\n", "ok")
 
     def _sync_images_to_excel(self):
+        """
+        Hace que las imágenes en el explorador sigan EXACTAMENTE el orden
+        de filas que ya tiene el Excel cargado — sin reordenar ni una sola
+        fila del Excel. Solo busca, para cada fila en su posición original,
+        la imagen correspondiente.
+        """
         if self.grid.df is None:
             return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
         folder = self.img_folder_var.get()
@@ -1777,21 +1783,13 @@ class MetaTagApp(tk.Tk):
             return messagebox.showwarning("Sin columna de imagen",
                 "Selecciona la columna de imagen en la herramienta principal.")
 
-        cols = list(self.grid.df.columns)
-        chosen_cols = self._pick_sort_columns(cols)
-        if not chosen_cols:
-            return
-
-        sorted_df = self.grid.df.copy()
-        for sc in reversed(chosen_cols):
-            sorted_df = sorted_df.sort_values(
-                by=sc, key=lambda s: s.fillna("").astype(str).str.lower())
-        sorted_df = sorted_df.reset_index(drop=True)
+        # NO se reordena nada. Se usa el DataFrame TAL CUAL está cargado.
+        df_actual = self.grid.df
 
         ordered_files = []
         no_encontradas = []
-        for ri in range(len(sorted_df)):
-            val = str(sorted_df.iloc[ri][img_col]).strip()
+        for ri in range(len(df_actual)):
+            val = str(df_actual.iloc[ri][img_col]).strip()
             if not val or val.lower() in ("nan", "none", ""):
                 continue
             found = self._find_image(val, folder)
@@ -1801,20 +1799,13 @@ class MetaTagApp(tk.Tk):
                     ordered_files.append(fp)
             else:
                 no_encontradas.append(val)
-                if "EC" in val.upper():
-                    name_stem = self._full_stem(val).lower()
-                    name_norm = self._normalize_numbers(
-                        re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", name_stem))
-                    similares = [k for k in self._img_cache.keys() if "ec" in k][:3]
-                    self._log(
-                        f"  🔍 DEBUG '{val}':\n"
-                        f"      stem normalizado = '{name_norm}'\n"
-                        f"      claves EC en cache (muestra) = {similares}\n", "warn")
 
         if not ordered_files:
             return messagebox.showwarning("Sin coincidencias",
                 "No se encontró ninguna imagen que coincida con la columna seleccionada.")
 
+        # Las imágenes que no aparecen en el Excel se añaden al final,
+        # en orden alfabético, para no perderlas de la carpeta.
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
         restantes = sorted(
@@ -1824,20 +1815,19 @@ class MetaTagApp(tk.Tk):
 
         self.browser.img_files = ordered_files
         self.browser._filter()
-        self.grid.df = sorted_df
-        self.grid.load(self.grid.df)
+        # El Excel NO se toca — se queda exactamente como estaba.
 
-        msg = f"{len(ordered_files)} imágenes (orden: {', '.join(chosen_cols)})"
+        msg = f"{len(ordered_files)} imágenes (orden EXACTO del Excel cargado)"
         self.browser.info_lbl.configure(text=msg)
-        self.status_var.set(f"✓ Imágenes reordenadas según columna '{img_col}'")
+        self.status_var.set(f"✓ Imágenes reordenadas según el orden actual del Excel")
         self._log(
-            f"✓ Imágenes reordenadas siguiendo el orden EXACTO de '{img_col}' "
-            f"(Excel ordenado por: {', '.join(chosen_cols)}).\n", "ok")
+            f"✓ Imágenes reordenadas para coincidir, fila por fila, con el "
+            f"orden ACTUAL del Excel (sin reordenar el Excel).\n", "ok")
         if no_encontradas:
             self._log(
                 f"  ⚠ {len(no_encontradas)} valores de '{img_col}' no tuvieron "
-                f"imagen correspondiente: {', '.join(no_encontradas[:5])}"
-                f"{' …' if len(no_encontradas) > 5 else ''}\n", "warn")
+                f"imagen correspondiente: {', '.join(no_encontradas[:8])}"
+                f"{' …' if len(no_encontradas) > 8 else ''}\n", "warn")
 
     def _pick_sort_columns(self, all_cols: list) -> list | None:
         S = C
