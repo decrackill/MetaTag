@@ -1756,28 +1756,139 @@ class MetaTagApp(tk.Tk):
         if not folder or not os.path.isdir(folder):
             return messagebox.showwarning("Sin carpeta", "Selecciona la carpeta de imágenes.")
 
-        excel_order = {}
-        idx = 0
-        for _, row in self.grid.df.iterrows():
-            for col in self.grid.df.columns:
-                val = str(row[col]).strip()
-                if val and val.lower() not in ("nan", "none", ""):
-                    if Path(val).suffix.lower() in IMG_EXTS:
-                        key = Path(val).stem.lower()
-                        if key not in excel_order:
-                            excel_order[key] = idx
-                            idx += 1
-                        break
+        cols = list(self.grid.df.columns)
+        chosen_cols = self._pick_sort_columns(cols)
+        if not chosen_cols:
+            return
 
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
-        all_files.sort(key=lambda p: excel_order.get(p.stem.lower(), 9999))
 
+        col_indices = {col: i for i, col in enumerate(chosen_cols)}
+
+        def _sort_key(path):
+            img_stem = path.stem.lower()
+            for _, row in self.grid.df.iterrows():
+                for col in self.grid.df.columns:
+                    val = str(row[col]).strip()
+                    if val and val.lower() not in ("nan", "none", ""):
+                        if Path(val).suffix.lower() in IMG_EXTS:
+                            if Path(val).stem.lower() == img_stem:
+                                sort_values = []
+                                for sc in chosen_cols:
+                                    sv = str(row[sc]).strip()
+                                    if sv.lower() in ("nan", "none", ""):
+                                        sv = ""
+                                    sort_values.append(sv.lower())
+                                return tuple(sort_values)
+            return ("zzz",)
+
+        all_files.sort(key=_sort_key)
         self.browser.img_files = all_files
         self.browser._filter()
-        self.browser.info_lbl.configure(text=f"{len(all_files)} imágenes (orden Excel)")
-        self.status_var.set(f"✓ Imágenes reordenadas según Excel ({len(all_files)} archivos)")
-        self._log(f"✓ Imágenes reordenadas según orden del Excel\n", "ok")
+        self.browser.info_lbl.configure(text=f"{len(all_files)} imágenes (orden: {', '.join(chosen_cols)})")
+        self.status_var.set(f"✓ Imágenes reordenadas por {', '.join(chosen_cols)} ({len(all_files)} archivos)")
+        self._log(f"✓ Imágenes reordenadas según columnas: {', '.join(chosen_cols)}\n", "ok")
+
+    def _pick_sort_columns(self, all_cols: list) -> list | None:
+        S = C
+        sc = self.current_scale
+        win = tk.Toplevel(self)
+        win.title("Columnas de ordenamiento")
+        win.configure(bg=S["bg"])
+        win.geometry(f"{int(400*sc)}x{int(380*sc)}")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.grid_rowconfigure(2, weight=1)
+        win.grid_columnconfigure(0, weight=1)
+
+        result = [None]
+        col_vars = {}
+        def on_ok():
+            result[0] = [c for c, v in col_vars.items() if v.get()]
+            win.destroy()
+        def on_cancel():
+            win.destroy()
+
+        hdr = tk.Frame(win, bg=S["header_bg"])
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(hdr, text="  Seleccionar columnas de orden", bg=S["header_bg"],
+                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+
+        tk.Label(win, text="Elige las columnas por las que se ordenarán las imágenes (en el orden que selecciones)",
+                 bg=S["bg"], fg=S["text3"], font=FONTS["BODY"],
+                 wraplength=int(360*sc)).grid(row=1, column=0, pady=(10, 4), padx=14)
+
+        list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
+                              highlightthickness=1)
+        list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 4))
+
+        canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
+        canvas.pack_propagate(False)
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=S["surface"])
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        def _sync_scroll(e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _sync_scroll)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _on_mousewheel_linux(event):
+            if event.num == 4: canvas.yview_scroll(-1, "units")
+            elif event.num == 5: canvas.yview_scroll(1, "units")
+        for w in (canvas, inner, list_frame):
+            w.bind("<MouseWheel>", _on_mousewheel)
+            w.bind("<Button-4>", _on_mousewheel_linux)
+            w.bind("<Button-5>", _on_mousewheel_linux)
+
+        for idx, col in enumerate(all_cols):
+            row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
+            var = tk.BooleanVar(value=False)
+            col_vars[col] = var
+
+            row = tk.Frame(inner, bg=row_bg, cursor="hand2")
+            row.pack(fill="x")
+
+            indicator = tk.Frame(row, bg=S["accent"], width=4)
+            indicator.pack(side="left", fill="y")
+
+            cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
+                                bg=row_bg, fg=S["text"],
+                                selectcolor=S["surface"],
+                                activebackground=row_bg,
+                                font=FONTS["BODY"], anchor="w",
+                                cursor="hand2")
+            cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
+
+            def _enter(e, r=row, ind=indicator):
+                r.configure(bg=S["accent_pale"])
+                ind.configure(bg=S["accent_hover"])
+            def _leave(e, r=row, ind=indicator, bg=row_bg):
+                r.configure(bg=bg)
+                ind.configure(bg=S["accent"])
+            for w in (row, cb):
+                w.bind("<Enter>", _enter)
+                w.bind("<Leave>", _leave)
+
+        sep = tk.Frame(win, bg=S["border"], height=1)
+        sep.grid(row=3, column=0, sticky="ew")
+        btn_frame = tk.Frame(win, bg=S["bg"])
+        btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
+                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
+                  command=on_cancel).pack(side="right", ipady=4)
+        tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
+                  font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
+                  activebackground=S["accent_hover"],
+                  command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
+
+        self.wait_window(win)
+        return result[0]
 
     # ─────────────────────────────────────────────────────────────
     #  LOTE POR ORDEN (NUEVA FEATURE v8.9)
