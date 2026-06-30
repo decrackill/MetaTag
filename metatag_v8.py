@@ -2598,6 +2598,9 @@ class MetaTagApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     #  BÚSQUEDA INTELIGENTE DE IMAGEN
     # ─────────────────────────────────────────────────────────────
+    def _normalize_numbers(self, s: str) -> str:
+        return re.sub(r"\d+", lambda m: str(int(m.group())), s)
+
     def _find_image(self, name: str, folder: str) -> str | None:
         name = name.strip()
         if not name: return None
@@ -2606,19 +2609,38 @@ class MetaTagApp(tk.Tk):
             self._img_cache = {f.stem.lower(): f
                                for f in folder_path.rglob("*")
                                if f.is_file() and f.suffix.lower() in IMG_EXTS}
+
+        def full_stem(s: str) -> str:
+            p = Path(s)
+            while p.suffix:
+                p = p.with_suffix("")
+            return p.name
+
         p = folder_path / name
         if p.exists(): return str(p)
-        name_lower, name_stem = name.lower(), Path(name).stem.lower()
+
+        name_lower = name.lower()
+        name_stem  = full_stem(name).lower()
+
         for _, fpath in self._img_cache.items():
             if fpath.name.lower() == name_lower: return str(fpath)
         if name_stem in self._img_cache: return str(self._img_cache[name_stem])
+
         name_clean = re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", name_stem)
         for stem_key, fpath in self._img_cache.items():
             if re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", stem_key) == name_clean:
                 return str(fpath)
+
+        name_normalized = self._normalize_numbers(name_clean)
+        for stem_key, fpath in self._img_cache.items():
+            stem_clean = re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", stem_key)
+            if self._normalize_numbers(stem_clean) == name_normalized:
+                return str(fpath)
+
         for stem_key, fpath in self._img_cache.items():
             if name_stem in stem_key or stem_key in name_stem:
                 return str(fpath)
+
         return None
 
     # ─────────────────────────────────────────────────────────────
