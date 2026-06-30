@@ -1492,7 +1492,7 @@ class MetaTagApp(tk.Tk):
         if f:
             self.img_folder_var.set(f)
             self.browser.load_folder(f)
-            self._img_cache = {fp.stem.lower(): fp
+            self._img_cache = {self._full_stem(fp.name).lower(): fp
                                for fp in Path(f).rglob("*")
                                if fp.is_file() and fp.suffix.lower() in IMG_EXTS}
             self._save_config()
@@ -1502,7 +1502,7 @@ class MetaTagApp(tk.Tk):
         if f:
             self.img_folder_var.set(f)
             self.browser.load_folder(f)
-            self._img_cache = {fp.stem.lower(): fp
+            self._img_cache = {self._full_stem(fp.name).lower(): fp
                                for fp in Path(f).rglob("*")
                                if fp.is_file() and fp.suffix.lower() in IMG_EXTS}
             self._save_config()
@@ -2598,6 +2598,12 @@ class MetaTagApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     #  BÚSQUEDA INTELIGENTE DE IMAGEN
     # ─────────────────────────────────────────────────────────────
+    def _full_stem(self, s: str) -> str:
+        p = Path(s)
+        while p.suffix:
+            p = p.with_suffix("")
+        return p.name
+
     def _normalize_numbers(self, s: str) -> str:
         return re.sub(r"\d+", lambda m: str(int(m.group())), s)
 
@@ -2606,21 +2612,15 @@ class MetaTagApp(tk.Tk):
         if not name: return None
         folder_path = Path(folder)
         if not self._img_cache:
-            self._img_cache = {f.stem.lower(): f
+            self._img_cache = {self._full_stem(f.name).lower(): f
                                for f in folder_path.rglob("*")
                                if f.is_file() and f.suffix.lower() in IMG_EXTS}
-
-        def full_stem(s: str) -> str:
-            p = Path(s)
-            while p.suffix:
-                p = p.with_suffix("")
-            return p.name
 
         p = folder_path / name
         if p.exists(): return str(p)
 
         name_lower = name.lower()
-        name_stem  = full_stem(name).lower()
+        name_stem  = self._full_stem(name).lower()
 
         for _, fpath in self._img_cache.items():
             if fpath.name.lower() == name_lower: return str(fpath)
@@ -2775,7 +2775,7 @@ class MetaTagApp(tk.Tk):
                 self.img_folder_var.set(cfg["img_folder"])
                 self.browser.load_folder(cfg["img_folder"])
                 self._img_cache = {
-                    f.stem.lower(): f
+                    self._full_stem(f.name).lower(): f
                     for f in Path(cfg["img_folder"]).rglob("*")
                     if f.is_file() and f.suffix.lower() in IMG_EXTS
                 }
