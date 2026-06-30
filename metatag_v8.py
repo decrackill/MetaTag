@@ -2832,128 +2832,131 @@ class MetaTagApp(tk.Tk):
                 diffs.append(f"{k}: '{v_old}' → '{v_new}'")
         return diffs
 
-    def _verify_all_metadata(self):
+    def _verify_source_images(self):
         """
-        Recorre TODAS las imágenes ya escritas en Metadatos_Escritos/ y
-        las compara contra la fila correspondiente del Excel actualmente
-        cargado. Genera un reporte de cuántas tienen datos divergentes
-        (residuales de corridas anteriores al fix de _check_metadata_divergence).
+        Revisa la CARPETA ORIGINAL de imágenes (la que se usa para escribir
+        metadatos nuevos) — NO la carpeta Metadatos_Escritos/. Para cada
+        imagen detecta si la sección donde MetaTag escribe sus datos
+        (UserComment JSON en JPEG, o el chunk 'Comment' en PNG) ya está
+        ocupada por datos previos. Si encuentra datos previos, ofrece
+        limpiarlos para que la próxima escritura no quede mezclada con
+        información vieja.
         """
-        if self.grid.df is None:
-            return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV primero.")
-        if not self.output_folder.exists():
-            return messagebox.showinfo("Sin datos escritos",
-                "Aún no se ha escrito ninguna imagen en Metadatos_Escritos/.")
+        folder = self.img_folder_var.get()
+        if not folder or not os.path.isdir(folder):
+            return messagebox.showwarning("Sin carpeta",
+                "Selecciona la carpeta de imágenes originales primero.")
+        if not PIL_OK:
+            return messagebox.showerror("Error", "Instala: pip install pillow piexif")
 
-        img_col = self.img_col_var.get()
-        if not img_col or img_col not in self.grid.df.columns:
-            return messagebox.showwarning("Sin columna de imagen",
-                "Selecciona la columna de imagen en la herramienta principal.")
+        all_files = [f for f in Path(folder).iterdir()
+                     if f.is_file() and f.suffix.lower() in IMG_EXTS]
+        if not all_files:
+            return messagebox.showinfo("Carpeta vacía",
+                "No hay imágenes compatibles en esta carpeta.")
 
         self.config(cursor="watch")
-        self._log("\n🔍 Verificando metadatos escritos vs. Excel actual...\n", "info")
+        self._log(f"\n🔍 Verificando metadatos previos en {len(all_files)} "
+                  f"imágenes de la carpeta original...\n", "info")
 
-        df = self.grid.df
-        img_col_idx = self._img_col_idx()
-
-        divergentes = []
-        verificadas = 0
-        no_match    = 0
-
-        for ri in range(len(df)):
-            val = str(df.iloc[ri][img_col]).strip()
-            if not val or val.lower() in ("nan", "none", ""):
-                continue
-            written_path = self.output_folder / Path(val).name
-            if not written_path.exists():
-                candidates = list(self.output_folder.glob(f"{Path(val).stem}*"))
-                if candidates:
-                    written_path = candidates[0]
-                else:
-                    no_match += 1
-                    continue
-
-            expected_meta = self.grid.get_row_metadata(ri, img_col_idx)
-            if not expected_meta:
-                continue
-
-            diffs = self._check_metadata_divergence(str(written_path), expected_meta)
-            verificadas += 1
-            if diffs:
-                divergentes.append((written_path.name, diffs))
+        ocupadas = []
+        for f in all_files:
+            existing = self._read_existing_metadata(str(f))
+            if existing:
+                ocupadas.append((f, existing))
 
         self.config(cursor="")
 
-        if not divergentes:
+        if not ocupadas:
             self._log(
-                f"✔ Verificación completa: {verificadas} imágenes revisadas, "
-                f"0 con divergencias.\n", "ok")
+                f"✔ Verificación completa: {len(all_files)} imágenes revisadas, "
+                f"NINGUNA tiene metadatos previos de MetaTag. Todas las "
+                f"secciones están limpias.\n", "ok")
             messagebox.showinfo("Verificación completa",
-                f"Se revisaron {verificadas} imágenes ya escritas.\n\n"
-                f"✔ Ninguna tiene datos divergentes respecto al Excel actual.")
-        else:
-            self._log(
-                f"⚠ Verificación completa: {verificadas} revisadas, "
-                f"{len(divergentes)} CON divergencias:\n", "warn")
-            for name, diffs in divergentes[:15]:
-                self._log(f"   • {name}: {' | '.join(diffs)}\n", "warn")
-            if len(divergentes) > 15:
-                self._log(f"   … y {len(divergentes)-15} más.\n", "warn")
+                f"Se revisaron {len(all_files)} imágenes en:\n{folder}\n\n"
+                f"✔ Ninguna tiene metadatos previos de MetaTag.\n"
+                f"Puedes escribir los nuevos datos sin riesgo de mezclas.")
+            return
 
-            self._last_divergent_list = divergentes
+        self._log(
+            f"⚠ Verificación completa: {len(all_files)} revisadas, "
+            f"{len(ocupadas)} YA TIENEN metadatos de MetaTag escritos:\n", "warn")
+        for f, meta in ocupadas[:15]:
+            preview = ", ".join(f"{k}={v}" for k, v in list(meta.items())[:3])
+            self._log(f"   • {f.name}: {preview}{' …' if len(meta) > 3 else ''}\n", "warn")
+        if len(ocupadas) > 15:
+            self._log(f"   … y {len(ocupadas)-15} más.\n", "warn")
 
-            respuesta = messagebox.askyesno(
-                "Divergencias encontradas",
-                f"Se revisaron {verificadas} imágenes ya escritas.\n\n"
-                f"⚠ {len(divergentes)} tienen datos distintos a los del Excel "
-                f"actual (probablemente residuales de una corrida anterior).\n\n"
-                f"¿Quieres reescribirlas ahora mismo con los valores "
-                f"correctos del Excel?")
-            if respuesta:
-                self._rewrite_divergent(divergentes, img_col_idx)
+        respuesta = messagebox.askyesno(
+            "Metadatos previos encontrados",
+            f"Se revisaron {len(all_files)} imágenes en la carpeta original.\n\n"
+            f"⚠ {len(ocupadas)} YA TIENEN metadatos de MetaTag escritos "
+            f"(la sección donde se guardan los datos no está vacía).\n\n"
+            f"Si escribes los nuevos metadatos ahora, estos se MEZCLARÁN "
+            f"con los datos viejos.\n\n"
+            f"¿Quieres limpiar esos {len(ocupadas)} archivos ahora mismo "
+            f"(borrar solo la sección de metadatos de MetaTag, sin tocar "
+            f"el resto de la imagen) antes de continuar?")
+        if respuesta:
+            self._clear_metatag_sections([f for f, _ in ocupadas])
 
-    def _rewrite_divergent(self, divergentes: list, img_col_idx: int):
-        """Reescribe solo las imágenes que salieron divergentes en la verificación."""
-        df = self.grid.df
-        img_col = self.img_col_var.get()
-        organizado = self.meta_mode_organized.get()
-
+    def _clear_metatag_sections(self, files: list):
+        """
+        Limpia ÚNICAMENTE la sección de metadatos que MetaTag usa
+        (ImageDescription, UserComment/Comment con el JSON, XPComment,
+        XPKeywords) — sin tocar ninguna otra propiedad de la imagen.
+        """
         self.config(cursor="watch")
         ok = err = 0
 
-        name_to_row = {}
-        for ri in range(len(df)):
-            val = str(df.iloc[ri][img_col]).strip()
-            if val:
-                name_to_row[Path(val).name] = ri
-
-        for filename, _diffs in divergentes:
-            ri = name_to_row.get(filename)
-            if ri is None:
-                stem = Path(filename).stem
-                for name, idx in name_to_row.items():
-                    if Path(name).stem == stem:
-                        ri = idx
-                        break
-            if ri is None:
-                err += 1
-                continue
-
-            meta = self.grid.get_row_metadata(ri, img_col_idx)
-            out_path = self.output_folder / filename
+        for f in files:
             try:
-                self._write_meta(str(out_path), meta, organizado)
+                ext = f.suffix.lower()
+                if ext in (".jpg", ".jpeg"):
+                    img = Image.open(str(f))
+                    try:
+                        exif = piexif.load(img.info.get("exif", b""))
+                    except Exception:
+                        exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
+                    exif["0th"].pop(piexif.ImageIFD.ImageDescription, None)
+                    exif["0th"].pop(40092, None)
+                    exif["0th"].pop(40094, None)
+                    exif["Exif"].pop(piexif.ExifIFD.UserComment, None)
+                    img.save(str(f), "jpeg", exif=piexif.dump(exif), quality=95)
+
+                elif ext == ".png":
+                    from PIL import PngImagePlugin
+                    img = Image.open(str(f))
+                    new_info = PngImagePlugin.PngInfo()
+                    old_text = dict(getattr(img, "text", {}))
+                    for k in ("Description", "Comment"):
+                        old_text.pop(k, None)
+                    for k, v in old_text.items():
+                        new_info.add_text(k, v)
+                    img.save(str(f), "PNG", pnginfo=new_info)
+
+                elif ext in (".tif", ".tiff"):
+                    img = Image.open(str(f))
+                    try:
+                        exif = piexif.load(img.info.get("exif", b""))
+                    except Exception:
+                        exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
+                    exif["0th"].pop(piexif.ImageIFD.ImageDescription, None)
+                    img.save(str(f), exif=piexif.dump(exif))
+
                 ok += 1
             except Exception as e:
-                self._log(f"  ✗ Error reescribiendo {filename}: {e}\n", "err")
+                self._log(f"  ✗ Error limpiando {f.name}: {e}\n", "err")
                 err += 1
 
         self.config(cursor="")
-        self._log(f"\n🔁 Reescritura de divergentes: {ok} corregidas · {err} errores.\n", "head")
-        self.status_var.set(f"✔ {ok} imágenes corregidas")
-        messagebox.showinfo("Reescritura completa",
-            f"✔ {ok} imágenes corregidas con los valores actuales del Excel.\n"
-            f"{f'✗ {err} con errores.' if err else ''}")
+        self._log(f"\n🧹 Limpieza de secciones MetaTag: {ok} limpiadas · "
+                  f"{err} errores.\n", "head")
+        self.status_var.set(f"✔ {ok} imágenes limpiadas, listas para nuevos metadatos")
+        messagebox.showinfo("Limpieza completa",
+            f"✔ {ok} imágenes quedaron con la sección de metadatos vacía.\n"
+            f"{f'✗ {err} con errores.' if err else ''}\n\n"
+            f"Ya puedes escribir los metadatos nuevos sin riesgo de mezclas.")
 
     def _write_jpeg(self, path: str, meta: dict, organizado: bool = True):
         img              = Image.open(path)
