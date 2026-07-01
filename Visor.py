@@ -1441,13 +1441,13 @@ class VisorApp(tk.Tk):
                   command=start_compare).pack(pady=(15, 0))
 
     def _open_image_comparison(self, folder_a: str, folder_b: str):
-        """Abre ventana fullscreen de comparación visual y esconde el Visor."""
+        """Visor doble de comparación: imagen + metadatos en cada lado."""
         imgs_a = sorted([str(f) for f in Path(folder_a).iterdir()
                          if f.is_file() and f.suffix.lower() in IMG_EXTS],
-                        key=lambda p: Path(p).name.lower())
+                        key=lambda p: p.lower())
         imgs_b = sorted([str(f) for f in Path(folder_b).iterdir()
                          if f.is_file() and f.suffix.lower() in IMG_EXTS],
-                        key=lambda p: Path(p).name.lower())
+                        key=lambda p: p.lower())
 
         if not imgs_a:
             return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{folder_a}")
@@ -1458,13 +1458,20 @@ class VisorApp(tk.Tk):
 
         win = tk.Toplevel(self)
         self._comp_window = win
-        win.title(f"⚖ Comparando: {Path(folder_a).name}  vs  {Path(folder_b).name}")
+        self._comp_thumbs = []
+        win.title(f"⚖ {Path(folder_a).name}  vs  {Path(folder_b).name}")
         win.configure(bg=C["bg"])
         win.protocol("WM_DELETE_WINDOW", lambda: self._close_comparison(win))
 
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry(f"{sw}x{sh}+0+0")
-        win.state("zoomed")
+        try:
+            win.attributes("-fullscreen", True)
+        except Exception:
+            pass
+
+        # ── Estado ──
+        state = {"idx_a": 0, "idx_b": 0, "thumbs": []}
 
         # ── Header ──
         hdr = tk.Frame(win, bg=C["header_bg"], height=50)
@@ -1474,115 +1481,201 @@ class VisorApp(tk.Tk):
         tk.Label(hdr, text=f"⚖  {Path(folder_a).name}  vs  {Path(folder_b).name}",
                  font=F_TITLE, bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
 
-        info_lbl = tk.Label(hdr, text=f"A: {len(imgs_a)} imgs  |  B: {len(imgs_b)} imgs",
-                            font=F_BODY, bg=C["header_bg"], fg=C["text2"])
-        info_lbl.pack(side="left", padx=20)
+        nav_frame = tk.Frame(hdr, bg=C["header_bg"])
+        nav_frame.pack(side="left", padx=20)
 
-        tk.Button(hdr, text="  Cerrar y volver al Visor  ", bg=C["err"], fg="#FFFFFF",
+        lbl_counter = tk.Label(nav_frame, text="", font=F_BOLD, bg=C["header_bg"], fg=C["text"])
+        lbl_counter.pack(side="left", padx=10)
+
+        def update_counter():
+            total = max(len(imgs_a), len(imgs_b))
+            lbl_counter.configure(text=f"{state['idx_a']+1} / {total}")
+
+        tk.Button(hdr, text="  Cerrar  ", bg=C["err"], fg="#FFFFFF",
                   font=F_BOLD, relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
                   command=lambda: self._close_comparison(win)).pack(side="right", padx=20, pady=8)
 
-        # ── Panel izquierdo (Carpeta A) ──
-        left_frame = tk.Frame(win, bg=C["bg"])
-        left_frame.pack(side="left", fill="both", expand=True, padx=(8, 4), pady=8)
+        # ── Body: dos paneles lado a lado ──
+        body = tk.Frame(win, bg=C["border"])
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        tk.Label(left_frame, text=f"CARPETA A — {Path(folder_a).name}",
-                 bg=C["bg"], fg=C["json_section"], font=F_BOLD).pack(anchor="w", padx=8, pady=(0, 4))
+        panels = []
+        for side, folder_name, imgs, idx_key, accent_col in [
+            ("left", folder_a, imgs_a, "idx_a", C["json_section"]),
+            ("right", folder_b, imgs_b, "idx_b", C["exif_section"])]:
 
-        left_canvas = tk.Canvas(left_frame, bg=C["surface"], highlightthickness=0)
-        left_vsb = ttk.Scrollbar(left_frame, orient="vertical", command=left_canvas.yview)
-        left_inner = tk.Frame(left_canvas, bg=C["surface"])
-        left_canvas.create_window((0, 0), window=left_inner, anchor="nw")
-        left_canvas.configure(yscrollcommand=left_vsb.set)
-        left_vsb.pack(side="right", fill="y")
-        left_canvas.pack(fill="both", expand=True)
+            panel = tk.Frame(body, bg=C["bg"])
+            panel.pack(side=side, fill="both", expand=True, padx=4)
 
-        # ── Panel derecho (Carpeta B) ──
-        right_frame = tk.Frame(win, bg=C["bg"])
-        right_frame.pack(side="right", fill="both", expand=True, padx=(4, 8), pady=8)
+            # Título de carpeta
+            tk.Label(panel, text=f"  {Path(folder_name).name}  ({len(imgs)} imgs)",
+                     bg=C["bg"], fg=accent_col, font=F_BOLD, anchor="w").pack(fill="x", padx=8, pady=(6, 4))
 
-        tk.Label(right_frame, text=f"CARPETA B — {Path(folder_b).name}",
-                 bg=C["bg"], fg=C["exif_section"], font=F_BOLD).pack(anchor="w", padx=8, pady=(0, 4))
+            # Canvas scrollable con imagen + metadatos
+            canvas = tk.Canvas(panel, bg=C["surface"], highlightthickness=0)
+            vsb = ttk.Scrollbar(panel, orient="vertical", command=canvas.yview)
+            inner = tk.Frame(canvas, bg=C["surface"])
+            canvas.create_window((0, 0), window=inner, anchor="nw", tags="inner_win")
+            canvas.configure(yscrollcommand=vsb.set)
+            vsb.pack(side="right", fill="y")
+            canvas.pack(fill="both", expand=True)
 
-        right_canvas = tk.Canvas(right_frame, bg=C["surface"], highlightthickness=0)
-        right_vsb = ttk.Scrollbar(right_frame, orient="vertical", command=right_canvas.yview)
-        right_inner = tk.Frame(right_canvas, bg=C["surface"])
-        right_canvas.create_window((0, 0), window=right_inner, anchor="nw")
-        right_canvas.configure(yscrollcommand=right_vsb.set)
-        right_vsb.pack(side="right", fill="y")
-        right_canvas.pack(fill="both", expand=True)
+            def _fit_width(event, c=canvas):
+                c.itemconfigure("inner_win", width=event.width)
+            canvas.bind("<Configure>", _fit_width)
 
-        # ── Sincronizar scroll entre ambos paneles ──
-        syncing = [False]
+            # Label de imagen
+            img_lbl = tk.Label(inner, bg=C["surface"])
+            img_lbl.pack(padx=8, pady=(8, 4))
 
-        def sync_left_to_right(*args):
-            if syncing[0]: return
-            syncing[0] = True
-            right_canvas.yview_moveto(args[0])
-            syncing[0] = False
+            # Label de nombre
+            name_lbl = tk.Label(inner, text="", bg=C["surface"], fg=C["text2"],
+                                font=F_TINY, anchor="w", wraplength=400)
+            name_lbl.pack(fill="x", padx=8)
 
-        def sync_right_to_left(*args):
-            if syncing[0]: return
-            syncing[0] = True
-            left_canvas.yview_moveto(args[0])
-            syncing[0] = False
+            # Info del archivo
+            info_lbl = tk.Label(inner, text="", bg=C["surface"], fg=C["text3"],
+                                font=F_MICRO, anchor="w", wraplength=400)
+            info_lbl.pack(fill="x", padx=8, pady=(0, 4))
 
-        left_canvas.configure(yscrollcommand=sync_left_to_right)
-        right_canvas.configure(yscrollcommand=sync_right_to_left)
+            # Tabla de metadatos
+            tree_frame = tk.Frame(inner, bg=C["border"])
+            tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        # ── Cargar thumbnails en ambos paneles ──
-        THUMB_W = 280
-        self._comp_thumbs = []
+            tree = ttk.Treeview(tree_frame, columns=("Campo", "Valor"), show="headings", selectmode="browse")
+            tree.heading("Campo", text="Campo", anchor="w")
+            tree.heading("Valor", text="Valor", anchor="w")
+            tree.column("Campo", width=150, anchor="w", minwidth=80)
+            tree.column("Valor", width=300, anchor="w", minwidth=100)
 
-        def load_thumbs(canvas, inner, img_list, side_label):
-            for i, path in enumerate(img_list):
-                row = tk.Frame(inner, bg=C["surface"])
-                row.pack(fill="x", padx=4, pady=3)
+            tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=tree_scroll.set)
+            tree_scroll.pack(side="right", fill="y")
+            tree.pack(fill="both", expand=True)
 
-                tk.Label(row, text=f"{i+1}. {Path(path).name}",
-                         bg=C["surface"], fg=C["text2"], font=F_TINY,
-                         anchor="w", wraplength=THUMB_W - 10).pack(anchor="w", padx=4)
+            tree.tag_configure("hdr", foreground=accent_col, font=F_BOLD, background=C["panel2"])
+            tree.tag_configure("odd", background=C["surface"])
+            tree.tag_configure("even", background=C["row_alt"])
+
+            panels.append({
+                "canvas": canvas, "inner": inner, "img_lbl": img_lbl,
+                "name_lbl": name_lbl, "info_lbl": info_lbl, "tree": tree,
+                "folder_name": folder_name, "imgs": imgs, "idx_key": idx_key,
+                "accent": accent_col,
+            })
+
+        # ── Barra de navegación inferior ──
+        nav_bar = tk.Frame(win, bg=C["panel"], height=50)
+        nav_bar.pack(fill="x")
+        nav_bar.pack_propagate(False)
+
+        def go_prev():
+            if state["idx_a"] > 0:
+                state["idx_a"] -= 1
+                state["idx_b"] = min(state["idx_b"], len(imgs_b) - 1)
+                if state["idx_b"] > 0: state["idx_b"] -= 1
+                show_current()
+
+        def go_next():
+            max_idx = max(len(imgs_a), len(imgs_b)) - 1
+            if state["idx_a"] < max_idx:
+                state["idx_a"] += 1
+                state["idx_b"] = min(state["idx_b"] + 1, len(imgs_b) - 1)
+                show_current()
+
+        tk.Button(nav_bar, text="  ←  Anterior  ", bg=C["panel2"], fg=C["text"],
+                  font=F_BOLD, relief="flat", bd=0, padx=16, pady=8, cursor="hand2",
+                  command=go_prev).pack(side="left", padx=20, pady=6)
+
+        tk.Button(nav_bar, text="  Siguiente  →  ", bg=C["panel2"], fg=C["text"],
+                  font=F_BOLD, relief="flat", bd=0, padx=16, pady=8, cursor="hand2",
+                  command=go_next).pack(side="left", padx=4, pady=6)
+
+        # ── Función para mostrar la imagen actual ──
+        def show_current():
+            update_counter()
+            for p in panels:
+                imgs = p["imgs"]
+                idx_key = p["idx_key"]
+                idx = state[idx_key]
+                if idx >= len(imgs):
+                    p["img_lbl"].configure(image="", text="[Sin imagen]")
+                    p["name_lbl"].configure(text="")
+                    p["info_lbl"].configure(text="")
+                    p["tree"].delete(*p["tree"].get_children())
+                    continue
+
+                path = imgs[idx]
+                p["name_lbl"].configure(text=Path(path).name)
 
                 try:
+                    size_kb = os.path.getsize(path) / 1024
                     img = Image.open(path)
                     img = ImageOps.exif_transpose(img)
-                    img.thumbnail((THUMB_W, 200), Image.LANCZOS)
-                    tk_img = ImageTk.PhotoImage(img)
-                    self._comp_thumbs.append(tk_img)
+                    w, h = img.size
+                    fmt = img.format or "—"
+                    p["info_lbl"].configure(
+                        text=f"{size_kb:.1f} KB  |  {w}×{h} px  |  {fmt}")
 
-                    lbl = tk.Label(row, image=tk_img, bg=C["surface"], cursor="hand2")
-                    lbl.pack(anchor="w", padx=4, pady=(0, 4))
-                    lbl.bind("<Double-Button-1>", lambda e, p=path: self._show_full_image(p))
+                    # Thumbnail para la tabla
+                    thumb = img.copy()
+                    thumb.thumbnail((400, 300), Image.LANCZOS)
+                    tk_img = ImageTk.PhotoImage(thumb)
+                    p["img_lbl"].configure(image=tk_img, text="")
+                    p["img_lbl"]._img_ref = tk_img
+                except Exception as e:
+                    p["img_lbl"].configure(image="", text=f"Error: {e}")
+                    p["info_lbl"].configure(text="")
+
+                # Llenar tabla de metadatos
+                p["tree"].delete(*p["tree"].get_children())
+                try:
+                    old_path = self.current_path
+                    old_meta = self.all_metadata[:]
+                    self.current_path = path
+                    self._extract_all_metadata(path)
+                    meta = self.all_metadata[:]
+                    self.current_path = old_path
+                    self.all_metadata = old_meta
+
+                    is_odd = True
+                    for tag_type, key, val in meta:
+                        if tag_type == "header":
+                            p["tree"].insert("", "end", values=(val, ""), tags=("hdr",))
+                        else:
+                            bg_tag = "odd" if is_odd else "even"
+                            p["tree"].insert("", "end", values=(key, val), tags=(bg_tag,))
+                            is_odd = not is_odd
                 except Exception:
-                    tk.Label(row, text=f"[No se pudo cargar: {Path(path).name}]",
-                             bg=C["surface"], fg=C["err"], font=F_TINY).pack(anchor="w", padx=4)
+                    pass
 
-        load_thumbs(left_canvas, left_inner, imgs_a, "A")
-        load_thumbs(right_canvas, right_inner, imgs_b, "B")
+                # Scroll arriba
+                p["canvas"].yview_moveto(0)
 
-        left_inner.bind("<Configure>", lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
-        right_inner.bind("<Configure>", lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
+        show_current()
 
-        # ── Scroll con rueda en cualquier parte ──
+        # ── Scroll con rueda ──
         def _on_wheel(event):
-            left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            right_canvas.yview_moveto(left_canvas.yview()[0])
+            d = int(-1 * (event.delta / 120))
+            panels[0]["canvas"].yview_scroll(d, "units")
+            panels[1]["canvas"].yview_moveto(panels[0]["canvas"].yview()[0])
 
         def _on_wheel_linux(event):
-            if event.num == 4:
-                left_canvas.yview_scroll(-3, "units")
-            elif event.num == 5:
-                left_canvas.yview_scroll(3, "units")
-            right_canvas.yview_moveto(left_canvas.yview()[0])
+            d = -3 if event.num == 4 else 3
+            panels[0]["canvas"].yview_scroll(d, "units")
+            panels[1]["canvas"].yview_moveto(panels[0]["canvas"].yview()[0])
 
-        def _bind_scroll_all(widget):
+        def _bind_scroll(widget):
             widget.bind("<MouseWheel>", _on_wheel, add=True)
             widget.bind("<Button-4>", _on_wheel_linux, add=True)
             widget.bind("<Button-5>", _on_wheel_linux, add=True)
             for child in widget.winfo_children():
-                _bind_scroll_all(child)
+                _bind_scroll(child)
 
-        win.after(200, lambda: _bind_scroll_all(win))
+        win.after(200, lambda: _bind_scroll(win))
+        win.bind("<Left>", lambda e: go_prev())
+        win.bind("<Right>", lambda e: go_next())
+        win.bind("<Escape>", lambda e: self._close_comparison(win))
 
     def _show_full_image(self, path: str):
         """Abre imagen a tamaño completo en una ventana emergente."""
@@ -1591,7 +1684,10 @@ class VisorApp(tk.Tk):
         win.configure(bg="#000000")
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry(f"{sw}x{sh}+0+0")
-        win.state("zoomed")
+        try:
+            win.attributes("-fullscreen", True)
+        except Exception:
+            pass
 
         canvas = tk.Canvas(win, bg="#000000", highlightthickness=0)
         canvas.pack(fill="both", expand=True)
