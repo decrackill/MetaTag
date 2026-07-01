@@ -913,7 +913,7 @@ class MetaTagApp(tk.Tk):
                         popup_ref[0] = None
 
                     for w in (row, lbl):
-                        w.bind("<Button-1>", select)
+                        w.bind("<Button-1>", lambda e, _s=select: _s())
                         w.bind("<Enter>", lambda e, r=row, l=lbl, v=opt:
                                (r.configure(bg=S_ACCENT_LIGHT), l.configure(bg=S_ACCENT_LIGHT, fg=S_TEXT)))
                         w.bind("<Leave>", lambda e, r=row, l=lbl, v=opt:
@@ -1185,9 +1185,9 @@ class MetaTagApp(tk.Tk):
         tk_chart_title = tk.Label(chart_frame, text="", bg=S_BG, fg=S_TEXT,
                                   font=("Georgia", int(13*self.current_scale), "bold"), pady=10)
         tk_chart_title.pack(fill="x")
+        update_chart()
         combo_var.trace_add("write", update_chart)
         chart_type_var.trace_add("write", update_chart)
-        update_chart()
 
     # ─────────────────────────────────────────────────────────────
     #  SELECTOR DE TEMA
