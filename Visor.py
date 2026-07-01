@@ -13,6 +13,7 @@ import json
 import math
 import datetime
 import threading
+import subprocess
 from pathlib import Path
 
 # ══════════════════════════════════════════════════════════════════
@@ -147,6 +148,67 @@ except Exception:
 C = dict(THEMES[CURRENT_THEME])
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 
+
+# ══════════════════════════════════════════════════════════════════
+#  DIÁLOGOS NATIVOS DEL SISTEMA OPERATIVO
+# ══════════════════════════════════════════════════════════════════
+def _native_file_open(title="Seleccionar archivo", filetypes=None):
+    if sys.platform == "linux":
+        cmd = ["zenity", "--file-selection", "--title", title]
+        for label, pattern in (filetypes or []):
+            cmd += [f"--file-filter={label} | {pattern}"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        cmd = ["kdialog", "--getopenfilename", ".", "--title", title]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    return filedialog.askopenfilename(title=title, filetypes=filetypes)
+
+
+def _native_folder_open(title="Seleccionar carpeta"):
+    if sys.platform == "linux":
+        cmd = ["zenity", "--file-selection", "--directory", "--title", title]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        cmd = ["kdialog", "--getexistingdirectory", ".", "--title", title]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    return filedialog.askdirectory(title=title)
+
+
+def _format_file_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
 # Tipografía del programa
 F_TITLE = ("Segoe UI", 14, "bold")
 F_H2    = ("Segoe UI", 11, "bold")
@@ -188,6 +250,7 @@ class VisorApp(tk.Tk):
         self.all_metadata = []
         self.folder_images = []
         self._all_folder_images = []
+        self._current_folder = ""
         self.current_path = None
         self._pil_image = None
 
@@ -236,29 +299,32 @@ class VisorApp(tk.Tk):
             self.load_image(initial_image)
             return
 
-        # 1. Restaurar la carpeta si existe
+        # 1. Restaurar la carpeta si existe y tiene imágenes
+        folder_loaded = False
         if last_dir and os.path.isdir(last_dir):
             self._open_folder_path(last_dir, auto_load=False)
-            self._show_explorer_pane()  # Asegurar que el explorador se muestre
-        
+            if self.folder_images:
+                self._show_explorer_pane()
+                folder_loaded = True
+
         # 2. Restaurar la imagen exacta
         if last_img and os.path.exists(last_img):
             if self.folder_images and last_img in self.folder_images:
                 self.load_image(last_img)
                 idx = self.folder_images.index(last_img)
-                self.file_listbox.selection_clear(0, "end")
-                self.file_listbox.selection_set(idx)
-                self.file_listbox.see(idx)
+                children = self.file_tree.get_children()
+                if idx < len(children):
+                    self.file_tree.selection_set(children[idx])
+                    self.file_tree.see(children[idx])
             else:
-                # La imagen existe pero no pertenece a la carpeta cargada
                 self._hide_explorer_pane()
                 self.load_image(last_img)
         elif self.folder_images:
-            # Si hay carpeta pero no imagen guardada, cargar la primera
             self.load_image(self.folder_images[0])
-            self.file_listbox.selection_set(0)
+            children = self.file_tree.get_children()
+            if children:
+                self.file_tree.selection_set(children[0])
         else:
-            # Si no hay nada, mostrar pantalla de bienvenida
             self._show_welcome()
             self._hide_explorer_pane()
 
@@ -506,51 +572,87 @@ class VisorApp(tk.Tk):
         self.after(100, self._bind_zoom_events)
 
     def _build_left_bottom(self, parent):
-        """Construye el explorador de la carpeta."""
-        # Encabezado del explorador
-        exp_hdr = tk.Frame(parent, bg=C["panel"])
-        exp_hdr.pack(fill="x", padx=12, pady=(4, 6))
-        
-        tk.Label(
-            exp_hdr, text="EXPLORADOR", bg=C["panel"], 
-            fg=C["accent"], font=("Segoe UI", 9, "bold")
-        ).pack(side="left")
-        
-        self._lbl_count = tk.Label(exp_hdr, text="", bg=C["panel"], fg=C["text3"], font=F_MICRO)
-        self._lbl_count.pack(side="right")
+        """Construye el explorador de archivos nativo con Treeview."""
+        # Barra de navegación superior
+        nav_frame = tk.Frame(parent, bg=C["panel"])
+        nav_frame.pack(fill="x", padx=8, pady=(6, 4))
 
-        # Barra de búsqueda de archivos
+        tk.Label(nav_frame, text="EXPLORADOR", bg=C["panel"],
+                 fg=C["accent"], font=("Segoe UI", 9, "bold")).pack(side="left")
+
+        self._lbl_count = tk.Label(nav_frame, text="", bg=C["panel"], fg=C["text3"], font=F_MICRO)
+        self._lbl_count.pack(side="right", padx=(0, 4))
+
+        nav_btns = tk.Frame(nav_frame, bg=C["panel"])
+        nav_btns.pack(side="right")
+
+        self._btn_up = tk.Button(
+            nav_btns, text="⬆", font=F_TINY, bg=C["panel2"], fg=C["text2"],
+            relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
+            command=self._go_parent_folder,
+            highlightthickness=1, highlightbackground=C["border"])
+        self._btn_up.pack(side="left", padx=(0, 2))
+
+        self._btn_home = tk.Button(
+            nav_btns, text="🏠", font=F_TINY, bg=C["panel2"], fg=C["text2"],
+            relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
+            command=self._go_home_folder,
+            highlightthickness=1, highlightbackground=C["border"])
+        self._btn_home.pack(side="left")
+
+        for b in (self._btn_up, self._btn_home):
+            b.bind("<Enter>", lambda e, _b=b: _b.configure(bg=C["border"]))
+            b.bind("<Leave>", lambda e, _b=b: _b.configure(bg=C["panel2"]))
+
+        # Barra de ruta actual
+        self._path_var = tk.StringVar(value="")
+        path_frame = tk.Frame(parent, bg=C["panel2"], highlightthickness=1, highlightbackground=C["border"])
+        path_frame.pack(fill="x", padx=8, pady=(0, 4))
+
+        tk.Label(path_frame, text=" 📁 ", bg=C["panel2"], fg=C["text3"], font=F_TINY).pack(side="left")
+        self._path_label = tk.Label(
+            path_frame, textvariable=self._path_var, bg=C["panel2"],
+            fg=C["text2"], font=F_MICRO, anchor="w", wraplength=280)
+        self._path_label.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 4))
+
+        # Barra de búsqueda
         search_frame = tk.Frame(parent, bg=C["panel2"], highlightthickness=1, highlightbackground=C["border"])
-        search_frame.pack(fill="x", padx=12, pady=(0, 8))
-        
+        search_frame.pack(fill="x", padx=8, pady=(0, 4))
+
         tk.Label(search_frame, text=" 🔍 ", bg=C["panel2"], fg=C["text3"], font=F_TINY).pack(side="left")
-        
         self._folder_search = tk.StringVar()
         self._folder_search.trace_add("write", self._filter_folder)
-        
         tk.Entry(
-            search_frame, textvariable=self._folder_search, bg=C["panel2"], 
+            search_frame, textvariable=self._folder_search, bg=C["panel2"],
             fg=C["text"], insertbackground=C["accent"], relief="flat", bd=0, font=F_BODY
-        ).pack(side="left", fill="x", expand=True, ipady=6)
+        ).pack(side="left", fill="x", expand=True, ipady=5)
 
-        # Lista de archivos (Listbox)
-        listbox_frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1, highlightbackground=C["border"])
-        listbox_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        
-        scrollbar = ttk.Scrollbar(listbox_frame, orient="vertical")
-        
-        self.file_listbox = tk.Listbox(
-            listbox_frame, bg=C["surface"], fg=C["text"], 
-            selectbackground=C["sel_bg"], selectforeground=C["sel_fg"], 
-            relief="flat", bd=0, font=F_BODY, activestyle="none", 
-            yscrollcommand=scrollbar.set
-        )
-        
-        scrollbar.configure(command=self.file_listbox.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.file_listbox.pack(fill="both", expand=True, padx=2, pady=2)
-        
-        self.file_listbox.bind("<<ListboxSelect>>", self._on_list_select)
+        # Treeview de archivos
+        tree_frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1, highlightbackground=C["border"])
+        tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        cols = ("size", "date")
+        self.file_tree = ttk.Treeview(
+            tree_frame, columns=cols, show="tree headings", selectmode="browse")
+
+        self.file_tree.heading("#0", text="Nombre", anchor="w")
+        self.file_tree.heading("size", text="Tamaño", anchor="e")
+        self.file_tree.heading("date", text="Fecha", anchor="w")
+
+        self.file_tree.column("#0", width=180, minwidth=100, anchor="w")
+        self.file_tree.column("size", width=65, minwidth=50, anchor="e", stretch=False)
+        self.file_tree.column("date", width=75, minwidth=60, anchor="w", stretch=False)
+
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.file_tree.yview)
+        self.file_tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.pack(side="right", fill="y")
+        self.file_tree.pack(fill="both", expand=True)
+
+        self.file_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self.file_tree.bind("<Double-Button-1>", self._on_tree_double_click)
+
+        # Mapa de ruta por item ID
+        self._tree_item_paths = {}
 
     def _build_right(self, parent):
         """Construye la tabla principal de metadatos."""
@@ -656,15 +758,16 @@ class VisorApp(tk.Tk):
             self.folder_images = saved_folder
             self._all_folder_images = saved_folder[:]
             self._show_explorer_pane()
-            self._refresh_listbox()
+            self._refresh_file_tree()
             
         if saved_path and os.path.exists(saved_path):
             self.load_image(saved_path)
             if saved_path in self.folder_images:
+                children = self.file_tree.get_children()
                 idx = self.folder_images.index(saved_path)
-                self.file_listbox.selection_clear(0, "end")
-                self.file_listbox.selection_set(idx)
-                self.file_listbox.see(idx)
+                if idx < len(children):
+                    self.file_tree.selection_set(children[idx])
+                    self.file_tree.see(children[idx])
         elif not self.folder_images:
             self._show_welcome()
 
@@ -672,20 +775,26 @@ class VisorApp(tk.Tk):
     #  NAVEGACIÓN DE ARCHIVOS
     # ─────────────────────────────────────────────────────────────
     def _browse(self):
-        """Abre un solo archivo mediante diálogo."""
-        file_path = filedialog.askopenfilename(
-            filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.tif *.tiff *.webp")]
-        )
-        if file_path:
+        """Abre un solo archivo mediante diálogo nativo del SO."""
+        file_path = _native_file_open(
+            title="Seleccionar imagen",
+            filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.tif *.tiff *.webp"),
+                       ("Todos", "*.*")])
+        if file_path and os.path.exists(file_path):
             self._hide_explorer_pane()
             self.folder_images = []
             self.load_image(file_path)
+        else:
+            if not self.folder_images and not self.current_path:
+                self._show_welcome()
 
     def _browse_folder(self):
-        """Abre una carpeta mediante diálogo."""
-        folder_path = filedialog.askdirectory(title="Seleccionar carpeta de estudio")
-        if folder_path:
+        """Abre una carpeta mediante diálogo nativo del SO."""
+        folder_path = _native_folder_open(title="Seleccionar carpeta de estudio")
+        if folder_path and os.path.isdir(folder_path):
             self._open_folder_path(folder_path, auto_load=True)
+        elif not self.folder_images:
+            self._show_welcome()
 
     def _open_folder_path(self, folder: str, auto_load: bool = True):
         """Procesa una ruta de directorio y extrae las imágenes válidas."""
@@ -698,59 +807,97 @@ class VisorApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo leer la carpeta:\n{e}")
             return
-            
+
         images = sorted(images, key=lambda p: Path(p).name.lower())
-        
+
         if not images:
             if auto_load:
                 messagebox.showinfo("Carpeta vacía", "No hay imágenes compatibles en esta carpeta.")
             return
-        
+
         self.folder_images = images
         self._all_folder_images = images[:]
-        
+        self._current_folder = folder
+
         self._show_explorer_pane()
-        self._refresh_listbox()
-        
+        self._path_var.set(folder)
+        self._refresh_file_tree()
+
         if auto_load:
-            self.file_listbox.selection_clear(0, "end")
-            self.file_listbox.selection_set(0)
+            self.file_tree.selection_set(self.file_tree.get_children()[0])
             self.load_image(self.folder_images[0])
 
     def _filter_folder(self, *_):
-        """Filtra la lista de archivos mediante la barra de búsqueda inferior."""
+        """Filtra la lista de archivos mediante la barra de búsqueda."""
         search_term = self._folder_search.get().lower()
         all_items = getattr(self, "_all_folder_images", self.folder_images)
-        
+
         if search_term:
             self.folder_images = [p for p in all_items if search_term in Path(p).name.lower()]
         else:
             self.folder_images = all_items[:]
-            
-        self._refresh_listbox()
 
-    def _refresh_listbox(self):
-        """Actualiza la visualización gráfica del Listbox de archivos mediante carga en bloque."""
-        self.file_listbox.delete(0, "end")
-        
-        # Inserción en bloque para optimizar el rendimiento de la GUI
-        items_to_insert = [f"  {Path(filepath).name}" for filepath in self.folder_images]
-        if items_to_insert:
-            self.file_listbox.insert("end", *items_to_insert)
-            
-        # Aplicar colores alternos a las filas
-        for i in range(len(items_to_insert)):
-            bg_color = C["row_alt"] if i % 2 != 0 else C["surface"]
-            self.file_listbox.itemconfigure(i, background=bg_color)
-            
-        self._lbl_count.configure(text=f"{len(self.folder_images)} archivos")
+        self._refresh_file_tree()
 
-    def _on_list_select(self, event):
-        """Evento lanzado al hacer clic en un archivo del explorador."""
-        selection = self.file_listbox.curselection()
-        if selection:
-            index = selection[0]
-            self.load_image(self.folder_images[index])
+    def _refresh_file_tree(self):
+        """Actualiza el Treeview del explorador con nombre, tamaño y fecha."""
+        self.file_tree.delete(*self.file_tree.get_children())
+        self._tree_item_paths.clear()
+
+        for i, filepath in enumerate(self.folder_images):
+            p = Path(filepath)
+            try:
+                stat = p.stat()
+                size_str = _format_file_size(stat.st_size)
+                date_str = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%y")
+            except Exception:
+                size_str = "—"
+                date_str = "—"
+
+            bg = C["row_alt"] if i % 2 != 0 else C["surface"]
+            tag = f"row_{i}"
+            item_id = self.file_tree.insert(
+                "", "end", text=f"  {p.name}", values=(size_str, date_str),
+                tags=(tag,))
+            self.file_tree.tag_configure(tag, background=bg)
+            self._tree_item_paths[item_id] = filepath
+
+        total_size = sum(Path(f).stat().st_size for f in self.folder_images
+                         if Path(f).exists())
+        self._lbl_count.configure(
+            text=f"{len(self.folder_images)} archivos · {_format_file_size(total_size)}")
+
+    def _on_tree_select(self, event):
+        """Evento al seleccionar un archivo en el Treeview."""
+        sel = self.file_tree.selection()
+        if not sel:
+            return
+        path = self._tree_item_paths.get(sel[0])
+        if path and os.path.exists(path):
+            self.load_image(path)
+
+    def _on_tree_double_click(self, event):
+        """Doble clic: si es carpeta, navegar a ella."""
+        sel = self.file_tree.selection()
+        if not sel:
+            return
+        path = self._tree_item_paths.get(sel[0])
+        if path and os.path.isdir(path):
+            self._open_folder_path(path, auto_load=True)
+
+    def _go_parent_folder(self):
+        """Sube un nivel en la jerarquía de carpetas."""
+        current = getattr(self, "_current_folder", "")
+        if not current:
+            return
+        parent = str(Path(current).parent)
+        if parent != current:
+            self._open_folder_path(parent, auto_load=True)
+
+    def _go_home_folder(self):
+        """Navega a la carpeta home del usuario."""
+        home = str(Path.home())
+        self._open_folder_path(home, auto_load=True)
 
 
     # ─────────────────────────────────────────────────────────────

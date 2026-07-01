@@ -444,10 +444,15 @@ class ExcelGrid(tk.Frame):
 
     def scroll_to_row(self, ri: int):
         if self.df is None: return
+        canvas_h = self.canvas.winfo_height()
+        if canvas_h <= 1: canvas_h = 400
         total_h = self.HDR_H + len(self.df) * self.ROW_H
-        y_top   = self.HDR_H + ri * self.ROW_H
-        if total_h > 0:
-            self.canvas.yview_moveto(max(0, (y_top / total_h) - 0.1))
+        y_row   = self.HDR_H + ri * self.ROW_H
+        if total_h <= canvas_h:
+            self.canvas.yview_moveto(0)
+        else:
+            target = (y_row - canvas_h // 3) / total_h
+            self.canvas.yview_moveto(max(0, min(target, 1.0)))
         self._schedule_redraw()
 
     def _get_val(self, val):
@@ -616,8 +621,6 @@ class MetaTagApp(tk.Tk):
         self.status_var     = tk.StringVar(value="Carga un archivo Excel o CSV para comenzar.")
         self._img_cache     = {}
         self.locked_columns = set()
-        self.editor_window  = None
-        self.editor_entries = {}
         self.omit_empty_var          = tk.BooleanVar(value=True)
         self.meta_mode_organized     = tk.BooleanVar(value=False)
         self.meta_mode_organized.trace_add("write", lambda *_: self._update_meta_preview())
@@ -633,13 +636,124 @@ class MetaTagApp(tk.Tk):
         self._load_config_post_build()
         self._toggle_mode()
 
-        self.bind("<Up>",   self._nav_up)
-        self.bind("<Down>", self._nav_down)
+        self.bind("<Up>",          self._nav_up)
+        self.bind("<Down>",        self._nav_down)
+        self.bind("<Control-o>",   lambda e: self._browse_csv())
+        self.bind("<Control-O>",   lambda e: self._browse_csv())
+        self.bind("<Control-b>",   lambda e: self._browse_folder())
+        self.bind("<Control-B>",   lambda e: self._browse_folder())
+        self.bind("<Control-e>",   lambda e: self._start_processing())
+        self.bind("<Control-E>",   lambda e: self._start_processing())
+        self.bind("<Control-i>",   lambda e: self._inject_manual())
+        self.bind("<Control-I>",   lambda e: self._inject_manual())
+        self.bind("<Control-g>",   lambda e: self._show_stats())
+        self.bind("<Control-G>",   lambda e: self._show_stats())
+        self.bind("<Control-l>",   lambda e: self._clear_selection())
+        self.bind("<Control-L>",   lambda e: self._clear_selection())
+        self.bind("<Control-f>",   self._focus_search)
+        self.bind("<Control-F>",   self._focus_search)
+        self.bind("<Control-r>",   lambda e: self._sync_images_to_excel())
+        self.bind("<Control-R>",   lambda e: self._sync_images_to_excel())
+        self.bind("<Control-Shift-b>",   lambda e: self._batch_write_by_order())
+        self.bind("<Control-Shift-B>",   lambda e: self._batch_write_by_order())
+        self.bind("<Control-q>",   lambda e: self._on_close())
+        self.bind("<Control-Q>",   lambda e: self._on_close())
+        self.bind("<Escape>",      self._on_escape)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
         self._save_config()
         self.destroy()
+
+    def _focus_search(self, event=None):
+        if hasattr(self, "filter_entry"):
+            self.filter_entry.focus_set()
+            self.filter_entry.select_range(0, "end")
+
+    def _on_escape(self, event=None):
+        if hasattr(self, "loupe_window") and self.loupe_window.winfo_exists():
+            self.loupe_window.destroy()
+            return
+        for w in self.winfo_toplevel().winfo_children():
+            if isinstance(w, tk.Toplevel) and w.winfo_exists():
+                w.destroy()
+                return
+        self._clear_selection()
+
+    def _show_shortcuts(self):
+        win = tk.Toplevel(self)
+        win.title("Atajos de teclado")
+        win.configure(bg=C["bg"])
+        win.geometry(f"{int(420*self.current_scale)}x{int(520*self.current_scale)}")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+
+        hdr = tk.Frame(win, bg=C["header_bg"])
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="  ⌨  Atajos de teclado", bg=C["header_bg"],
+                 fg=C["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+
+        canvas = tk.Canvas(win, bg=C["surface"], highlightthickness=0)
+        vsb = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=C["surface"])
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=8, pady=8)
+        vsb.pack(side="right", fill="y", padx=(0, 8), pady=8)
+
+        shortcuts = [
+            ("Navegación", [
+                ("↑ / ↓", "Navegar entre filas"),
+            ]),
+            ("Archivos", [
+                ("Ctrl + O", "Abrir archivo Excel/CSV"),
+                ("Ctrl + B", "Abrir carpeta de imágenes"),
+            ]),
+            ("Edición", [
+                ("Ctrl + E", "Escribir metadatos (Modo Inteligente)"),
+                ("Ctrl + I", "Inyectar en foto actual (Modo Libre)"),
+                ("Ctrl + L", "Limpiar selección"),
+            ]),
+            ("Herramientas", [
+                ("Ctrl + G", "Ver estadísticas / gráficos"),
+                ("Ctrl + R", "Reordenar imágenes según Excel"),
+                ("Ctrl + Shift + B", "Lote por orden (Excel→Fotos)"),
+            ]),
+            ("Búsqueda", [
+                ("Ctrl + F", "Enfocar campo de búsqueda"),
+            ]),
+            ("General", [
+                ("Escape", "Cerrar ventana / limpiar selección"),
+                ("Ctrl + Q", "Salir del programa"),
+            ]),
+        ]
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _on_mousewheel_linux(event):
+            if event.num == 4: canvas.yview_scroll(-1, "units")
+            elif event.num == 5: canvas.yview_scroll(1, "units")
+        def _bind_scroll_recursive(widget):
+            widget.bind("<MouseWheel>", _on_mousewheel, add=True)
+            widget.bind("<Button-4>", _on_mousewheel_linux, add=True)
+            widget.bind("<Button-5>", _on_mousewheel_linux, add=True)
+            for child in widget.winfo_children():
+                _bind_scroll_recursive(child)
+
+        for group_name, items in shortcuts:
+            tk.Label(inner, text=group_name, bg=C["surface"], fg=C["accent"],
+                     font=FONTS["LABEL_B"], anchor="w").pack(fill="x", padx=10, pady=(10, 2))
+            for key, desc in items:
+                row = tk.Frame(inner, bg=C["surface"])
+                row.pack(fill="x", padx=10, pady=1)
+                tk.Label(row, text=key, bg=C["accent_pale"], fg=C["accent"],
+                         font=FONTS["MONO"], width=18, anchor="w",
+                         padx=6, pady=3).pack(side="left")
+                tk.Label(row, text=desc, bg=C["surface"], fg=C["text"],
+                         font=FONTS["LABEL"], anchor="w").pack(side="left", padx=6)
+
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        win.after(100, lambda: _bind_scroll_recursive(inner))
 
     # ─────────────────────────────────────────────────────────────
     #  NAVEGACIÓN CON TECLADO
@@ -649,7 +763,7 @@ class MetaTagApp(tk.Tk):
         if self.grid.df is None or len(self.grid.df) == 0: return
         if self.current_row is None: self.current_row = 0
         elif self.current_row > 0: self.current_row -= 1
-        self._auto_select_nav()
+        self._auto_select_nav(fast=True)
 
     def _nav_down(self, event):
         if isinstance(event.widget, tk.Entry): return
@@ -659,15 +773,32 @@ class MetaTagApp(tk.Tk):
             prev = self.current_row
             self.current_row += 1
             self._apply_autocompletion(prev, self.current_row)
-        self._auto_select_nav()
+        self._auto_select_nav(fast=True)
 
-    def _auto_select_nav(self):
+    def _auto_select_nav(self, fast=False):
         self.grid.clear_selection()
         self.grid.select_row(self.current_row)
         self.grid.scroll_to_row(self.current_row)
-        self._on_row_click(self.current_row)
-        if self.editor_window and self.editor_window.winfo_exists():
-            self._populate_editor()
+        if fast:
+            self._update_meta_preview()
+            if hasattr(self, "_nav_img_timer"): self.after_cancel(self._nav_img_timer)
+            self._nav_img_timer = self.after(250, self._nav_load_image)
+        else:
+            self._on_row_click(self.current_row)
+
+    def _nav_load_image(self):
+        if self.current_row is None or self.grid.df is None: return
+        folder = self.img_folder_var.get()
+        if not folder: return
+        row = self.grid.df.iloc[self.current_row]
+        for col in self.grid.df.columns:
+            img_name = str(row[col]).strip()
+            if img_name and img_name.lower() not in ("nan", "none", ""):
+                img_path = self._find_image(img_name, folder)
+                if img_path:
+                    self._load_image(img_path)
+                    self.browser.highlight(Path(img_path).name)
+                    break
 
     def _apply_autocompletion(self, prev_row_idx: int, new_row_idx: int):
         if not self.locked_columns or self.df is None: return
@@ -681,93 +812,6 @@ class MetaTagApp(tk.Tk):
                     self.original_df.at[idx_real, col] = prev_val
                 cambios = True
         if cambios: self.grid.redraw()
-
-    # ─────────────────────────────────────────────────────────────
-    #  EDITOR DE CASILLAS
-    # ─────────────────────────────────────────────────────────────
-    def _open_editor(self):
-        if self.df is None:
-            return messagebox.showinfo("Aviso", "Carga un archivo de datos primero.")
-        if self.editor_window and self.editor_window.winfo_exists():
-            self.editor_window.lift(); return
-
-        self.editor_window = tk.Toplevel(self)
-        self.editor_window.title("✏️ Editor y Autocompletado")
-        self.editor_window.geometry(f"{int(450*self.current_scale)}x{int(650*self.current_scale)}")
-        self.editor_window.configure(bg=C["surface"])
-
-        hdr = tk.Frame(self.editor_window, bg=C["header_bg"])
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="Valores de la Fila Actual", font=FONTS["H2"],
-                 bg=C["header_bg"], fg=C["header_fg"]).pack(pady=10)
-        tk.Label(self.editor_window,
-                 text="Cierra el candado 🔒 para que el dato SIEMPRE se escriba y se copie.",
-                 bg=C["surface"], fg=C["text3"], font=FONTS["TINY"]).pack(pady=5)
-
-        canvas = tk.Canvas(self.editor_window, bg=C["surface"], highlightthickness=0)
-        vsb    = ttk.Scrollbar(self.editor_window, orient="vertical", command=canvas.yview)
-        scroll_frame = tk.Frame(canvas, bg=C["surface"])
-        scroll_frame.bind("<Configure>",
-                          lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw",
-                             width=int(420*self.current_scale))
-        canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True, padx=10, pady=5)
-        vsb.pack(side="right", fill="y")
-
-        self.editor_entries.clear()
-        img_col = self.img_col_var.get()
-
-        for col in self.df.columns:
-            if col == img_col: continue
-            row_frame = tk.Frame(scroll_frame, bg=C["surface"])
-            row_frame.pack(fill="x", pady=4)
-            is_locked = col in self.locked_columns
-            btn_lock  = tk.Button(row_frame,
-                                  text="🔒" if is_locked else "🔓",
-                                  font=FONTS["BODY"], width=3, relief="flat",
-                                  bg=C["sel_bg"] if is_locked else C["btn_ghost_bg"],
-                                  fg=C["text"])
-            btn_lock.pack(side="left", padx=5)
-
-            def toggle_lock(c=col, btn=btn_lock):
-                if c in self.locked_columns:
-                    self.locked_columns.remove(c)
-                    btn.configure(text="🔓", bg=C["btn_ghost_bg"])
-                else:
-                    self.locked_columns.add(c)
-                    btn.configure(text="🔒", bg=C["sel_bg"])
-                self._update_meta_preview()
-            btn_lock.configure(command=toggle_lock)
-
-            tk.Label(row_frame, text=col[:15], width=15, anchor="e",
-                     bg=C["surface"], fg=C["text"], font=FONTS["LABEL_B"]).pack(side="left", padx=5)
-            entry_var = tk.StringVar()
-            entry = tk.Entry(row_frame, textvariable=entry_var,
-                             bg=C["bg"], fg=C["text"], relief="solid", bd=1, font=FONTS["BODY"])
-            entry.pack(side="left", fill="x", expand=True)
-
-            def update_df(*args, c=col, v=entry_var):
-                if self.current_row is not None and self.df is not None:
-                    self.df.at[self.current_row, c] = v.get()
-                    if self.original_df is not None:
-                        idx_real = self.df.index[self.current_row]
-                        self.original_df.at[idx_real, c] = v.get()
-                    self.grid.redraw()
-                    self._update_meta_preview()
-            entry_var.trace_add("write", update_df)
-            self.editor_entries[col] = entry_var
-
-        self._populate_editor()
-
-    def _populate_editor(self):
-        if not self.editor_window or not self.editor_window.winfo_exists(): return
-        if self.current_row is None or self.df is None: return
-        for col, var in self.editor_entries.items():
-            if col in self.df.columns:
-                val = str(self.df.at[self.current_row, col])
-                if val == "nan": val = ""
-                var.set(val)
 
     # ─────────────────────────────────────────────────────────────
     #  ESTADÍSTICAS / GRÁFICOS
@@ -1178,7 +1222,6 @@ class MetaTagApp(tk.Tk):
         self._btn(parent, "✕  Limpiar selección",       self._clear_selection,   primary=False)
 
         section("HERRAMIENTAS AVANZADAS")
-        self._btn(parent, "✏️ Editor de Casillas (Candados)", self._open_editor,         primary=False)
         self._btn(parent, "📊 Ver Estadísticas (Gráficos)",  self._show_stats,           primary=False)
         self._btn(parent, "🗂 Lote por Orden (Excel→Fotos)", self._batch_write_by_order, primary=False)
 
@@ -1211,6 +1254,9 @@ class MetaTagApp(tk.Tk):
                                 justify="left")
         self.out_lbl.pack(anchor="w", padx=10, pady=(0, 4))
         self._btn(parent, "📂  Abrir carpeta de salida", self._open_output_folder, primary=False)
+
+        section("ATAJOS DE TECLADO")
+        self._btn(parent, "⌨  Ver atajos disponibles", self._show_shortcuts, primary=False)
 
         tk.Frame(parent, bg=C["border_light"], height=1).pack(fill="x", padx=10, pady=10)
 
@@ -2172,6 +2218,13 @@ class MetaTagApp(tk.Tk):
                     if val.lower() in ("nan", "none", ""): val = ""
                     if omit_empty and not val: continue
                     meta[col] = val
+
+                for col in self.locked_columns:
+                    if col in batch_df.columns and col not in meta:
+                        val = str(row[col]).strip()
+                        if val.lower() in ("nan", "none", ""): val = ""
+                        if omit_empty and not val: continue
+                        meta[col] = val
 
                 if not meta:
                     if (i + 1) % 5 == 0 or (i + 1) == total:
