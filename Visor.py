@@ -1498,6 +1498,13 @@ class VisorApp(tk.Tk):
             total = max(len(imgs_a), len(imgs_b))
             lbl_counter.configure(text=f"{state['idx_a']+1} / {total}")
 
+        tk.Button(hdr, text="  ⬇ PDF  ", bg=C["accent"], fg="#FFF5E8",
+                  font=F_BOLD, relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+                  activebackground=C["accent_hover"],
+                  command=lambda: self._export_comparison_pdf(
+                      imgs_a, imgs_b, Path(folder_a).name, Path(folder_b).name)
+                  ).pack(side="right", padx=(0, 8), pady=8)
+
         tk.Button(hdr, text="  Cerrar  ", bg=C["err"], fg="#FFFFFF",
                   font=F_BOLD, relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
                   command=lambda: self._close_comparison(win)).pack(side="right", padx=20, pady=8)
@@ -1727,6 +1734,165 @@ class VisorApp(tk.Tk):
         self.deiconify()
         self.lift()
         self.focus_force()
+
+    def _export_comparison_pdf(self, imgs_a: list, imgs_b: list, name_a: str, name_b: str):
+        """Exporta un PDF con la comparación lado a lado de cada par de imágenes."""
+        if not REPORTLAB_OK:
+            return messagebox.showerror("Falta", "Instala reportlab: pip install reportlab")
+
+        output_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            initialfile=f"Comparacion_{name_a}_vs_{name_b}.pdf",
+            filetypes=[("PDF", "*.pdf")])
+        if not output_path:
+            return
+
+        total = min(len(imgs_a), len(imgs_b))
+        if total == 0:
+            return messagebox.showwarning("Sin datos", "No hay pares de imágenes para comparar.")
+
+        self.config(cursor="watch")
+        self.update_idletasks()
+
+        try:
+            doc = SimpleDocTemplate(
+                output_path, pagesize=A4,
+                topMargin=1.5*cm, bottomMargin=1.5*cm,
+                leftMargin=1.5*cm, rightMargin=1.5*cm)
+
+            styles = getSampleStyleSheet()
+            CLR_GOLD = colors.HexColor("#D4A574")
+            CLR_BROWN = colors.HexColor("#5C3518")
+            CLR_PAPER = colors.HexColor("#FAF7F2")
+            CLR_STRIPE = colors.HexColor("#F3EDE5")
+            CLR_LINE = colors.HexColor("#D4C8B4")
+
+            s_title = ParagraphStyle("T", parent=styles["Title"], fontName="Helvetica-Bold",
+                                     fontSize=16, textColor=CLR_BROWN, alignment=TA_CENTER, spaceAfter=4)
+            s_sub = ParagraphStyle("S", parent=styles["Normal"], fontName="Helvetica-Oblique",
+                                   fontSize=9, textColor=CLR_GOLD, alignment=TA_CENTER, spaceAfter=10)
+            s_section = ParagraphStyle("Sec", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                       fontSize=10, textColor=CLR_BROWN, spaceBefore=10, spaceAfter=4)
+            s_key = ParagraphStyle("K", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                   fontSize=7.5, textColor=colors.HexColor("#2A1505"))
+            s_val = ParagraphStyle("V", parent=styles["Normal"], fontName="Helvetica",
+                                   fontSize=7.5, textColor=CLR_BROWN)
+            s_name = ParagraphStyle("N", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                    fontSize=8, textColor=CLR_BROWN, alignment=TA_CENTER)
+
+            flowables = []
+
+            # Portada
+            flowables.append(Paragraph("COMPARACIÓN DE METADATOS", s_title))
+            flowables.append(Paragraph(
+                f"{name_a}  vs  {name_b}  —  {datetime.datetime.now():%d/%m/%Y %H:%M}", s_sub))
+            flowables.append(HRFlowable(width="100%", thickness=2, color=CLR_GOLD, spaceAfter=10))
+            flowables.append(Paragraph(
+                f"Total de pares comparados: {total}", s_sub))
+            flowables.append(Spacer(1, 0.5*cm))
+
+            def extract_meta(path):
+                try:
+                    old_path = self.current_path
+                    old_meta = self.all_metadata[:]
+                    self.current_path = path
+                    self._extract_all_metadata(path)
+                    meta = self.all_metadata[:]
+                    self.current_path = old_path
+                    self.all_metadata = old_meta
+                    return {k: v for t, k, v in meta if t != "header"
+                            and k not in {"(Sin datos JSON)", "(Sin EXIF)", "(Sin GPS)",
+                                          "(Sin datos GPS)", "(Error EXIF)", ""}}
+                except Exception:
+                    return {}
+
+            for i in range(total):
+                path_a, path_b = imgs_a[i], imgs_b[i]
+                meta_a = extract_meta(path_a)
+                meta_b = extract_meta(path_b)
+
+                # Título del par
+                flowables.append(HRFlowable(width="100%", thickness=1, color=CLR_LINE, spaceBefore=8))
+                flowables.append(Paragraph(
+                    f"Par {i+1}/{total}:  {Path(path_a).name}  vs  {Path(path_b).name}", s_section))
+
+                # Imágenes lado a lado
+                try:
+                    imgs_row = []
+                    for p, label in [(path_a, "A"), (path_b, "B")]:
+                        img = ImageOps.exif_transpose(Image.open(p))
+                        if img.mode not in ("RGB", "L"):
+                            img = img.convert("RGB")
+                        img.thumbnail((8*cm, 5*cm), Image.LANCZOS)
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=85)
+                        buf.seek(0)
+                        rl_img = RLImage(buf)
+                        rl_img.drawWidth = min(8*cm, rl_img.drawWidth)
+                        rl_img.drawHeight = min(5*cm, rl_img.drawHeight)
+                        imgs_row.append([
+                            Paragraph(f"<b>{label}: {Path(p).name}</b>", s_name),
+                            rl_img
+                        ])
+
+                    img_table = Table(
+                        [[imgs_row[0][0], imgs_row[1][0]],
+                         [imgs_row[0][1], imgs_row[1][1]]],
+                        colWidths=[8.5*cm, 8.5*cm])
+                    img_table.setStyle(TableStyle([
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("BOX", (0, 0), (-1, -1), 1, CLR_GOLD),
+                        ("BACKGROUND", (0, 0), (-1, -1), CLR_PAPER),
+                        ("TOPPADDING", (0, 0), (-1, -1), 6),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ]))
+                    flowables.append(img_table)
+                    flowables.append(Spacer(1, 0.3*cm))
+                except Exception:
+                    pass
+
+                # Tabla de metadatos lado a lado
+                all_keys = sorted(set(meta_a) | set(meta_b))
+                if all_keys:
+                    tbl_data = [[Paragraph("<b>Campo</b>", s_key),
+                                 Paragraph(f"<b>Valor en {name_a}</b>", s_key),
+                                 Paragraph(f"<b>Valor en {name_b}</b>", s_key)]]
+                    for k in all_keys:
+                        va = meta_a.get(k, "—")
+                        vb = meta_b.get(k, "—")
+                        color_a = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#7EB8C9")
+                        color_b = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#BB86FC")
+                        tbl_data.append([
+                            Paragraph(k, s_key),
+                            Paragraph(f'<font color="{color_a}">{va}</font>', s_val),
+                            Paragraph(f'<font color="{color_b}">{vb}</font>', s_val),
+                        ])
+
+                    meta_table = Table(tbl_data, colWidths=[5*cm, 6*cm, 6*cm])
+                    meta_table.setStyle(TableStyle([
+                        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, CLR_STRIPE]),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5DED5")),
+                        ("BOX", (0, 0), (-1, -1), 1, CLR_LINE),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ]))
+                    flowables.append(meta_table)
+
+            # Pie
+            flowables.append(Spacer(1, 1*cm))
+            flowables.append(HRFlowable(width="100%", thickness=1, color=CLR_LINE))
+            flowables.append(Paragraph(
+                "<b>MetaTag Visor v9.0</b>  •  Generado automáticamente", s_sub))
+
+            doc.build(flowables)
+            messagebox.showinfo("PDF Exportado", f"Comparación guardada en:\n\n{output_path}")
+        except Exception as e:
+            messagebox.showerror("Error PDF", str(e))
+        finally:
+            self.config(cursor="")
 
 
     # ─────────────────────────────────────────────────────────────
