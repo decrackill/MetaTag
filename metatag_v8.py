@@ -824,6 +824,7 @@ class MetaTagApp(tk.Tk):
         S_CARD         = C["surface"]
         S_BORDER       = C["border"]
         S_ACCENT       = C["accent"]
+        S_ACCENT_LIGHT = C.get("accent_light", C["accent"])
         S_TEXT         = C["text"]
         S_TEXT_MUTE    = C["text2"]
         S_CHART_COLORS = C.get("chart_colors",
@@ -842,17 +843,107 @@ class MetaTagApp(tk.Tk):
         top_frame = tk.Frame(win, bg=S_BG, pady=15, padx=20)
         top_frame.pack(fill="x")
 
-        # ── Selector de Variable ──
-        var_frame = tk.Frame(top_frame, bg=S_BG)
-        var_frame.pack(side="left")
-        tk.Label(var_frame, text="📊 Variable a analizar:", bg=S_BG, fg=S_TEXT_MUTE,
-                 font=FONTS["TINY"]).pack(anchor="w")
-        combo_var = tk.StringVar(value=validas[0])
-        var_cb = ttk.Combobox(var_frame, textvariable=combo_var, values=validas,
-                              state="readonly", font=FONTS["BODY"], width=22)
-        var_cb.pack(fill="x", pady=(4, 0))
+        # ── Selector custom con popup ──
+        def make_selector(parent, label_text, icon, options, default, on_change):
+            frame = tk.Frame(parent, bg=S_BG)
+            tk.Label(frame, text=f"{icon} {label_text}", bg=S_BG, fg=S_TEXT_MUTE,
+                     font=FONTS["TINY"]).pack(anchor="w")
 
-        # ── Selector de Estilo ──
+            current = tk.StringVar(value=default)
+
+            btn_frame = tk.Frame(frame, bg=S_BORDER, padx=1, pady=1)
+            btn_frame.pack(fill="x", pady=(4, 0))
+
+            inner = tk.Frame(btn_frame, bg=C["surface"], cursor="hand2")
+            inner.pack(fill="x")
+
+            display = tk.Label(inner, text=default, bg=C["surface"], fg=S_TEXT,
+                               font=FONTS["BODY"], anchor="w", padx=12, pady=7)
+            display.pack(side="left", fill="x", expand=True)
+
+            arrow = tk.Label(inner, text="▾", bg=C["surface"], fg=C["accent"],
+                             font=FONTS["LABEL_B"], padx=8)
+            arrow.pack(side="right")
+
+            popup_ref = [None]
+
+            def toggle(e=None):
+                if popup_ref[0] and popup_ref[0].winfo_exists():
+                    popup_ref[0].destroy()
+                    popup_ref[0] = None
+                    return
+
+                m = tk.Toplevel(win)
+                popup_ref[0] = m
+                m.withdraw()
+                m.overrideredirect(True)
+                win.update_idletasks()
+                x = btn_frame.winfo_rootx()
+                y = btn_frame.winfo_rooty() + btn_frame.winfo_height() + 2
+                min_w  = btn_frame.winfo_width()
+                char_w = max((len(opt) for opt in options), default=10)
+                popup_w = max(min_w, char_w * 9 + 32)
+                popup_h = len(options) * 34 + 8
+                screen_w = win.winfo_screenwidth()
+                if x + popup_w > screen_w - 10:
+                    x = screen_w - popup_w - 10
+                m.geometry(f"{popup_w}x{popup_h}+{x}+{y}")
+                m.configure(bg=S_BORDER)
+
+                container = tk.Frame(m, bg=C["surface"])
+                container.pack(fill="both", expand=True, padx=1, pady=1)
+
+                for opt in options:
+                    is_sel = (opt == current.get())
+                    bg = S_ACCENT if is_sel else C["surface"]
+                    fg = S_BG if is_sel else S_TEXT
+
+                    row = tk.Frame(container, bg=bg, cursor="hand2")
+                    row.pack(fill="x", padx=2, pady=1)
+
+                    lbl = tk.Label(row, text=f"  {opt}", bg=bg, fg=fg,
+                                   font=FONTS["BODY"], anchor="w", padx=8, pady=4)
+                    lbl.pack(fill="x")
+
+                    def select(val=opt, win_ref=m):
+                        current.set(val)
+                        display.configure(text=val)
+                        on_change(val)
+                        win_ref.destroy()
+                        popup_ref[0] = None
+
+                    for w in (row, lbl):
+                        w.bind("<Button-1>", select)
+                        w.bind("<Enter>", lambda e, r=row, l=lbl, v=opt:
+                               (r.configure(bg=S_ACCENT_LIGHT), l.configure(bg=S_ACCENT_LIGHT, fg=S_TEXT)))
+                        w.bind("<Leave>", lambda e, r=row, l=lbl, v=opt:
+                               (r.configure(bg=S_ACCENT if v == current.get() else C["surface"]),
+                                l.configure(bg=S_ACCENT if v == current.get() else C["surface"],
+                                            fg=S_BG if v == current.get() else S_TEXT)))
+
+                m.deiconify()
+
+            def _close_popup(e=None):
+                if popup_ref[0] and popup_ref[0].winfo_exists():
+                    popup_ref[0].destroy()
+                    popup_ref[0] = None
+
+            win.bind("<FocusOut>",  _close_popup, add="+")
+            win.bind("<Unmap>",     _close_popup, add="+")
+            win.bind("<Configure>", _close_popup, add="+")
+
+            for w in (inner, display, arrow):
+                w.bind("<Button-1>", toggle)
+
+            return frame, current
+
+        # ── Selectores ──
+        def on_var_change(val):
+            update_chart()
+
+        def on_style_change(val):
+            update_chart()
+
         CHART_OPTIONS = [
             "🍩 Dona HD",
             "🥧 Pastel Profesional",
@@ -860,14 +951,15 @@ class MetaTagApp(tk.Tk):
             "📈 Barras Vertical",
             "🎯 Lollipop",
         ]
-        style_frame = tk.Frame(top_frame, bg=S_BG)
-        style_frame.pack(side="left", padx=(30, 0))
-        tk.Label(style_frame, text="🎨 Estilo del Gráfico:", bg=S_BG, fg=S_TEXT_MUTE,
-                 font=FONTS["TINY"]).pack(anchor="w")
-        chart_type_var = tk.StringVar(value="🍩 Dona HD")
-        style_cb = ttk.Combobox(style_frame, textvariable=chart_type_var, values=CHART_OPTIONS,
-                                state="readonly", font=FONTS["BODY"], width=22)
-        style_cb.pack(fill="x", pady=(4, 0))
+
+        selector_var_frame, combo_var = make_selector(
+            top_frame, "Variable a analizar", "📊", validas, validas[0], on_var_change)
+        selector_style_frame, chart_type_var = make_selector(
+            top_frame, "Estilo del Gráfico", "🎨",
+            CHART_OPTIONS, "🍩 Dona HD", on_style_change)
+
+        selector_var_frame.pack(side="left")
+        selector_style_frame.pack(side="left", padx=(30, 0))
 
         body_paned = tk.PanedWindow(win, orient="horizontal",
                                     bg=S_BORDER, sashwidth=4, bd=0)
