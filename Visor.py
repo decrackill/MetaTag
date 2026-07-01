@@ -1388,28 +1388,65 @@ class VisorApp(tk.Tk):
         self._comp_window = win
         win.title("⚖ Comparar Metadatos")
         win.configure(bg=C["bg"])
-        win.resizable(False, False)
+        win.resizable(False, True)
         win.attributes("-topmost", True)
 
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        win.geometry(f"{min(600, int(sw*0.5))}x{min(400, int(sh*0.5))}+{(sw-min(600, int(sw*0.5)))//2}+{(sh-min(400, int(sh*0.5)))//2}")
+        ww = min(620, int(sw * 0.5))
+        wh = min(550, int(sh * 0.65))
+        win.geometry(f"{ww}x{wh}+{(sw - ww) // 2}+{(sh - wh) // 2}")
 
+        # Header fijo
         hdr = tk.Frame(win, bg=C["header_bg"], height=50)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
         tk.Label(hdr, text="⚖  Selecciona lo que quieres comparar", font=F_TITLE,
                  bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
 
-        body = tk.Frame(win, bg=C["bg"])
-        body.pack(fill="both", expand=True, padx=20, pady=15)
+        # Canvas con scrollbar
+        canvas = tk.Canvas(win, bg=C["bg"], highlightthickness=0)
+        vsb = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        body = tk.Frame(canvas, bg=C["bg"])
+
+        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def _fit_body_width(event):
+            canvas.itemconfigure(body_window, width=event.width)
+        canvas.bind("<Configure>", _fit_body_width)
+
+        def _sync_scroll(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        body.bind("<Configure>", _sync_scroll)
+
+        # Scroll recursivo: funciona sin importar dónde esté el cursor
+        def _on_wheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _on_wheel_linux(event):
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+
+        def _bind_scroll_recursive(widget):
+            widget.bind("<MouseWheel>", _on_wheel, add=True)
+            widget.bind("<Button-4>", _on_wheel_linux, add=True)
+            widget.bind("<Button-5>", _on_wheel_linux, add=True)
+            for child in widget.winfo_children():
+                _bind_scroll_recursive(child)
+
+        win.after(100, lambda: _bind_scroll_recursive(body))
 
         # ── Opción A: Dos imágenes ──
-        tk.Label(body, text="IMÁGENES", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w")
+        tk.Label(body, text="IMÁGENES", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w", padx=20, pady=(15, 0))
         tk.Label(body, text="Selecciona dos fotos individuales para comparar sus metadatos",
-                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", pady=(0, 6))
+                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", padx=20, pady=(0, 6))
 
         img_frame = tk.Frame(body, bg=C["bg"])
-        img_frame.pack(fill="x", pady=(0, 15))
+        img_frame.pack(fill="x", padx=20, pady=(0, 15))
 
         path_a_var = tk.StringVar()
         path_b_var = tk.StringVar()
@@ -1440,24 +1477,23 @@ class VisorApp(tk.Tk):
                 return messagebox.showwarning("Falta imagen", "Selecciona la Imagen B.")
             meta_a = self._extract_metadata_from_path(a)
             meta_b = self._extract_metadata_from_path(b)
-            self._show_comparison_window(
-                Path(a).name, Path(b).name, meta_a, meta_b)
+            self._show_comparison_window(Path(a).name, Path(b).name, meta_a, meta_b)
 
         tk.Button(body, text="⚖  Comparar Imágenes", bg=C["accent"], fg="#FFF5E8",
                   font=F_BOLD, relief="flat", bd=0, padx=20, pady=8, cursor="hand2",
                   activebackground=C["accent_hover"],
-                  command=compare_images).pack(pady=(0, 15))
+                  command=compare_images).pack(padx=20, pady=(0, 15))
 
         # ── Separador ──
-        tk.Frame(body, bg=C["border"], height=1).pack(fill="x", pady=(0, 15))
+        tk.Frame(body, bg=C["border"], height=1).pack(fill="x", padx=20, pady=(0, 15))
 
         # ── Opción B: Dos carpetas ──
-        tk.Label(body, text="CARPETAS", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w")
-        tk.Label(body, text="Compara la primera imagen de cada carpeta (ej: Metadatos_Escritos vs Original)",
-                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", pady=(0, 6))
+        tk.Label(body, text="CARPETAS", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w", padx=20)
+        tk.Label(body, text="Compara la primera imagen de cada carpeta\n(ej: Metadatos_Escritos vs Original)",
+                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", padx=20, pady=(0, 6))
 
         folder_frame = tk.Frame(body, bg=C["bg"])
-        folder_frame.pack(fill="x", pady=(0, 10))
+        folder_frame.pack(fill="x", padx=20, pady=(0, 10))
 
         folder_a_var = tk.StringVar()
         folder_b_var = tk.StringVar()
@@ -1500,7 +1536,7 @@ class VisorApp(tk.Tk):
         tk.Button(body, text="⚖  Comparar Carpetas", bg=C["panel2"], fg=C["text"],
                   font=F_BOLD, relief="flat", bd=0, padx=20, pady=8, cursor="hand2",
                   highlightthickness=1, highlightbackground=C["border"],
-                  command=compare_folders).pack()
+                  command=compare_folders).pack(padx=20, pady=(0, 20))
 
     def _first_image_in_folder(self, folder: str) -> str | None:
         """Devuelve la primera imagen encontrada en una carpeta."""
