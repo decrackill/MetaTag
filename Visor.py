@@ -266,6 +266,7 @@ class VisorApp(tk.Tk):
 
         # Variables del Comparador
         self._comp_window = None
+        self._comp_thumbs = []
 
         # Construcción de la Interfaz
         self._build_styles()
@@ -1376,124 +1377,34 @@ class VisorApp(tk.Tk):
 
 
     # ─────────────────────────────────────────────────────────────
-    #  HERRAMIENTA DE COMPARACIÓN DE METADATOS
+    #  HERRAMIENTA DE COMPARACIÓN DE IMÁGENES
     # ─────────────────────────────────────────────────────────────
     def _open_comparator(self):
-        """Abre ventana para seleccionar dos imágenes o carpetas y compararlas."""
+        """Diálogo para seleccionar dos carpetas, luego abre vista dedicada."""
         if self._comp_window and self._comp_window.winfo_exists():
             self._comp_window.lift()
             return
 
         win = tk.Toplevel(self)
         self._comp_window = win
-        win.title("⚖ Comparar Metadatos")
+        win.title("⚖ Seleccionar carpetas para comparar")
         win.configure(bg=C["bg"])
-        win.resizable(False, True)
+        win.resizable(False, False)
         win.attributes("-topmost", True)
 
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        ww = min(620, int(sw * 0.5))
-        wh = min(550, int(sh * 0.65))
+        ww = 560
+        wh = 260
         win.geometry(f"{ww}x{wh}+{(sw - ww) // 2}+{(sh - wh) // 2}")
 
-        # Header fijo
         hdr = tk.Frame(win, bg=C["header_bg"], height=50)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        tk.Label(hdr, text="⚖  Selecciona lo que quieres comparar", font=F_TITLE,
+        tk.Label(hdr, text="⚖  Selecciona las dos carpetas a comparar", font=F_TITLE,
                  bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
 
-        # Canvas con scrollbar
-        canvas = tk.Canvas(win, bg=C["bg"], highlightthickness=0)
-        vsb = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
-        body = tk.Frame(canvas, bg=C["bg"])
-
-        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        def _fit_body_width(event):
-            canvas.itemconfigure(body_window, width=event.width)
-        canvas.bind("<Configure>", _fit_body_width)
-
-        def _sync_scroll(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        body.bind("<Configure>", _sync_scroll)
-
-        # Scroll recursivo: funciona sin importar dónde esté el cursor
-        def _on_wheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        def _on_wheel_linux(event):
-            if event.num == 4:
-                canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                canvas.yview_scroll(1, "units")
-
-        def _bind_scroll_recursive(widget):
-            widget.bind("<MouseWheel>", _on_wheel, add=True)
-            widget.bind("<Button-4>", _on_wheel_linux, add=True)
-            widget.bind("<Button-5>", _on_wheel_linux, add=True)
-            for child in widget.winfo_children():
-                _bind_scroll_recursive(child)
-
-        win.after(100, lambda: _bind_scroll_recursive(body))
-
-        # ── Opción A: Dos imágenes ──
-        tk.Label(body, text="IMÁGENES", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w", padx=20, pady=(15, 0))
-        tk.Label(body, text="Selecciona dos fotos individuales para comparar sus metadatos",
-                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", padx=20, pady=(0, 6))
-
-        img_frame = tk.Frame(body, bg=C["bg"])
-        img_frame.pack(fill="x", padx=20, pady=(0, 15))
-
-        path_a_var = tk.StringVar()
-        path_b_var = tk.StringVar()
-
-        def pick_image(var):
-            p = _native_file_open(
-                title="Seleccionar imagen",
-                filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.tif *.tiff *.webp"), ("Todos", "*.*")])
-            if p:
-                var.set(p)
-
-        for label, var, col in [("Imagen A:", path_a_var, C["json_section"]),
-                                 ("Imagen B:", path_b_var, C["exif_section"])]:
-            row = tk.Frame(img_frame, bg=C["bg"])
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=label, bg=C["bg"], fg=col, font=F_BOLD, width=10, anchor="w").pack(side="left")
-            tk.Entry(row, textvariable=var, bg=C["surface"], fg=C["text"],
-                     relief="solid", bd=1, font=F_TINY, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 4))
-            tk.Button(row, text="Examinar", bg=C["panel2"], fg=C["text2"], font=F_TINY,
-                      relief="flat", bd=0, padx=8, cursor="hand2",
-                      command=lambda v=var: pick_image(v)).pack(side="right")
-
-        def compare_images():
-            a, b = path_a_var.get(), path_b_var.get()
-            if not a or not os.path.exists(a):
-                return messagebox.showwarning("Falta imagen", "Selecciona la Imagen A.")
-            if not b or not os.path.exists(b):
-                return messagebox.showwarning("Falta imagen", "Selecciona la Imagen B.")
-            meta_a = self._extract_metadata_from_path(a)
-            meta_b = self._extract_metadata_from_path(b)
-            self._show_comparison_window(Path(a).name, Path(b).name, meta_a, meta_b)
-
-        tk.Button(body, text="⚖  Comparar Imágenes", bg=C["accent"], fg="#FFF5E8",
-                  font=F_BOLD, relief="flat", bd=0, padx=20, pady=8, cursor="hand2",
-                  activebackground=C["accent_hover"],
-                  command=compare_images).pack(padx=20, pady=(0, 15))
-
-        # ── Separador ──
-        tk.Frame(body, bg=C["border"], height=1).pack(fill="x", padx=20, pady=(0, 15))
-
-        # ── Opción B: Dos carpetas ──
-        tk.Label(body, text="CARPETAS", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w", padx=20)
-        tk.Label(body, text="Compara la primera imagen de cada carpeta\n(ej: Metadatos_Escritos vs Original)",
-                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", padx=20, pady=(0, 6))
-
-        folder_frame = tk.Frame(body, bg=C["bg"])
-        folder_frame.pack(fill="x", padx=20, pady=(0, 10))
+        body = tk.Frame(win, bg=C["bg"])
+        body.pack(fill="both", expand=True, padx=20, pady=15)
 
         folder_a_var = tk.StringVar()
         folder_b_var = tk.StringVar()
@@ -1503,135 +1414,213 @@ class VisorApp(tk.Tk):
             if p:
                 var.set(p)
 
-        for label, var, col in [("Carpeta A:", folder_a_var, C["gps_section"]),
-                                 ("Carpeta B:", folder_b_var, C["file_section"])]:
-            row = tk.Frame(folder_frame, bg=C["bg"])
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=label, bg=C["bg"], fg=col, font=F_BOLD, width=10, anchor="w").pack(side="left")
+        for label, var, col in [("Carpeta A (Izq):", folder_a_var, C["json_section"]),
+                                 ("Carpeta B (Der):", folder_b_var, C["exif_section"])]:
+            row = tk.Frame(body, bg=C["bg"])
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text=label, bg=C["bg"], fg=col, font=F_BOLD, width=16, anchor="w").pack(side="left")
             tk.Entry(row, textvariable=var, bg=C["surface"], fg=C["text"],
                      relief="solid", bd=1, font=F_TINY, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 4))
             tk.Button(row, text="Examinar", bg=C["panel2"], fg=C["text2"], font=F_TINY,
                       relief="flat", bd=0, padx=8, cursor="hand2",
                       command=lambda v=var: pick_folder(v)).pack(side="right")
 
-        def compare_folders():
+        def start_compare():
             a, b = folder_a_var.get(), folder_b_var.get()
             if not a or not os.path.isdir(a):
-                return messagebox.showwarning("Falta carpeta", "Selecciona la Carpeta A.")
+                return messagebox.showwarning("Falta", "Selecciona la Carpeta A.")
             if not b or not os.path.isdir(b):
-                return messagebox.showwarning("Falta carpeta", "Selecciona la Carpeta B.")
-            img_a = self._first_image_in_folder(a)
-            img_b = self._first_image_in_folder(b)
-            if not img_a:
-                return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{a}")
-            if not img_b:
-                return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{b}")
-            meta_a = self._extract_metadata_from_path(img_a)
-            meta_b = self._extract_metadata_from_path(img_b)
-            self._show_comparison_window(
-                f"{Path(a).name}/{Path(img_a).name}",
-                f"{Path(b).name}/{Path(img_b).name}",
-                meta_a, meta_b)
+                return messagebox.showwarning("Falta", "Selecciona la Carpeta B.")
+            win.destroy()
+            self._comp_window = None
+            self._open_image_comparison(a, b)
 
-        tk.Button(body, text="⚖  Comparar Carpetas", bg=C["panel2"], fg=C["text"],
-                  font=F_BOLD, relief="flat", bd=0, padx=20, pady=8, cursor="hand2",
-                  highlightthickness=1, highlightbackground=C["border"],
-                  command=compare_folders).pack(padx=20, pady=(0, 20))
+        tk.Button(body, text="⚖  Abrir Comparador de Imágenes", bg=C["accent"], fg="#FFF5E8",
+                  font=F_BOLD, relief="flat", bd=0, padx=20, pady=10, cursor="hand2",
+                  activebackground=C["accent_hover"],
+                  command=start_compare).pack(pady=(15, 0))
 
-    def _first_image_in_folder(self, folder: str) -> str | None:
-        """Devuelve la primera imagen encontrada en una carpeta."""
-        for f in sorted(Path(folder).iterdir(), key=lambda p: p.name.lower()):
-            if f.is_file() and f.suffix.lower() in IMG_EXTS:
-                return str(f)
-        return None
+    def _open_image_comparison(self, folder_a: str, folder_b: str):
+        """Abre ventana fullscreen de comparación visual y esconde el Visor."""
+        imgs_a = sorted([str(f) for f in Path(folder_a).iterdir()
+                         if f.is_file() and f.suffix.lower() in IMG_EXTS],
+                        key=lambda p: Path(p).name.lower())
+        imgs_b = sorted([str(f) for f in Path(folder_b).iterdir()
+                         if f.is_file() and f.suffix.lower() in IMG_EXTS],
+                        key=lambda p: Path(p).name.lower())
 
-    def _extract_metadata_from_path(self, path: str) -> list:
-        """Extrae metadatos de una imagen sin cambiar el estado del Visor."""
-        old_path = self.current_path
-        old_meta = self.all_metadata[:]
-        self.current_path = path
-        try:
-            self._extract_all_metadata(path)
-            result = self.all_metadata[:]
-        except Exception:
-            result = []
-        finally:
-            self.current_path = old_path
-            self.all_metadata = old_meta
-        return result
+        if not imgs_a:
+            return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{folder_a}")
+        if not imgs_b:
+            return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{folder_b}")
 
-    def _show_comparison_window(self, name_a: str, name_b: str, meta_a: list, meta_b: list):
-        """Muestra la ventana de comparación con los metadatos de dos fuentes."""
-        COLORS = {
-            "same": "#7EC894", "diff": "#E05050",
-            "only_a": "#7EB8C9", "only_b": "#BB86FC"
-        }
+        self.withdraw()
 
         win = tk.Toplevel(self)
-        win.title(f"⚖ {name_a}  vs  {name_b}")
+        self._comp_window = win
+        win.title(f"⚖ Comparando: {Path(folder_a).name}  vs  {Path(folder_b).name}")
         win.configure(bg=C["bg"])
+        win.protocol("WM_DELETE_WINDOW", lambda: self._close_comparison(win))
 
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        ww, wh = min(1100, int(sw*0.85)), min(720, int(sh*0.85))
-        win.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
+        win.geometry(f"{sw}x{sh}+0+0")
+        win.state("zoomed")
 
-        hdr = tk.Frame(win, bg=C["header_bg"], height=55)
+        # ── Header ──
+        hdr = tk.Frame(win, bg=C["header_bg"], height=50)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        tk.Label(hdr, text="⚖  Análisis Comparativo", font=F_TITLE,
-                 bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
 
-        leg = tk.Frame(hdr, bg=C["header_bg"])
-        leg.pack(side="right", padx=20)
-        for txt, col in [("● Coincide", COLORS["same"]), ("● Discrepa", COLORS["diff"]),
-                          ("● Sólo en A", COLORS["only_a"]), ("● Sólo en B", COLORS["only_b"])]:
-            tk.Label(leg, text=txt, bg=C["header_bg"], fg=col, font=F_BOLD).pack(side="left", padx=8)
+        tk.Label(hdr, text=f"⚖  {Path(folder_a).name}  vs  {Path(folder_b).name}",
+                 font=F_TITLE, bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
 
-        names_frame = tk.Frame(win, bg=C["panel"])
-        names_frame.pack(fill="x", padx=15, pady=(15, 5))
-        tk.Label(names_frame, text=f"A: {name_a}", bg=C["panel"], fg=C["json_section"],
-                 font=F_BOLD, anchor="w").pack(side="left", fill="x", expand=True, padx=15, pady=10)
-        tk.Label(names_frame, text=f"B: {name_b}", bg=C["panel"], fg=C["exif_section"],
-                 font=F_BOLD, anchor="w").pack(side="left", fill="x", expand=True, padx=15, pady=10)
+        info_lbl = tk.Label(hdr, text=f"A: {len(imgs_a)} imgs  |  B: {len(imgs_b)} imgs",
+                            font=F_BODY, bg=C["header_bg"], fg=C["text2"])
+        info_lbl.pack(side="left", padx=20)
 
-        table_frame = tk.Frame(win, bg=C["border"], highlightthickness=1, highlightbackground=C["border"])
-        table_frame.pack(fill="both", expand=True, padx=15, pady=(0, 5))
+        tk.Button(hdr, text="  Cerrar y volver al Visor  ", bg=C["err"], fg="#FFFFFF",
+                  font=F_BOLD, relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+                  command=lambda: self._close_comparison(win)).pack(side="right", padx=20, pady=8)
 
-        cols = ("Propiedad", "Valor en A", "Valor en B")
-        tree = ttk.Treeview(table_frame, columns=cols, show="headings", selectmode="browse")
-        for cid, w in zip(cols, [220, 360, 360]):
-            tree.heading(cid, text=cid, anchor="w")
-            tree.column(cid, width=w, anchor="w")
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        tree.pack(fill="both", expand=True)
+        # ── Panel izquierdo (Carpeta A) ──
+        left_frame = tk.Frame(win, bg=C["bg"])
+        left_frame.pack(side="left", fill="both", expand=True, padx=(8, 4), pady=8)
 
-        def to_dict(meta_list):
-            ignore = {"(Sin datos JSON)", "(Sin EXIF)", "(Sin GPS)", "(Sin datos GPS)", "(Error EXIF)", ""}
-            return {k: v for t, k, v in meta_list if t != "header" and k not in ignore}
+        tk.Label(left_frame, text=f"CARPETA A — {Path(folder_a).name}",
+                 bg=C["bg"], fg=C["json_section"], font=F_BOLD).pack(anchor="w", padx=8, pady=(0, 4))
 
-        dict_a = to_dict(meta_a)
-        dict_b = to_dict(meta_b)
-        c_same = c_diff = c_only_a = c_only_b = 0
+        left_canvas = tk.Canvas(left_frame, bg=C["surface"], highlightthickness=0)
+        left_vsb = ttk.Scrollbar(left_frame, orient="vertical", command=left_canvas.yview)
+        left_inner = tk.Frame(left_canvas, bg=C["surface"])
+        left_canvas.create_window((0, 0), window=left_inner, anchor="nw")
+        left_canvas.configure(yscrollcommand=left_vsb.set)
+        left_vsb.pack(side="right", fill="y")
+        left_canvas.pack(fill="both", expand=True)
 
-        for key in sorted(set(dict_a) | set(dict_b)):
-            va = dict_a.get(key, "—")
-            vb = dict_b.get(key, "—")
-            if va == "—":       color = COLORS["only_b"]; c_only_b += 1
-            elif vb == "—":     color = COLORS["only_a"]; c_only_a += 1
-            elif va == vb:      color = COLORS["same"];   c_same += 1
-            else:               color = COLORS["diff"];   c_diff += 1
-            tag = f"c_{color[1:]}"
-            tree.insert("", "end", values=(key, va, vb), tags=(tag,))
-            tree.tag_configure(tag, foreground=color)
+        # ── Panel derecho (Carpeta B) ──
+        right_frame = tk.Frame(win, bg=C["bg"])
+        right_frame.pack(side="right", fill="both", expand=True, padx=(4, 8), pady=8)
 
-        summary_bar = tk.Frame(win, bg=C["panel"])
-        summary_bar.pack(fill="x", padx=15, pady=(0, 15))
-        total = c_same + c_diff + c_only_a + c_only_b
-        tk.Label(summary_bar,
-                 text=f"Total: {total}  |  Iguales: {c_same}  |  Diferentes: {c_diff}  |  Sólo en A: {c_only_a}  |  Sólo en B: {c_only_b}",
-                 bg=C["panel"], fg=C["text2"], font=F_BODY).pack(padx=15, pady=8)
+        tk.Label(right_frame, text=f"CARPETA B — {Path(folder_b).name}",
+                 bg=C["bg"], fg=C["exif_section"], font=F_BOLD).pack(anchor="w", padx=8, pady=(0, 4))
+
+        right_canvas = tk.Canvas(right_frame, bg=C["surface"], highlightthickness=0)
+        right_vsb = ttk.Scrollbar(right_frame, orient="vertical", command=right_canvas.yview)
+        right_inner = tk.Frame(right_canvas, bg=C["surface"])
+        right_canvas.create_window((0, 0), window=right_inner, anchor="nw")
+        right_canvas.configure(yscrollcommand=right_vsb.set)
+        right_vsb.pack(side="right", fill="y")
+        right_canvas.pack(fill="both", expand=True)
+
+        # ── Sincronizar scroll entre ambos paneles ──
+        syncing = [False]
+
+        def sync_left_to_right(*args):
+            if syncing[0]: return
+            syncing[0] = True
+            right_canvas.yview_moveto(args[0])
+            syncing[0] = False
+
+        def sync_right_to_left(*args):
+            if syncing[0]: return
+            syncing[0] = True
+            left_canvas.yview_moveto(args[0])
+            syncing[0] = False
+
+        left_canvas.configure(yscrollcommand=sync_left_to_right)
+        right_canvas.configure(yscrollcommand=sync_right_to_left)
+
+        # ── Cargar thumbnails en ambos paneles ──
+        THUMB_W = 280
+        self._comp_thumbs = []
+
+        def load_thumbs(canvas, inner, img_list, side_label):
+            for i, path in enumerate(img_list):
+                row = tk.Frame(inner, bg=C["surface"])
+                row.pack(fill="x", padx=4, pady=3)
+
+                tk.Label(row, text=f"{i+1}. {Path(path).name}",
+                         bg=C["surface"], fg=C["text2"], font=F_TINY,
+                         anchor="w", wraplength=THUMB_W - 10).pack(anchor="w", padx=4)
+
+                try:
+                    img = Image.open(path)
+                    img = ImageOps.exif_transpose(img)
+                    img.thumbnail((THUMB_W, 200), Image.LANCZOS)
+                    tk_img = ImageTk.PhotoImage(img)
+                    self._comp_thumbs.append(tk_img)
+
+                    lbl = tk.Label(row, image=tk_img, bg=C["surface"], cursor="hand2")
+                    lbl.pack(anchor="w", padx=4, pady=(0, 4))
+                    lbl.bind("<Double-Button-1>", lambda e, p=path: self._show_full_image(p))
+                except Exception:
+                    tk.Label(row, text=f"[No se pudo cargar: {Path(path).name}]",
+                             bg=C["surface"], fg=C["err"], font=F_TINY).pack(anchor="w", padx=4)
+
+        load_thumbs(left_canvas, left_inner, imgs_a, "A")
+        load_thumbs(right_canvas, right_inner, imgs_b, "B")
+
+        left_inner.bind("<Configure>", lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        right_inner.bind("<Configure>", lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
+
+        # ── Scroll con rueda en cualquier parte ──
+        def _on_wheel(event):
+            left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            right_canvas.yview_moveto(left_canvas.yview()[0])
+
+        def _on_wheel_linux(event):
+            if event.num == 4:
+                left_canvas.yview_scroll(-3, "units")
+            elif event.num == 5:
+                left_canvas.yview_scroll(3, "units")
+            right_canvas.yview_moveto(left_canvas.yview()[0])
+
+        def _bind_scroll_all(widget):
+            widget.bind("<MouseWheel>", _on_wheel, add=True)
+            widget.bind("<Button-4>", _on_wheel_linux, add=True)
+            widget.bind("<Button-5>", _on_wheel_linux, add=True)
+            for child in widget.winfo_children():
+                _bind_scroll_all(child)
+
+        win.after(200, lambda: _bind_scroll_all(win))
+
+    def _show_full_image(self, path: str):
+        """Abre imagen a tamaño completo en una ventana emergente."""
+        win = tk.Toplevel(self)
+        win.title(Path(path).name)
+        win.configure(bg="#000000")
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        win.geometry(f"{sw}x{sh}+0+0")
+        win.state("zoomed")
+
+        canvas = tk.Canvas(win, bg="#000000", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+
+        try:
+            img = Image.open(path)
+            img = ImageOps.exif_transpose(img)
+            img.thumbnail((sw - 20, sh - 60), Image.LANCZOS)
+            tk_img = ImageTk.PhotoImage(img)
+            canvas.create_image(sw // 2, sh // 2, anchor="center", image=tk_img)
+            canvas._img_ref = tk_img
+        except Exception as e:
+            canvas.create_text(sw // 2, sh // 2, text=f"Error: {e}",
+                               fill="#F44747", font=F_BODY, justify="center")
+
+        tk.Label(win, text=f"  {Path(path).name}  —  Doble clic o Escape para cerrar  ",
+                 bg="#111111", fg="#AAAAAA", font=F_TINY).pack(fill="x")
+
+        win.bind("<Double-Button-1>", lambda e: win.destroy())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    def _close_comparison(self, comp_win):
+        """Cierra la ventana de comparación y restaura el Visor."""
+        comp_win.destroy()
+        self._comp_window = None
+        self._comp_thumbs = []
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
 
     # ─────────────────────────────────────────────────────────────
