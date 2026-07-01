@@ -198,6 +198,25 @@ def _native_folder_open(title="Seleccionar carpeta"):
     return filedialog.askdirectory(title=title)
 
 
+def _native_save_file(title="Guardar archivo", default_name="", filetypes=None):
+    if sys.platform == "linux":
+        cmd = ["zenity", "--file-selection", "--save", "--confirm-overwrite",
+               "--title", title]
+        if default_name:
+            cmd += ["--filename", default_name]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip().split("\n")[0]
+            if r.returncode == 1:
+                return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    return filedialog.asksaveasfilename(
+        title=title, defaultextension=".pdf",
+        initialfile=default_name, filetypes=filetypes or [("PDF", "*.pdf")])
+
+
 def _format_file_size(size_bytes: int) -> str:
     if size_bytes < 1024:
         return f"{size_bytes} B"
@@ -1766,10 +1785,9 @@ class VisorApp(tk.Tk):
         if not REPORTLAB_OK:
             return messagebox.showerror("Falta", "Instala reportlab: pip install reportlab")
 
-        output_path = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            initialfile=f"Comparacion_{name_a}_vs_{name_b}.pdf",
-            filetypes=[("PDF", "*.pdf")])
+        output_path = _native_save_file(
+            title="Guardar PDF de Comparación",
+            default_name=f"Comparacion_{name_a}_vs_{name_b}.pdf")
         if not output_path:
             return
 
@@ -2064,11 +2082,9 @@ class VisorApp(tk.Tk):
             return
             
         default_name = f"Ficha_Arqueologica_{Path(self.current_path).stem}.pdf"
-        output_path = filedialog.asksaveasfilename(
-            defaultextension=".pdf", 
-            initialfile=default_name, 
-            filetypes=[("Documento PDF", "*.pdf")]
-        )
+        output_path = _native_save_file(
+            title="Guardar Ficha Arqueológica",
+            default_name=default_name)
         
         if not output_path:
             return
