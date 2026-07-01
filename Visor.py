@@ -265,8 +265,6 @@ class VisorApp(tk.Tk):
         self._render_gen = 0      
 
         # Variables del Comparador
-        self._pinned_path = None
-        self._pinned_meta = []
         self._comp_window = None
 
         # Construcción de la Interfaz
@@ -487,7 +485,6 @@ class VisorApp(tk.Tk):
         actions = [
             ("📄 Archivo",      self._browse,          False),
             ("📁 Carpeta",      self._browse_folder,   False),
-            ("📌 Fijar",        self._pin_current,     False),
             ("⚖ Comparar",     self._open_comparator, False),
             ("⬇ PDF",          self._export_pdf,      True),
         ]
@@ -1381,132 +1378,224 @@ class VisorApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     #  HERRAMIENTA DE COMPARACIÓN DE METADATOS
     # ─────────────────────────────────────────────────────────────
-    def _pin_current(self):
-        """Fija en memoria los datos actuales para compararlos con el siguiente archivo."""
-        if not self.current_path: 
-            messagebox.showwarning("Aviso", "No hay ninguna imagen cargada.")
-            return
-            
-        self._pinned_path = self.current_path
-        self._pinned_meta = self.all_metadata[:]
-        
-        messagebox.showinfo(
-            "Muestra Fijada", 
-            f"Se ha memorizado la pieza:\n{Path(self.current_path).name}\n\n"
-            "Ahora puedes hacer clic en otra imagen en el explorador y seleccionar 'Comparar'."
-        )
-
     def _open_comparator(self):
-        """Abre la ventana dedicada a mostrar el Delta entre dos cerámicas."""
-        if not self._pinned_path:
-            messagebox.showwarning("Aviso", "Primero usa el botón 'Fijar' en una imagen de referencia.")
-            return
-            
-        if not self.current_path or self.current_path == self._pinned_path:
-            messagebox.showwarning("Aviso", "Abre una imagen diferente a la fijada para hacer la comparación.")
-            return
-            
+        """Abre ventana para seleccionar dos imágenes o carpetas y compararlas."""
         if self._comp_window and self._comp_window.winfo_exists():
             self._comp_window.lift()
             return
 
-        COLORS = {
-            "same": "#7EC894", 
-            "diff": "#E05050",
-            "only_a": "#7EB8C9", 
-            "only_b": "#BB86FC"
-        }
-
-        # Setup ventana TopLevel
         win = tk.Toplevel(self)
         self._comp_window = win
-        win.title("⚖ Comparador Analítico de Metadatos")
+        win.title("⚖ Comparar Metadatos")
         win.configure(bg=C["bg"])
-        
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        win.geometry(f"{min(600, int(sw*0.5))}x{min(400, int(sh*0.5))}+{(sw-min(600, int(sw*0.5)))//2}+{(sh-min(400, int(sh*0.5)))//2}")
+
+        hdr = tk.Frame(win, bg=C["header_bg"], height=50)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="⚖  Selecciona lo que quieres comparar", font=F_TITLE,
+                 bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
+
+        body = tk.Frame(win, bg=C["bg"])
+        body.pack(fill="both", expand=True, padx=20, pady=15)
+
+        # ── Opción A: Dos imágenes ──
+        tk.Label(body, text="IMÁGENES", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w")
+        tk.Label(body, text="Selecciona dos fotos individuales para comparar sus metadatos",
+                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", pady=(0, 6))
+
+        img_frame = tk.Frame(body, bg=C["bg"])
+        img_frame.pack(fill="x", pady=(0, 15))
+
+        path_a_var = tk.StringVar()
+        path_b_var = tk.StringVar()
+
+        def pick_image(var):
+            p = _native_file_open(
+                title="Seleccionar imagen",
+                filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.tif *.tiff *.webp"), ("Todos", "*.*")])
+            if p:
+                var.set(p)
+
+        for label, var, col in [("Imagen A:", path_a_var, C["json_section"]),
+                                 ("Imagen B:", path_b_var, C["exif_section"])]:
+            row = tk.Frame(img_frame, bg=C["bg"])
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label, bg=C["bg"], fg=col, font=F_BOLD, width=10, anchor="w").pack(side="left")
+            tk.Entry(row, textvariable=var, bg=C["surface"], fg=C["text"],
+                     relief="solid", bd=1, font=F_TINY, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 4))
+            tk.Button(row, text="Examinar", bg=C["panel2"], fg=C["text2"], font=F_TINY,
+                      relief="flat", bd=0, padx=8, cursor="hand2",
+                      command=lambda v=var: pick_image(v)).pack(side="right")
+
+        def compare_images():
+            a, b = path_a_var.get(), path_b_var.get()
+            if not a or not os.path.exists(a):
+                return messagebox.showwarning("Falta imagen", "Selecciona la Imagen A.")
+            if not b or not os.path.exists(b):
+                return messagebox.showwarning("Falta imagen", "Selecciona la Imagen B.")
+            meta_a = self._extract_metadata_from_path(a)
+            meta_b = self._extract_metadata_from_path(b)
+            self._show_comparison_window(
+                Path(a).name, Path(b).name, meta_a, meta_b)
+
+        tk.Button(body, text="⚖  Comparar Imágenes", bg=C["accent"], fg="#FFF5E8",
+                  font=F_BOLD, relief="flat", bd=0, padx=20, pady=8, cursor="hand2",
+                  activebackground=C["accent_hover"],
+                  command=compare_images).pack(pady=(0, 15))
+
+        # ── Separador ──
+        tk.Frame(body, bg=C["border"], height=1).pack(fill="x", pady=(0, 15))
+
+        # ── Opción B: Dos carpetas ──
+        tk.Label(body, text="CARPETAS", bg=C["bg"], fg=C["accent"], font=F_BOLD).pack(anchor="w")
+        tk.Label(body, text="Compara la primera imagen de cada carpeta (ej: Metadatos_Escritos vs Original)",
+                 bg=C["bg"], fg=C["text3"], font=F_TINY).pack(anchor="w", pady=(0, 6))
+
+        folder_frame = tk.Frame(body, bg=C["bg"])
+        folder_frame.pack(fill="x", pady=(0, 10))
+
+        folder_a_var = tk.StringVar()
+        folder_b_var = tk.StringVar()
+
+        def pick_folder(var):
+            p = _native_folder_open(title="Seleccionar carpeta")
+            if p:
+                var.set(p)
+
+        for label, var, col in [("Carpeta A:", folder_a_var, C["gps_section"]),
+                                 ("Carpeta B:", folder_b_var, C["file_section"])]:
+            row = tk.Frame(folder_frame, bg=C["bg"])
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label, bg=C["bg"], fg=col, font=F_BOLD, width=10, anchor="w").pack(side="left")
+            tk.Entry(row, textvariable=var, bg=C["surface"], fg=C["text"],
+                     relief="solid", bd=1, font=F_TINY, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 4))
+            tk.Button(row, text="Examinar", bg=C["panel2"], fg=C["text2"], font=F_TINY,
+                      relief="flat", bd=0, padx=8, cursor="hand2",
+                      command=lambda v=var: pick_folder(v)).pack(side="right")
+
+        def compare_folders():
+            a, b = folder_a_var.get(), folder_b_var.get()
+            if not a or not os.path.isdir(a):
+                return messagebox.showwarning("Falta carpeta", "Selecciona la Carpeta A.")
+            if not b or not os.path.isdir(b):
+                return messagebox.showwarning("Falta carpeta", "Selecciona la Carpeta B.")
+            img_a = self._first_image_in_folder(a)
+            img_b = self._first_image_in_folder(b)
+            if not img_a:
+                return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{a}")
+            if not img_b:
+                return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{b}")
+            meta_a = self._extract_metadata_from_path(img_a)
+            meta_b = self._extract_metadata_from_path(img_b)
+            self._show_comparison_window(
+                f"{Path(a).name}/{Path(img_a).name}",
+                f"{Path(b).name}/{Path(img_b).name}",
+                meta_a, meta_b)
+
+        tk.Button(body, text="⚖  Comparar Carpetas", bg=C["panel2"], fg=C["text"],
+                  font=F_BOLD, relief="flat", bd=0, padx=20, pady=8, cursor="hand2",
+                  highlightthickness=1, highlightbackground=C["border"],
+                  command=compare_folders).pack()
+
+    def _first_image_in_folder(self, folder: str) -> str | None:
+        """Devuelve la primera imagen encontrada en una carpeta."""
+        for f in sorted(Path(folder).iterdir(), key=lambda p: p.name.lower()):
+            if f.is_file() and f.suffix.lower() in IMG_EXTS:
+                return str(f)
+        return None
+
+    def _extract_metadata_from_path(self, path: str) -> list:
+        """Extrae metadatos de una imagen sin cambiar el estado del Visor."""
+        old_path = self.current_path
+        old_meta = self.all_metadata[:]
+        self.current_path = path
+        try:
+            self._extract_all_metadata(path)
+            result = self.all_metadata[:]
+        except Exception:
+            result = []
+        finally:
+            self.current_path = old_path
+            self.all_metadata = old_meta
+        return result
+
+    def _show_comparison_window(self, name_a: str, name_b: str, meta_a: list, meta_b: list):
+        """Muestra la ventana de comparación con los metadatos de dos fuentes."""
+        COLORS = {
+            "same": "#7EC894", "diff": "#E05050",
+            "only_a": "#7EB8C9", "only_b": "#BB86FC"
+        }
+
+        win = tk.Toplevel(self)
+        win.title(f"⚖ {name_a}  vs  {name_b}")
+        win.configure(bg=C["bg"])
+
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         ww, wh = min(1100, int(sw*0.85)), min(720, int(sh*0.85))
         win.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
 
-        # Topbar Comparador
         hdr = tk.Frame(win, bg=C["header_bg"], height=55)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        
-        tk.Label(
-            hdr, text="⚖  Análisis Comparativo", font=F_TITLE, 
-            bg=C["header_bg"], fg=C["header_fg"]
-        ).pack(side="left", padx=20, pady=10)
-        
-        # Leyenda
+        tk.Label(hdr, text="⚖  Análisis Comparativo", font=F_TITLE,
+                 bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
+
         leg = tk.Frame(hdr, bg=C["header_bg"])
         leg.pack(side="right", padx=20)
-        for txt, col in [("● Coincide", COLORS["same"]), ("● Discrepa", COLORS["diff"]), ("● Sólo en Base", COLORS["only_a"]), ("● Sólo en Nueva", COLORS["only_b"])]:
-            tk.Label(leg, text=txt, bg=C["header_bg"], fg=col, font=F_BOLD).pack(side="left", padx=10)
+        for txt, col in [("● Coincide", COLORS["same"]), ("● Discrepa", COLORS["diff"]),
+                          ("● Sólo en A", COLORS["only_a"]), ("● Sólo en B", COLORS["only_b"])]:
+            tk.Label(leg, text=txt, bg=C["header_bg"], fg=col, font=F_BOLD).pack(side="left", padx=8)
 
-        # Nombres de archivos a comparar
         names_frame = tk.Frame(win, bg=C["panel"])
         names_frame.pack(fill="x", padx=15, pady=(15, 5))
-        tk.Label(names_frame, text=f"📌 A (Base): {Path(self._pinned_path).name}", bg=C["panel"], fg=C["accent"], font=F_BOLD, anchor="w").pack(side="left", fill="x", expand=True, padx=15, pady=10)
-        tk.Label(names_frame, text=f"🔵 B (Nueva): {Path(self.current_path).name}", bg=C["panel"], fg=C["accent"], font=F_BOLD, anchor="w").pack(side="left", fill="x", expand=True, padx=15, pady=10)
+        tk.Label(names_frame, text=f"A: {name_a}", bg=C["panel"], fg=C["json_section"],
+                 font=F_BOLD, anchor="w").pack(side="left", fill="x", expand=True, padx=15, pady=10)
+        tk.Label(names_frame, text=f"B: {name_b}", bg=C["panel"], fg=C["exif_section"],
+                 font=F_BOLD, anchor="w").pack(side="left", fill="x", expand=True, padx=15, pady=10)
 
-        # Tabla del Comparador
         table_frame = tk.Frame(win, bg=C["border"], highlightthickness=1, highlightbackground=C["border"])
         table_frame.pack(fill="both", expand=True, padx=15, pady=(0, 5))
-        
+
         cols = ("Propiedad", "Valor en A", "Valor en B")
         tree = ttk.Treeview(table_frame, columns=cols, show="headings", selectmode="browse")
-        
-        for cid, width_val in zip(cols, [220, 360, 360]):
+        for cid, w in zip(cols, [220, 360, 360]):
             tree.heading(cid, text=cid, anchor="w")
-            tree.column(cid, width=width_val, anchor="w")
-            
+            tree.column(cid, width=w, anchor="w")
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         tree.pack(fill="both", expand=True)
 
-        # Lógica de comparación de diccionarios
-        def convert_to_dict(meta_list):
-            ignore_keys = {"(Sin datos JSON)", "(Sin EXIF)", "(Sin GPS)", "(Sin datos GPS)", "(Error EXIF)", ""}
-            return {key: val for t_tag, key, val in meta_list if t_tag != "header" and key not in ignore_keys}
+        def to_dict(meta_list):
+            ignore = {"(Sin datos JSON)", "(Sin EXIF)", "(Sin GPS)", "(Sin datos GPS)", "(Error EXIF)", ""}
+            return {k: v for t, k, v in meta_list if t != "header" and k not in ignore}
 
-        dict_a = convert_to_dict(self._pinned_meta)
-        dict_b = convert_to_dict(self.all_metadata)
-        
-        count_same = count_diff = count_only_a = count_only_b = 0
+        dict_a = to_dict(meta_a)
+        dict_b = to_dict(meta_b)
+        c_same = c_diff = c_only_a = c_only_b = 0
 
-        # Popular tabla cruzando los datos
-        for key in sorted(set(dict_a.keys()) | set(dict_b.keys())):
-            val_a = dict_a.get(key, "—")
-            val_b = dict_b.get(key, "—")
-            
-            if val_a == "—":            
-                color = COLORS["only_b"]
-                count_only_b += 1
-            elif val_b == "—":          
-                color = COLORS["only_a"]
-                count_only_a += 1
-            elif val_a == val_b:           
-                color = COLORS["same"]
-                count_same += 1
-            else:                    
-                color = COLORS["diff"]
-                count_diff += 1
-                
-            tag_name = f"comp_color_{color[1:]}"
-            tree.insert("", "end", values=(key, val_a, val_b), tags=(tag_name,))
-            tree.tag_configure(tag_name, foreground=color)
+        for key in sorted(set(dict_a) | set(dict_b)):
+            va = dict_a.get(key, "—")
+            vb = dict_b.get(key, "—")
+            if va == "—":       color = COLORS["only_b"]; c_only_b += 1
+            elif vb == "—":     color = COLORS["only_a"]; c_only_a += 1
+            elif va == vb:      color = COLORS["same"];   c_same += 1
+            else:               color = COLORS["diff"];   c_diff += 1
+            tag = f"c_{color[1:]}"
+            tree.insert("", "end", values=(key, va, vb), tags=(tag,))
+            tree.tag_configure(tag, foreground=color)
 
-        # Barra de Resumen Inferior
         summary_bar = tk.Frame(win, bg=C["panel"])
         summary_bar.pack(fill="x", padx=15, pady=(0, 15))
-        
-        summary_txt = (
-            f"Total Analizados: {count_same + count_diff + count_only_a + count_only_b}   |   "
-            f"Iguales: {count_same}   |   Diferentes: {count_diff}   |   "
-            f"Faltantes en B: {count_only_a}   |   Nuevos en B: {count_only_b}"
-        )
-        tk.Label(summary_bar, text=summary_txt, bg=C["panel"], fg=C["text2"], font=F_BODY).pack(padx=15, pady=8)
+        total = c_same + c_diff + c_only_a + c_only_b
+        tk.Label(summary_bar,
+                 text=f"Total: {total}  |  Iguales: {c_same}  |  Diferentes: {c_diff}  |  Sólo en A: {c_only_a}  |  Sólo en B: {c_only_b}",
+                 bg=C["panel"], fg=C["text2"], font=F_BODY).pack(padx=15, pady=8)
 
 
     # ─────────────────────────────────────────────────────────────
