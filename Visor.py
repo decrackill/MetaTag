@@ -265,6 +265,8 @@ class VisorApp(tk.Tk):
         # Variables del Comparador
         self._comp_window = None
         self._comp_thumbs = []
+        self._comp_folder_a = ""
+        self._comp_folder_b = ""
 
         # Construcción de la Interfaz
         self._build_styles()
@@ -289,6 +291,8 @@ class VisorApp(tk.Tk):
 
         last_dir = cfg.get("last_folder", "")
         last_img = cfg.get("last_image", "")
+        self._comp_folder_a = cfg.get("comp_folder_a", "")
+        self._comp_folder_b = cfg.get("comp_folder_b", "")
 
         # Si el programa se abrió enviándole una imagen por parámetro (Abrir con...)
         if initial_image and initial_image != "STANDALONE" and os.path.exists(initial_image):
@@ -336,6 +340,8 @@ class VisorApp(tk.Tk):
                 "last_image": self.current_path or "",
                 "last_folder": last_folder_path,
                 "theme": CURRENT_THEME,
+                "comp_folder_a": getattr(self, "_comp_folder_a", ""),
+                "comp_folder_b": getattr(self, "_comp_folder_b", ""),
             }
             CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
@@ -1404,8 +1410,8 @@ class VisorApp(tk.Tk):
         body = tk.Frame(win, bg=C["bg"])
         body.pack(fill="both", expand=True, padx=20, pady=15)
 
-        folder_a_var = tk.StringVar()
-        folder_b_var = tk.StringVar()
+        folder_a_var = tk.StringVar(value=getattr(self, "_comp_folder_a", ""))
+        folder_b_var = tk.StringVar(value=getattr(self, "_comp_folder_b", ""))
 
         def pick_folder(var):
             p = _native_folder_open(title="Seleccionar carpeta")
@@ -1429,6 +1435,9 @@ class VisorApp(tk.Tk):
                 return messagebox.showwarning("Falta", "Selecciona la Carpeta A.")
             if not b or not os.path.isdir(b):
                 return messagebox.showwarning("Falta", "Selecciona la Carpeta B.")
+            self._comp_folder_a = a
+            self._comp_folder_b = b
+            self._save_config()
             win.destroy()
             self._comp_window = None
             self._open_image_comparison(a, b)
