@@ -999,103 +999,160 @@ class MetaTagApp(tk.Tk):
             data   = self.df[col].replace("", pd.NA).dropna()
             counts = data.value_counts().sort_values(ascending=False)
             fig.clear()
-            ax = fig.add_subplot(111)
-            ax.set_facecolor(S_BG)
             fig.patch.set_facecolor(S_BG)
             total_count = len(data)
+            n_cats = len(counts)
 
             if total_count == 0:
+                ax = fig.add_subplot(111)
+                ax.set_facecolor(S_BG)
                 ax.text(0.5, 0.5, "No hay datos suficientes.",
                         ha="center", va="center", color=S_TEXT, fontsize=12)
 
             # ── PIE / DONA ────────────────────────────────────────────
             elif "Dona" in ctype or "Pastel" in ctype:
+                ax = fig.add_axes([0.18, 0.10, 0.60, 0.80])
+                ax.set_facecolor(S_BG)
                 counts_sorted = counts.sort_values(ascending=True)
                 wedge_w = 0.45 if "Dona" in ctype else 1.0
 
                 wedges, _, autotexts = ax.pie(
                     counts_sorted,
                     labels=None,
-                    autopct=lambda p: f"{p:.1f}%",
-                    pctdistance=0.78,
-                    colors=S_CHART_COLORS,
-                    wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=2.5),
+                    autopct=lambda p: f"{p:.1f}%" if p >= 5.0 else "",
+                    pctdistance=0.75,
+                    colors=S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1),
+                    wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=2),
                     startangle=90)
 
                 for at in autotexts:
-                    pct_val = float(at.get_text().replace("%", "") or 0)
-                    if pct_val < 4.0:
-                        at.set_visible(False)
-                    else:
-                        at.set_color("#FFFFFF" if wedge_w == 1.0 else S_TEXT)
-                        at.set_fontsize(10)
-                        at.set_fontweight("bold")
+                    at.set_color("#FFFFFF" if wedge_w == 1.0 else S_TEXT)
+                    at.set_fontsize(9)
+                    at.set_fontweight("bold")
 
-                bbox_props = dict(boxstyle="round,pad=0.3",
-                                  fc=S_CARD, ec=S_BORDER, lw=0.8, alpha=0.9)
-                kw = dict(arrowprops=dict(arrowstyle="-", color=S_BORDER),
-                          bbox=bbox_props, zorder=0, va="center")
+                left_labels  = []
+                right_labels = []
+
                 for i, p in enumerate(wedges):
-                    ang      = (p.theta2 - p.theta1) / 2.0 + p.theta1
-                    safe_ang = ang if ang % 90 != 0 else ang + 0.1
-                    ys = np.sin(np.deg2rad(safe_ang))
-                    xs = np.cos(np.deg2rad(safe_ang))
-                    h_align  = "right" if xs < 0 else "left"
-                    conn     = f"angle,angleA=0,angleB={safe_ang}"
-                    kw["arrowprops"]["connectionstyle"] = conn
-                    pct_label = f"{counts_sorted.values[i]/total_count*100:.1f}%"
-                    label_txt = f"{counts_sorted.index[i]}\n{pct_label}"
-                    ax.annotate(label_txt,
-                                xy=(xs, ys),
-                                xytext=(1.38 * np.sign(xs), 1.45 * ys),
-                                horizontalalignment=h_align,
-                                fontsize=9, color=S_TEXT, **kw)
+                    ang  = (p.theta2 - p.theta1) / 2.0 + p.theta1
+                    if ang % 90 == 0:
+                        ang += 0.5
+                    ys_orig = np.sin(np.deg2rad(ang))
+                    xs_orig = np.cos(np.deg2rad(ang))
+                    pct_lbl = f"{counts_sorted.values[i]/total_count*100:.1f}%"
+                    txt     = f"{counts_sorted.index[i]}  {pct_lbl}"
+                    if xs_orig < 0:
+                        left_labels.append((ys_orig, txt, xs_orig, i))
+                    else:
+                        right_labels.append((ys_orig, txt, xs_orig, i))
+
+                def place_labels(label_list, side):
+                    if not label_list:
+                        return
+                    sorted_list = sorted(label_list, key=lambda x: -x[0])
+                    n = len(sorted_list)
+                    if n == 1:
+                        ys_placed = [sorted_list[0][0]]
+                    else:
+                        span     = min(1.3, max(0.9, n * 0.18))
+                        ys_placed = [span - k * (2 * span / (n - 1))
+                                     for k in range(n)]
+                        for j in range(n):
+                            y_orig   = sorted_list[j][0]
+                            y_placed = ys_placed[j]
+                            ys_placed[j] = (y_orig + y_placed) / 2.0
+
+                    bbox_props = dict(boxstyle="round,pad=0.25",
+                                      fc=S_CARD, ec=S_BORDER,
+                                      lw=0.7, alpha=0.88)
+                    x_txt   = -1.72 if side == "left" else 1.72
+                    ha      = "right" if side == "left" else "left"
+
+                    for j, (y_orig, txt, xs_orig, idx_w) in enumerate(sorted_list):
+                        y_label = ys_placed[j]
+                        ax.annotate(
+                            txt,
+                            xy=(np.sign(xs_orig) * 1.0,
+                                np.sin(np.deg2rad(
+                                    (wedges[idx_w].theta2 - wedges[idx_w].theta1)
+                                    / 2.0 + wedges[idx_w].theta1))),
+                            xytext=(x_txt, y_label),
+                            horizontalalignment=ha,
+                            fontsize=8,
+                            color=S_TEXT,
+                            arrowprops=dict(
+                                arrowstyle="-",
+                                color=S_BORDER,
+                                lw=0.8,
+                                connectionstyle="arc3,rad=0.0"),
+                            bbox=bbox_props,
+                            va="center",
+                            zorder=5)
+
+                place_labels(left_labels,  "left")
+                place_labels(right_labels, "right")
 
                 tk_chart_title.configure(text=f"Distribución de {col}")
 
                 if wedge_w < 1.0:
-                    top_val   = counts_sorted.index[-1]
-                    top_pct   = counts_sorted.max() / total_count * 100
-                    ax.text(0, 0.12, f"TOTAL\n{total_count}\npiezas",
+                    top_val = counts_sorted.index[-1]
+                    top_pct = counts_sorted.max() / total_count * 100
+                    ax.text(0, 0.10,
+                            f"TOTAL\n{total_count}\npiezas",
                             ha="center", va="center",
-                            color=S_TEXT, fontsize=14, fontweight="bold")
-                    ax.text(0, -0.28, f"Dominante:\n{top_val} ({top_pct:.1f}%)",
+                            color=S_TEXT, fontsize=13, fontweight="bold")
+                    ax.text(0, -0.30,
+                            f"Dominante:\n{top_val} ({top_pct:.1f}%)",
                             ha="center", va="center",
-                            color=S_TEXT_MUTE, fontsize=9, fontstyle="italic")
+                            color=S_TEXT_MUTE, fontsize=8, fontstyle="italic")
 
             # ── BARRAS HORIZONTAL ─────────────────────────────────────
             elif "Horizontal" in ctype:
+                ax = fig.add_subplot(111)
+                ax.set_facecolor(S_BG)
                 counts_asc = counts.sort_values(ascending=True)
-                bars = ax.barh(range(len(counts_asc)), counts_asc.values,
-                               color=S_CHART_COLORS[:len(counts_asc)],
-                               edgecolor=S_BG, linewidth=1.2, height=0.65)
-                ax.set_yticks(range(len(counts_asc)))
-                ax.set_yticklabels(counts_asc.index, color=S_TEXT, fontsize=10)
-                ax.set_xlabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=10)
+                bar_h = max(0.35, min(0.65, 4.0 / max(n_cats, 1)))
+                colors_list = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
+                bars = ax.barh(range(n_cats), counts_asc.values,
+                               color=colors_list[:n_cats],
+                               edgecolor=S_BG, linewidth=1.2, height=bar_h)
+                ax.set_yticks(range(n_cats))
+                ax.set_yticklabels(counts_asc.index, color=S_TEXT,
+                                   fontsize=max(7, min(10, 120 // max(n_cats, 1))))
+                ax.set_xlabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=9)
                 ax.tick_params(colors=S_TEXT, length=0)
                 for sp in ("top", "right", "left"):
                     ax.spines[sp].set_visible(False)
                 ax.spines["bottom"].set_color(S_BORDER)
                 ax.xaxis.grid(True, linestyle=":", alpha=0.4, color=S_BORDER)
                 ax.set_axisbelow(True)
+                max_val = counts_asc.max()
                 for bar, val in zip(bars, counts_asc.values):
                     pct = val / total_count * 100
-                    ax.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2,
+                    ax.text(bar.get_width() + max_val * 0.015,
+                            bar.get_y() + bar.get_height() / 2,
                             f"{val}  ({pct:.1f}%)",
                             va="center", ha="left",
-                            color=S_TEXT, fontsize=9, fontweight="bold")
-                ax.set_xlim(0, counts_asc.max() * 1.28)
+                            color=S_TEXT,
+                            fontsize=max(7, min(9, 100 // max(n_cats, 1))),
+                            fontweight="bold")
+                ax.set_xlim(0, max_val * 1.32)
                 tk_chart_title.configure(text=f"Frecuencia: {col}")
 
             # ── BARRAS VERTICAL ───────────────────────────────────────
             elif "Vertical" in ctype:
-                bars = ax.bar(range(len(counts)), counts.values,
-                              color=S_CHART_COLORS[:len(counts)],
+                ax = fig.add_subplot(111)
+                ax.set_facecolor(S_BG)
+                colors_list = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
+                bars = ax.bar(range(n_cats), counts.values,
+                              color=colors_list[:n_cats],
                               edgecolor=S_BG, linewidth=1.2, width=0.65)
-                ax.set_xticks(range(len(counts)))
-                ax.set_xticklabels(counts.index, color=S_TEXT, fontsize=9,
-                                   rotation=30, ha="right")
-                ax.set_ylabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=10)
+                rot = 30 if n_cats <= 8 else 45
+                fs  = max(7, min(9, 80 // max(n_cats, 1)))
+                ax.set_xticks(range(n_cats))
+                ax.set_xticklabels(counts.index, color=S_TEXT,
+                                   fontsize=fs, rotation=rot, ha="right")
+                ax.set_ylabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=9)
                 ax.tick_params(colors=S_TEXT, length=0)
                 for sp in ("top", "right"):
                     ax.spines[sp].set_visible(False)
@@ -1103,46 +1160,55 @@ class MetaTagApp(tk.Tk):
                 ax.spines["bottom"].set_color(S_BORDER)
                 ax.yaxis.grid(True, linestyle=":", alpha=0.4, color=S_BORDER)
                 ax.set_axisbelow(True)
+                max_val = counts.max()
                 for bar, val in zip(bars, counts.values):
                     pct = val / total_count * 100
                     ax.text(bar.get_x() + bar.get_width() / 2,
-                            bar.get_height() + 0.3,
-                            f"{val}\n({pct:.1f}%)",
+                            bar.get_height() + max_val * 0.012,
+                            f"{val} ({pct:.1f}%)",
                             ha="center", va="bottom",
-                            color=S_TEXT, fontsize=8, fontweight="bold")
-                ax.set_ylim(0, counts.max() * 1.3)
+                            color=S_TEXT,
+                            fontsize=max(6, min(8, 80 // max(n_cats, 1))),
+                            fontweight="bold")
+                ax.set_ylim(0, max_val * 1.28)
+                fig.subplots_adjust(bottom=0.18)
                 tk_chart_title.configure(text=f"Frecuencia: {col}")
 
             # ── LOLLIPOP ──────────────────────────────────────────────
             elif "Lollipop" in ctype:
+                ax = fig.add_subplot(111)
+                ax.set_facecolor(S_BG)
                 counts_asc = counts.sort_values(ascending=True)
-                y_pos = range(len(counts_asc))
+                y_pos   = list(range(n_cats))
+                max_val = counts_asc.max()
+                colors_list = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
                 for i, (y, val) in enumerate(zip(y_pos, counts_asc.values)):
-                    color = S_CHART_COLORS[i % len(S_CHART_COLORS)]
+                    color = colors_list[i]
                     ax.plot([0, val], [y, y], color=color, linewidth=1.8,
-                            alpha=0.6, solid_capstyle="round")
-                for i, (y, val) in enumerate(zip(y_pos, counts_asc.values)):
-                    color = S_CHART_COLORS[i % len(S_CHART_COLORS)]
-                    ax.scatter(val, y, color=color, s=120, zorder=5,
-                               edgecolors=S_BG, linewidth=1.5)
+                            alpha=0.55, solid_capstyle="round")
+                    ax.scatter(val, y, color=color, s=90, zorder=5,
+                               edgecolors=S_BG, linewidth=1.2)
                     pct = val / total_count * 100
-                    ax.text(val + 0.5, y,
+                    x_offset = max_val * 0.02
+                    fs = max(7, min(9, 100 // max(n_cats, 1)))
+                    ax.text(val + x_offset, y,
                             f"{val}  ({pct:.1f}%)",
                             va="center", ha="left",
-                            color=S_TEXT, fontsize=9)
-                ax.set_yticks(list(y_pos))
-                ax.set_yticklabels(counts_asc.index, color=S_TEXT, fontsize=10)
+                            color=S_TEXT, fontsize=fs)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(counts_asc.index, color=S_TEXT,
+                                   fontsize=max(7, min(10, 120 // max(n_cats, 1))))
                 ax.tick_params(colors=S_TEXT, length=0)
-                ax.set_xlabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=10)
+                ax.set_xlabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=9)
                 for sp in ("top", "right", "left"):
                     ax.spines[sp].set_visible(False)
                 ax.spines["bottom"].set_color(S_BORDER)
                 ax.xaxis.grid(True, linestyle=":", alpha=0.3, color=S_BORDER)
                 ax.set_axisbelow(True)
-                ax.set_xlim(-0.5, counts_asc.max() * 1.3)
+                ax.set_xlim(-max_val * 0.02, max_val * 1.30)
                 tk_chart_title.configure(text=f"Distribución: {col}")
 
-            fig.tight_layout(pad=1.5)
+            fig.tight_layout(pad=1.8)
             canvas_widget.draw()
 
             # ── Panel de insights ─────────────────────────────────────
