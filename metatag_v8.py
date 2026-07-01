@@ -96,8 +96,6 @@ META_GROUP_ORDER = ["Ubicacion", "Descripcion", "Tecnica", "Notas"]
 def _native_file_open(title="Seleccionar archivo", filetypes=None):
     if sys.platform == "linux":
         cmd = ["zenity", "--file-selection", "--title", title]
-        for label, pattern in (filetypes or []):
-            cmd += [f"--file-filter={label} | {pattern}"]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if r.returncode == 0 and r.stdout.strip():
