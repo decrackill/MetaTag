@@ -583,37 +583,15 @@ class VisorApp(tk.Tk):
         self._lbl_count = tk.Label(nav_frame, text="", bg=C["panel"], fg=C["text3"], font=F_MICRO)
         self._lbl_count.pack(side="right", padx=(0, 4))
 
-        nav_btns = tk.Frame(nav_frame, bg=C["panel"])
-        nav_btns.pack(side="right")
-
-        self._btn_up = tk.Button(
-            nav_btns, text="⬆", font=F_TINY, bg=C["panel2"], fg=C["text2"],
-            relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
-            command=self._go_parent_folder,
-            highlightthickness=1, highlightbackground=C["border"])
-        self._btn_up.pack(side="left", padx=(0, 2))
-
-        self._btn_home = tk.Button(
-            nav_btns, text="🏠", font=F_TINY, bg=C["panel2"], fg=C["text2"],
-            relief="flat", bd=0, padx=6, pady=2, cursor="hand2",
-            command=self._go_home_folder,
-            highlightthickness=1, highlightbackground=C["border"])
-        self._btn_home.pack(side="left")
-
-        for b in (self._btn_up, self._btn_home):
-            b.bind("<Enter>", lambda e, _b=b: _b.configure(bg=C["border"]))
-            b.bind("<Leave>", lambda e, _b=b: _b.configure(bg=C["panel2"]))
-
         # Barra de ruta actual
         self._path_var = tk.StringVar(value="")
         path_frame = tk.Frame(parent, bg=C["panel2"], highlightthickness=1, highlightbackground=C["border"])
         path_frame.pack(fill="x", padx=8, pady=(0, 4))
 
-        tk.Label(path_frame, text=" 📁 ", bg=C["panel2"], fg=C["text3"], font=F_TINY).pack(side="left")
         self._path_label = tk.Label(
             path_frame, textvariable=self._path_var, bg=C["panel2"],
             fg=C["text2"], font=F_MICRO, anchor="w", wraplength=280)
-        self._path_label.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 4))
+        self._path_label.pack(side="left", fill="x", expand=True, ipady=4, padx=6)
 
         # Barra de búsqueda
         search_frame = tk.Frame(parent, bg=C["panel2"], highlightthickness=1, highlightbackground=C["border"])
@@ -884,20 +862,6 @@ class VisorApp(tk.Tk):
         path = self._tree_item_paths.get(sel[0])
         if path and os.path.isdir(path):
             self._open_folder_path(path, auto_load=True)
-
-    def _go_parent_folder(self):
-        """Sube un nivel en la jerarquía de carpetas."""
-        current = getattr(self, "_current_folder", "")
-        if not current:
-            return
-        parent = str(Path(current).parent)
-        if parent != current:
-            self._open_folder_path(parent, auto_load=True)
-
-    def _go_home_folder(self):
-        """Navega a la carpeta home del usuario."""
-        home = str(Path.home())
-        self._open_folder_path(home, auto_load=True)
 
 
     # ─────────────────────────────────────────────────────────────
