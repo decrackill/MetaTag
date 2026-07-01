@@ -1654,16 +1654,19 @@ class VisorApp(tk.Tk):
 
         show_current()
 
-        # ── Scroll con rueda ──
+        # ── Scroll con rueda: ambos paneles se mueven juntos ──
+        def _scroll_both(delta):
+            pos = panels[0]["canvas"].yview()
+            new_pos = pos[0] + delta
+            new_pos = max(0.0, min(1.0, new_pos))
+            panels[0]["canvas"].yview_moveto(new_pos)
+            panels[1]["canvas"].yview_moveto(new_pos)
+
         def _on_wheel(event):
-            d = int(-1 * (event.delta / 120))
-            panels[0]["canvas"].yview_scroll(d, "units")
-            panels[1]["canvas"].yview_moveto(panels[0]["canvas"].yview()[0])
+            _scroll_both(-0.05 if event.delta > 0 else 0.05)
 
         def _on_wheel_linux(event):
-            d = -3 if event.num == 4 else 3
-            panels[0]["canvas"].yview_scroll(d, "units")
-            panels[1]["canvas"].yview_moveto(panels[0]["canvas"].yview()[0])
+            _scroll_both(-0.08 if event.num == 4 else 0.08)
 
         def _bind_scroll(widget):
             widget.bind("<MouseWheel>", _on_wheel, add=True)
