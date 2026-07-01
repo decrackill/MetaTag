@@ -841,24 +841,109 @@ class MetaTagApp(tk.Tk):
 
         top_frame = tk.Frame(win, bg=S_BG, pady=15, padx=20)
         top_frame.pack(fill="x")
-        combo_frame = tk.Frame(top_frame, bg=S_BG)
-        combo_frame.pack(side="left")
-        tk.Label(combo_frame, text="Variable a analizar:", bg=S_BG, fg=S_TEXT,
-                 font=FONTS["LABEL_B"]).pack(side="left")
-        combo_var = tk.StringVar(value=validas[0])
-        combo = ttk.Combobox(combo_frame, textvariable=combo_var, values=validas,
-                             state="readonly", font=FONTS["BODY"], width=25)
-        combo.pack(side="left", padx=(10, 0))
 
-        combo_chart_frame = tk.Frame(top_frame, bg=S_BG)
-        combo_chart_frame.pack(side="left", padx=(40, 0))
-        tk.Label(combo_chart_frame, text="Estilo del Gráfico:", bg=S_BG, fg=S_TEXT,
-                 font=FONTS["LABEL_B"]).pack(side="left")
-        chart_type_var = tk.StringVar(value="Dona HD (Predeterminado)")
-        combo_chart = ttk.Combobox(combo_chart_frame, textvariable=chart_type_var,
-                                   values=["Dona HD (Predeterminado)", "Pastel Profesional", "Barras Material"],
-                                   state="readonly", font=FONTS["BODY"], width=25)
-        combo_chart.pack(side="left", padx=(10, 0))
+        # ── Selector de Variable ──
+        var_frame = tk.Frame(top_frame, bg=S_BG)
+        var_frame.pack(side="left")
+        tk.Label(var_frame, text="📊 Variable a analizar:", bg=S_BG, fg=S_TEXT_MUTE,
+                 font=FONTS["TINY"]).pack(anchor="w")
+        var_btn_frame = tk.Frame(var_frame, bg=S_BORDER, padx=1, pady=1)
+        var_btn_frame.pack(fill="x", pady=(4, 0))
+        var_inner = tk.Frame(var_btn_frame, bg=S_CARD)
+        var_inner.pack(fill="x")
+        var_display = tk.Label(var_inner, text=validas[0], bg=S_CARD, fg=S_TEXT,
+                               font=FONTS["BODY"], anchor="w", padx=10, pady=6, cursor="hand2")
+        var_display.pack(side="left", fill="x", expand=True)
+        tk.Label(var_inner, text="▾", bg=S_CARD, fg=S_TEXT_MUTE, font=FONTS["TINY"]).pack(side="right", padx=8)
+
+        var_menu_win = [None]
+        combo_var = tk.StringVar(value=validas[0])
+
+        def show_var_menu(e=None):
+            if var_menu_win[0] and var_menu_win[0].winfo_exists():
+                var_menu_win[0].destroy()
+                return
+            m = tk.Toplevel(win)
+            var_menu_win[0] = m
+            m.overrideredirect(True)
+            x = var_display.winfo_rootx()
+            y = var_display.winfo_rooty() + var_display.winfo_height()
+            m.geometry(f"{var_display.winfo_width()}x{min(250, len(validas)*30+10)}+{x}+{y}")
+            m.configure(bg=S_BORDER)
+            c = tk.Canvas(m, bg=S_CARD, highlightthickness=0)
+            c.pack(fill="both", expand=True, padx=1, pady=1)
+            for i, v in enumerate(validas):
+                bg = S_ACCENT if v == combo_var.get() else S_CARD
+                fg = S_BG if v == combo_var.get() else S_TEXT
+                lbl = tk.Label(c, text=f"  {v}", bg=bg, fg=fg, font=FONTS["BODY"],
+                               anchor="w", cursor="hand2")
+                lbl.pack(fill="x", pady=1)
+                def _sel(val=v):
+                    combo_var.set(val)
+                    var_display.configure(text=val)
+                    m.destroy()
+                lbl.bind("<Button-1>", _sel)
+                lbl.bind("<Enter>", lambda e, l=lbl: l.configure(bg=S_ACCENT_LIGHT))
+                lbl.bind("<Leave>", lambda e, l=lbl, v=v, is_sel=(v == combo_var.get()):
+                         l.configure(bg=S_ACCENT if is_sel else S_CARD))
+            m.bind("<FocusOut>", lambda e: m.after(100, lambda: m.destroy() if m.winfo_exists() else None))
+            m.focus_set()
+
+        var_display.bind("<Button-1>", show_var_menu)
+
+        # ── Selector de Estilo ──
+        style_frame = tk.Frame(top_frame, bg=S_BG)
+        style_frame.pack(side="left", padx=(30, 0))
+        tk.Label(style_frame, text="🎨 Estilo del Gráfico:", bg=S_BG, fg=S_TEXT_MUTE,
+                 font=FONTS["TINY"]).pack(anchor="w")
+        style_btn_frame = tk.Frame(style_frame, bg=S_BORDER, padx=1, pady=1)
+        style_btn_frame.pack(fill="x", pady=(4, 0))
+        style_inner = tk.Frame(style_btn_frame, bg=S_CARD)
+        style_inner.pack(fill="x")
+
+        chart_options = ["Dona HD", "Pastel Profesional", "Barras Material"]
+        chart_labels = {"Dona HD": "🍩 Dona HD", "Pastel Profesional": "🥧 Pastel",
+                        "Barras Material": "📊 Barras"}
+        chart_type_var = tk.StringVar(value="Dona HD")
+        style_display = tk.Label(style_inner, text=chart_labels["Dona HD"], bg=S_CARD, fg=S_TEXT,
+                                 font=FONTS["BODY"], anchor="w", padx=10, pady=6, cursor="hand2")
+        style_display.pack(side="left", fill="x", expand=True)
+        tk.Label(style_inner, text="▾", bg=S_CARD, fg=S_TEXT_MUTE, font=FONTS["TINY"]).pack(side="right", padx=8)
+
+        style_menu_win = [None]
+
+        def show_style_menu(e=None):
+            if style_menu_win[0] and style_menu_win[0].winfo_exists():
+                style_menu_win[0].destroy()
+                return
+            m = tk.Toplevel(win)
+            style_menu_win[0] = m
+            m.overrideredirect(True)
+            x = style_display.winfo_rootx()
+            y = style_display.winfo_rooty() + style_display.winfo_height()
+            m.geometry(f"{style_display.winfo_width()}x{len(chart_options)*34+10}+{x}+{y}")
+            m.configure(bg=S_BORDER)
+            c = tk.Canvas(m, bg=S_CARD, highlightthickness=0)
+            c.pack(fill="both", expand=True, padx=1, pady=1)
+            for opt in chart_options:
+                is_sel = (opt == chart_type_var.get())
+                bg = S_ACCENT if is_sel else S_CARD
+                fg = S_BG if is_sel else S_TEXT
+                lbl = tk.Label(c, text=f"  {chart_labels[opt]}", bg=bg, fg=fg,
+                               font=FONTS["BODY"], anchor="w", cursor="hand2")
+                lbl.pack(fill="x", pady=1)
+                def _sel(val=opt):
+                    chart_type_var.set(val)
+                    style_display.configure(text=chart_labels[val])
+                    m.destroy()
+                lbl.bind("<Button-1>", _sel)
+                lbl.bind("<Enter>", lambda e, l=lbl: l.configure(bg=S_ACCENT_LIGHT))
+                lbl.bind("<Leave>", lambda e, l=lbl, v=opt, is_sel=(v == chart_type_var.get()):
+                         l.configure(bg=S_ACCENT if is_sel else S_CARD))
+            m.bind("<FocusOut>", lambda e: m.after(100, lambda: m.destroy() if m.winfo_exists() else None))
+            m.focus_set()
+
+        style_display.bind("<Button-1>", show_style_menu)
 
         body_paned = tk.PanedWindow(win, orient="horizontal",
                                     bg=S_BORDER, sashwidth=4, bd=0)
