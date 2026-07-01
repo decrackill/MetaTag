@@ -853,13 +853,19 @@ class MetaTagApp(tk.Tk):
         var_cb.pack(fill="x", pady=(4, 0))
 
         # ── Selector de Estilo ──
+        CHART_OPTIONS = [
+            "🍩 Dona HD",
+            "🥧 Pastel Profesional",
+            "📊 Barras Horizontal",
+            "📈 Barras Vertical",
+            "🎯 Lollipop",
+        ]
         style_frame = tk.Frame(top_frame, bg=S_BG)
         style_frame.pack(side="left", padx=(30, 0))
         tk.Label(style_frame, text="🎨 Estilo del Gráfico:", bg=S_BG, fg=S_TEXT_MUTE,
                  font=FONTS["TINY"]).pack(anchor="w")
-        chart_type_var = tk.StringVar(value="Dona HD")
-        chart_values = ["Dona HD", "Pastel Profesional", "Barras Material"]
-        style_cb = ttk.Combobox(style_frame, textvariable=chart_type_var, values=chart_values,
+        chart_type_var = tk.StringVar(value="🍩 Dona HD")
+        style_cb = ttk.Combobox(style_frame, textvariable=chart_type_var, values=CHART_OPTIONS,
                                 state="readonly", font=FONTS["BODY"], width=22)
         style_cb.pack(fill="x", pady=(4, 0))
 
@@ -896,89 +902,187 @@ class MetaTagApp(tk.Tk):
         def update_chart(*args):
             col   = combo_var.get()
             ctype = chart_type_var.get()
-            data  = self.df[col].replace("", pd.NA).dropna()
-            counts = data.value_counts().sort_values(ascending=True)
+            if not isinstance(col, str) or col not in self.df.columns:
+                return
+            data   = self.df[col].replace("", pd.NA).dropna()
+            counts = data.value_counts().sort_values(ascending=False)
             fig.clear()
             ax = fig.add_subplot(111)
             ax.set_facecolor(S_BG)
+            fig.patch.set_facecolor(S_BG)
             total_count = len(data)
 
             if total_count == 0:
-                ax.text(0.5, 0.5, "No hay datos suficientes para graficar.",
+                ax.text(0.5, 0.5, "No hay datos suficientes.",
                         ha="center", va="center", color=S_TEXT, fontsize=12)
-            else:
-                is_pie = "HD" in ctype or "Profesional" in ctype
-                if is_pie:
-                    wedge_w = 0.45 if "Dona" in ctype else 1.0
-                    wedges, texts, autotexts = ax.pie(
-                        counts, labels=None,
-                        autopct=lambda p: f"{p:.1f}%" if p > 3 else "",
-                        pctdistance=0.75, colors=S_CHART_COLORS,
-                        wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=2.5))
-                    for at in autotexts:
-                        at.set_color(S_BG if wedge_w == 1.0 else S_TEXT)
-                        at.set_fontsize(11); at.set_fontweight("bold")
-                    bbox_props = dict(boxstyle="square,pad=0.3", fc=S_CARD, ec=S_BORDER, lw=0.72)
-                    kw = dict(arrowprops=dict(arrowstyle="-"), bbox=bbox_props, zorder=0, va="center")
-                    for i, p in enumerate(wedges):
-                        ang = (p.theta2 - p.theta1) / 2. + p.theta1
-                        safe_ang = ang if ang % 90 != 0 else ang + 0.1
-                        y = np.sin(np.deg2rad(safe_ang))
-                        x = np.cos(np.deg2rad(safe_ang))
-                        h_align = {-1: "right", 1: "left"}[int(np.sign(x))]
-                        conn = f"angle,angleA=0,angleB={safe_ang}"
-                        kw["arrowprops"].update({"connectionstyle": conn, "color": S_BORDER})
-                        ax.annotate(counts.index[i], xy=(x, y),
-                                    xytext=(1.35*np.sign(x), 1.4*y),
-                                    horizontalalignment=h_align, fontsize=11, color=S_TEXT, **kw)
-                    tk_chart_title.configure(text=f"Distribución de {col}")
-                    if wedge_w < 1.0:
-                        top_val   = counts.index[-1]
-                        top_count = counts.max()
-                        pct       = (top_count / total_count) * 100
-                        ax.text(0, 0, f"TOTAL\n{total_count}\npiezas",
-                                ha="center", va="center", color=S_TEXT, fontsize=14, fontweight="bold")
-                        ax.text(0, -0.25, f"Dominante:\n{top_val} ({pct:.1f}%)",
-                                ha="center", va="center", color=S_TEXT_MUTE, fontsize=9, fontstyle="italic")
-                else:
-                    counts.plot(kind="barh", ax=ax, color=S_ACCENT, edgecolor=S_BORDER, linewidth=1)
-                    tk_chart_title.configure(text=f"Frecuencia Absoluta: {col}")
-                    ax.tick_params(colors=S_TEXT)
-                    ax.set_xlabel("Cantidad de Piezas", color=S_TEXT_MUTE, fontsize=10)
-                    ax.set_ylabel("")
-                    for sp in ("top", "right"): ax.spines[sp].set_visible(False)
-                    ax.spines["left"].set_color(S_BORDER)
-                    ax.spines["bottom"].set_color(S_BORDER)
-                    ax.xaxis.grid(True, linestyle=":", alpha=0.5, color=S_BORDER)
-                    for bar in ax.patches:
-                        ax.annotate(f"{int(bar.get_width())}",
-                                    (bar.get_width(), bar.get_y() + bar.get_height() / 2),
-                                    ha="left", va="center", xytext=(6, 0),
-                                    textcoords="offset points",
-                                    color=S_TEXT, fontsize=10, fontweight="bold")
 
-            fig.tight_layout()
+            # ── PIE / DONA ────────────────────────────────────────────
+            elif "Dona" in ctype or "Pastel" in ctype:
+                counts_sorted = counts.sort_values(ascending=True)
+                wedge_w = 0.45 if "Dona" in ctype else 1.0
+
+                wedges, _, autotexts = ax.pie(
+                    counts_sorted,
+                    labels=None,
+                    autopct=lambda p: f"{p:.1f}%",
+                    pctdistance=0.78,
+                    colors=S_CHART_COLORS,
+                    wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=2.5),
+                    startangle=90)
+
+                for at in autotexts:
+                    pct_val = float(at.get_text().replace("%", "") or 0)
+                    if pct_val < 4.0:
+                        at.set_visible(False)
+                    else:
+                        at.set_color("#FFFFFF" if wedge_w == 1.0 else S_TEXT)
+                        at.set_fontsize(10)
+                        at.set_fontweight("bold")
+
+                bbox_props = dict(boxstyle="round,pad=0.3",
+                                  fc=S_CARD, ec=S_BORDER, lw=0.8, alpha=0.9)
+                kw = dict(arrowprops=dict(arrowstyle="-", color=S_BORDER),
+                          bbox=bbox_props, zorder=0, va="center")
+                for i, p in enumerate(wedges):
+                    ang      = (p.theta2 - p.theta1) / 2.0 + p.theta1
+                    safe_ang = ang if ang % 90 != 0 else ang + 0.1
+                    ys = np.sin(np.deg2rad(safe_ang))
+                    xs = np.cos(np.deg2rad(safe_ang))
+                    h_align  = "right" if xs < 0 else "left"
+                    conn     = f"angle,angleA=0,angleB={safe_ang}"
+                    kw["arrowprops"]["connectionstyle"] = conn
+                    pct_label = f"{counts_sorted.values[i]/total_count*100:.1f}%"
+                    label_txt = f"{counts_sorted.index[i]}\n{pct_label}"
+                    ax.annotate(label_txt,
+                                xy=(xs, ys),
+                                xytext=(1.38 * np.sign(xs), 1.45 * ys),
+                                horizontalalignment=h_align,
+                                fontsize=9, color=S_TEXT, **kw)
+
+                tk_chart_title.configure(text=f"Distribución de {col}")
+
+                if wedge_w < 1.0:
+                    top_val   = counts_sorted.index[-1]
+                    top_pct   = counts_sorted.max() / total_count * 100
+                    ax.text(0, 0.12, f"TOTAL\n{total_count}\npiezas",
+                            ha="center", va="center",
+                            color=S_TEXT, fontsize=14, fontweight="bold")
+                    ax.text(0, -0.28, f"Dominante:\n{top_val} ({top_pct:.1f}%)",
+                            ha="center", va="center",
+                            color=S_TEXT_MUTE, fontsize=9, fontstyle="italic")
+
+            # ── BARRAS HORIZONTAL ─────────────────────────────────────
+            elif "Horizontal" in ctype:
+                counts_asc = counts.sort_values(ascending=True)
+                bars = ax.barh(range(len(counts_asc)), counts_asc.values,
+                               color=S_CHART_COLORS[:len(counts_asc)],
+                               edgecolor=S_BG, linewidth=1.2, height=0.65)
+                ax.set_yticks(range(len(counts_asc)))
+                ax.set_yticklabels(counts_asc.index, color=S_TEXT, fontsize=10)
+                ax.set_xlabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=10)
+                ax.tick_params(colors=S_TEXT, length=0)
+                for sp in ("top", "right", "left"):
+                    ax.spines[sp].set_visible(False)
+                ax.spines["bottom"].set_color(S_BORDER)
+                ax.xaxis.grid(True, linestyle=":", alpha=0.4, color=S_BORDER)
+                ax.set_axisbelow(True)
+                for bar, val in zip(bars, counts_asc.values):
+                    pct = val / total_count * 100
+                    ax.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2,
+                            f"{val}  ({pct:.1f}%)",
+                            va="center", ha="left",
+                            color=S_TEXT, fontsize=9, fontweight="bold")
+                ax.set_xlim(0, counts_asc.max() * 1.28)
+                tk_chart_title.configure(text=f"Frecuencia: {col}")
+
+            # ── BARRAS VERTICAL ───────────────────────────────────────
+            elif "Vertical" in ctype:
+                bars = ax.bar(range(len(counts)), counts.values,
+                              color=S_CHART_COLORS[:len(counts)],
+                              edgecolor=S_BG, linewidth=1.2, width=0.65)
+                ax.set_xticks(range(len(counts)))
+                ax.set_xticklabels(counts.index, color=S_TEXT, fontsize=9,
+                                   rotation=30, ha="right")
+                ax.set_ylabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=10)
+                ax.tick_params(colors=S_TEXT, length=0)
+                for sp in ("top", "right"):
+                    ax.spines[sp].set_visible(False)
+                ax.spines["left"].set_color(S_BORDER)
+                ax.spines["bottom"].set_color(S_BORDER)
+                ax.yaxis.grid(True, linestyle=":", alpha=0.4, color=S_BORDER)
+                ax.set_axisbelow(True)
+                for bar, val in zip(bars, counts.values):
+                    pct = val / total_count * 100
+                    ax.text(bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + 0.3,
+                            f"{val}\n({pct:.1f}%)",
+                            ha="center", va="bottom",
+                            color=S_TEXT, fontsize=8, fontweight="bold")
+                ax.set_ylim(0, counts.max() * 1.3)
+                tk_chart_title.configure(text=f"Frecuencia: {col}")
+
+            # ── LOLLIPOP ──────────────────────────────────────────────
+            elif "Lollipop" in ctype:
+                counts_asc = counts.sort_values(ascending=True)
+                y_pos = range(len(counts_asc))
+                for i, (y, val) in enumerate(zip(y_pos, counts_asc.values)):
+                    color = S_CHART_COLORS[i % len(S_CHART_COLORS)]
+                    ax.plot([0, val], [y, y], color=color, linewidth=1.8,
+                            alpha=0.6, solid_capstyle="round")
+                for i, (y, val) in enumerate(zip(y_pos, counts_asc.values)):
+                    color = S_CHART_COLORS[i % len(S_CHART_COLORS)]
+                    ax.scatter(val, y, color=color, s=120, zorder=5,
+                               edgecolors=S_BG, linewidth=1.5)
+                    pct = val / total_count * 100
+                    ax.text(val + 0.5, y,
+                            f"{val}  ({pct:.1f}%)",
+                            va="center", ha="left",
+                            color=S_TEXT, fontsize=9)
+                ax.set_yticks(list(y_pos))
+                ax.set_yticklabels(counts_asc.index, color=S_TEXT, fontsize=10)
+                ax.tick_params(colors=S_TEXT, length=0)
+                ax.set_xlabel("Cantidad de piezas", color=S_TEXT_MUTE, fontsize=10)
+                for sp in ("top", "right", "left"):
+                    ax.spines[sp].set_visible(False)
+                ax.spines["bottom"].set_color(S_BORDER)
+                ax.xaxis.grid(True, linestyle=":", alpha=0.3, color=S_BORDER)
+                ax.set_axisbelow(True)
+                ax.set_xlim(-0.5, counts_asc.max() * 1.3)
+                tk_chart_title.configure(text=f"Distribución: {col}")
+
+            fig.tight_layout(pad=1.5)
             canvas_widget.draw()
 
+            # ── Panel de insights ─────────────────────────────────────
             insight_text.configure(state="normal")
             insight_text.delete("1.0", "end")
             if total_count > 0:
-                top_val   = counts.index[-1]; top_count = counts.max()
-                pct       = (top_count / total_count) * 100
-                low_val   = counts.index[0];  low_count  = counts.min()
-                diversidad = len(counts)
-                insight_text.tag_configure("h", font=FONTS["LABEL_B"], foreground=S_ACCENT)
-                insight_text.tag_configure("li", font=FONTS["BODY"], spacing1=5)
+                counts_desc = counts.sort_values(ascending=False)
+                top_val     = counts_desc.index[0]
+                top_count_v = counts_desc.iloc[0]
+                low_val     = counts_desc.index[-1]
+                low_count_v = counts_desc.iloc[-1]
+                pct_top     = top_count_v / total_count * 100
+                diversidad  = len(counts_desc)
+
+                insight_text.tag_configure("h",  font=FONTS["LABEL_B"], foreground=S_ACCENT)
+                insight_text.tag_configure("li", font=FONTS["BODY"],    spacing1=5)
+
                 insight_text.insert("end", f"ANÁLISIS DE '{col.upper()}'\n\n", "h")
                 insight_text.insert("end",
-                    f"Se analizaron {total_count} elementos con esta característica registrada.\n\n")
+                    f"Se analizaron {total_count} elementos con esta "
+                    f"característica registrada.\n\n")
                 insight_text.insert("end", "🥇 Categoría Dominante:\n", "li")
-                insight_text.insert("end", f" ▸ '{top_val}' lidera con {top_count} piezas.\n", "li")
-                insight_text.insert("end", f" ▸ Representa el {pct:.1f}% de la muestra.\n\n", "li")
+                insight_text.insert("end",
+                    f" ▸ '{top_val}' lidera con {top_count_v} piezas.\n", "li")
+                insight_text.insert("end",
+                    f" ▸ Representa el {pct_top:.1f}% de la muestra.\n\n", "li")
                 if diversidad > 1:
+                    pct_low = low_count_v / total_count * 100
                     insight_text.insert("end", "📉 Categoría Minoritaria:\n", "li")
                     insight_text.insert("end",
-                        f" ▸ '{low_val}' es la menos frecuente, con {low_count} apariciones.\n\n", "li")
+                        f" ▸ '{low_val}' es la menos frecuente, "
+                        f"con {low_count_v} apariciones ({pct_low:.1f}%).\n\n", "li")
                 insight_text.insert("end", "⚖️ Diversidad Registrada:\n", "li")
                 insight_text.insert("end",
                     f" ▸ Existen {diversidad} variaciones únicas documentadas.\n", "li")
