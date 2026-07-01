@@ -1397,8 +1397,8 @@ class VisorApp(tk.Tk):
         win.attributes("-topmost", True)
 
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        ww = 560
-        wh = 260
+        ww = 600
+        wh = 300
         win.geometry(f"{ww}x{wh}+{(sw - ww) // 2}+{(sh - wh) // 2}")
 
         hdr = tk.Frame(win, bg=C["header_bg"], height=50)
@@ -1408,18 +1408,33 @@ class VisorApp(tk.Tk):
                  bg=C["header_bg"], fg=C["header_fg"]).pack(side="left", padx=20, pady=10)
 
         body = tk.Frame(win, bg=C["bg"])
-        body.pack(fill="both", expand=True, padx=20, pady=15)
+        body.pack(fill="both", expand=True, padx=20, pady=10)
 
         folder_a_var = tk.StringVar(value=getattr(self, "_comp_folder_a", ""))
         folder_b_var = tk.StringVar(value=getattr(self, "_comp_folder_b", ""))
+        count_a_var = tk.StringVar()
+        count_b_var = tk.StringVar()
 
-        def pick_folder(var):
+        def count_images(folder):
+            if not folder or not os.path.isdir(folder):
+                return 0
+            return sum(1 for f in Path(folder).iterdir()
+                       if f.is_file() and f.suffix.lower() in IMG_EXTS)
+
+        def update_count(var, count_var):
+            folder = var.get()
+            n = count_images(folder)
+            count_var.set(f"{n} imágenes" if n else "Sin imágenes" if folder else "")
+
+        def pick_folder(var, count_var):
             p = _native_folder_open(title="Seleccionar carpeta")
             if p:
                 var.set(p)
+                update_count(var, count_var)
 
-        for label, var, col in [("Carpeta A (Izq):", folder_a_var, C["json_section"]),
-                                 ("Carpeta B (Der):", folder_b_var, C["exif_section"])]:
+        for label, var, count_var, col in [
+                ("Carpeta A (Izq):", folder_a_var, count_a_var, C["json_section"]),
+                ("Carpeta B (Der):", folder_b_var, count_b_var, C["exif_section"])]:
             row = tk.Frame(body, bg=C["bg"])
             row.pack(fill="x", pady=4)
             tk.Label(row, text=label, bg=C["bg"], fg=col, font=F_BOLD, width=16, anchor="w").pack(side="left")
@@ -1427,7 +1442,13 @@ class VisorApp(tk.Tk):
                      relief="solid", bd=1, font=F_TINY, state="readonly").pack(side="left", fill="x", expand=True, padx=(0, 4))
             tk.Button(row, text="Examinar", bg=C["panel2"], fg=C["text2"], font=F_TINY,
                       relief="flat", bd=0, padx=8, cursor="hand2",
-                      command=lambda v=var: pick_folder(v)).pack(side="right")
+                      command=lambda v=var, c=count_var: pick_folder(v, c)).pack(side="right")
+            lbl = tk.Label(row, textvariable=count_var, bg=C["bg"], fg=C["text3"], font=F_TINY)
+            lbl.pack(side="right", padx=(0, 6))
+
+        # Cargar conteos iniciales
+        update_count(folder_a_var, count_a_var)
+        update_count(folder_b_var, count_b_var)
 
         def start_compare():
             a, b = folder_a_var.get(), folder_b_var.get()
@@ -1435,6 +1456,11 @@ class VisorApp(tk.Tk):
                 return messagebox.showwarning("Falta", "Selecciona la Carpeta A.")
             if not b or not os.path.isdir(b):
                 return messagebox.showwarning("Falta", "Selecciona la Carpeta B.")
+            na, nb = count_images(a), count_images(b)
+            if na == 0:
+                return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{a}")
+            if nb == 0:
+                return messagebox.showwarning("Vacía", f"No hay imágenes en:\n{b}")
             self._comp_folder_a = a
             self._comp_folder_b = b
             self._save_config()
@@ -1736,7 +1762,7 @@ class VisorApp(tk.Tk):
         self.focus_force()
 
     def _export_comparison_pdf(self, imgs_a: list, imgs_b: list, name_a: str, name_b: str):
-        """Exporta un PDF con la comparación lado a lado de cada par de imágenes."""
+        """Exporta un PDF con análisis comparativo de metadatos."""
         if not REPORTLAB_OK:
             return messagebox.showerror("Falta", "Instala reportlab: pip install reportlab")
 
@@ -1751,148 +1777,274 @@ class VisorApp(tk.Tk):
         if total == 0:
             return messagebox.showwarning("Sin datos", "No hay pares de imágenes para comparar.")
 
-        self.config(cursor="watch")
-        self.update_idletasks()
+        # ── Ventana de progreso ──
+        prog = tk.Toplevel(self)
+        prog.title("Exportando PDF...")
+        prog.configure(bg=C["bg"])
+        prog.resizable(False, False)
+        prog.attributes("-topmost", True)
+        pw, ph = 420, 160
+        prog.geometry(f"{pw}x{ph}+{(sw - pw)//2 if (sw:=self.winfo_screenwidth()) else 400}+{(sh - ph)//2 if (sh:=self.winfo_screenheight()) else 300}")
+        prog.grab_set()
 
-        try:
-            doc = SimpleDocTemplate(
-                output_path, pagesize=A4,
-                topMargin=1.5*cm, bottomMargin=1.5*cm,
-                leftMargin=1.5*cm, rightMargin=1.5*cm)
+        tk.Label(prog, text="Generando PDF de comparación...", bg=C["bg"],
+                 fg=C["accent"], font=F_BOLD).pack(pady=(20, 8))
+        lbl_status = tk.Label(prog, text="Preparando...", bg=C["bg"], fg=C["text2"], font=F_BODY)
+        lbl_status.pack()
 
-            styles = getSampleStyleSheet()
-            CLR_GOLD = colors.HexColor("#D4A574")
-            CLR_BROWN = colors.HexColor("#5C3518")
-            CLR_PAPER = colors.HexColor("#FAF7F2")
-            CLR_STRIPE = colors.HexColor("#F3EDE5")
-            CLR_LINE = colors.HexColor("#D4C8B4")
+        bar_outer = tk.Frame(prog, bg=C["border"], height=12)
+        bar_outer.pack(fill="x", padx=30, pady=12)
+        bar_fill = tk.Frame(bar_outer, bg=C["accent"], height=12)
+        bar_fill.place(x=0, y=0, relheight=1, width=0)
 
-            s_title = ParagraphStyle("T", parent=styles["Title"], fontName="Helvetica-Bold",
-                                     fontSize=16, textColor=CLR_BROWN, alignment=TA_CENTER, spaceAfter=4)
-            s_sub = ParagraphStyle("S", parent=styles["Normal"], fontName="Helvetica-Oblique",
-                                   fontSize=9, textColor=CLR_GOLD, alignment=TA_CENTER, spaceAfter=10)
-            s_section = ParagraphStyle("Sec", parent=styles["Normal"], fontName="Helvetica-Bold",
-                                       fontSize=10, textColor=CLR_BROWN, spaceBefore=10, spaceAfter=4)
-            s_key = ParagraphStyle("K", parent=styles["Normal"], fontName="Helvetica-Bold",
-                                   fontSize=7.5, textColor=colors.HexColor("#2A1505"))
-            s_val = ParagraphStyle("V", parent=styles["Normal"], fontName="Helvetica",
-                                   fontSize=7.5, textColor=CLR_BROWN)
-            s_name = ParagraphStyle("N", parent=styles["Normal"], fontName="Helvetica-Bold",
-                                    fontSize=8, textColor=CLR_BROWN, alignment=TA_CENTER)
+        cancelled = threading.Event()
 
-            flowables = []
+        def on_cancel():
+            cancelled.set()
+            prog.destroy()
 
-            # Portada
-            flowables.append(Paragraph("COMPARACIÓN DE METADATOS", s_title))
-            flowables.append(Paragraph(
-                f"{name_a}  vs  {name_b}  —  {datetime.datetime.now():%d/%m/%Y %H:%M}", s_sub))
-            flowables.append(HRFlowable(width="100%", thickness=2, color=CLR_GOLD, spaceAfter=10))
-            flowables.append(Paragraph(
-                f"Total de pares comparados: {total}", s_sub))
-            flowables.append(Spacer(1, 0.5*cm))
+        tk.Button(prog, text="Cancelar", bg=C["panel2"], fg=C["text"], font=F_BODY,
+                  relief="flat", bd=0, cursor="hand2", command=on_cancel).pack()
 
-            def extract_meta(path):
-                try:
-                    old_path = self.current_path
-                    old_meta = self.all_metadata[:]
-                    self.current_path = path
-                    self._extract_all_metadata(path)
-                    meta = self.all_metadata[:]
-                    self.current_path = old_path
-                    self.all_metadata = old_meta
-                    return {k: v for t, k, v in meta if t != "header"
-                            and k not in {"(Sin datos JSON)", "(Sin EXIF)", "(Sin GPS)",
-                                          "(Sin datos GPS)", "(Error EXIF)", ""}}
-                except Exception:
+        def update_prog(frac, text):
+            try:
+                bar_outer.update_idletasks()
+                w = bar_outer.winfo_width() or 360
+                bar_fill.place(width=int(w * frac))
+                lbl_status.configure(text=text)
+                prog.update_idletasks()
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                def extract_meta(path):
+                    try:
+                        with Image.open(path) as img:
+                            info = img.info
+                            ext = Path(path).suffix.lower()
+                            data = None
+                            if ext in (".jpg", ".jpeg") and "exif" in info:
+                                exif_d = piexif.load(info["exif"])
+                                uc = exif_d.get("Exif", {}).get(piexif.ExifIFD.UserComment)
+                                if uc:
+                                    data = json.loads(piexif.helper.UserComment.load(uc))
+                            elif ext == ".png":
+                                c = getattr(img, "text", {}).get("Comment", "")
+                                if c:
+                                    data = json.loads(c)
+                            if data and isinstance(data, dict):
+                                return {k: str(v) for k, v in data.items()}
+                    except Exception:
+                        pass
                     return {}
 
-            for i in range(total):
-                path_a, path_b = imgs_a[i], imgs_b[i]
-                meta_a = extract_meta(path_a)
-                meta_b = extract_meta(path_b)
+                doc = SimpleDocTemplate(
+                    output_path, pagesize=A4,
+                    topMargin=1.5*cm, bottomMargin=1.5*cm,
+                    leftMargin=1.5*cm, rightMargin=1.5*cm)
 
-                # Título del par
-                flowables.append(HRFlowable(width="100%", thickness=1, color=CLR_LINE, spaceBefore=8))
+                styles = getSampleStyleSheet()
+                CLR_GOLD = colors.HexColor("#D4A574")
+                CLR_BROWN = colors.HexColor("#5C3518")
+                CLR_PAPER = colors.HexColor("#FAF7F2")
+                CLR_STRIPE = colors.HexColor("#F3EDE5")
+                CLR_LINE = colors.HexColor("#D4C8B4")
+
+                s_title = ParagraphStyle("T", parent=styles["Title"], fontName="Helvetica-Bold",
+                                         fontSize=16, textColor=CLR_BROWN, alignment=TA_CENTER, spaceAfter=4)
+                s_sub = ParagraphStyle("S", parent=styles["Normal"], fontName="Helvetica-Oblique",
+                                       fontSize=9, textColor=CLR_GOLD, alignment=TA_CENTER, spaceAfter=10)
+                s_section = ParagraphStyle("Sec", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                           fontSize=10, textColor=CLR_BROWN, spaceBefore=10, spaceAfter=4)
+                s_key = ParagraphStyle("K", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                       fontSize=7.5, textColor=colors.HexColor("#2A1505"))
+                s_val = ParagraphStyle("V", parent=styles["Normal"], fontName="Helvetica",
+                                       fontSize=7.5, textColor=CLR_BROWN)
+                s_name = ParagraphStyle("N", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                        fontSize=8, textColor=CLR_BROWN, alignment=TA_CENTER)
+
+                flowables = []
+
+                # Portada
+                flowables.append(Paragraph("ANÁLISIS COMPARATIVO DE METADATOS", s_title))
                 flowables.append(Paragraph(
-                    f"Par {i+1}/{total}:  {Path(path_a).name}  vs  {Path(path_b).name}", s_section))
+                    f"{name_a}  vs  {name_b}  —  {datetime.datetime.now():%d/%m/%Y %H:%M}", s_sub))
+                flowables.append(HRFlowable(width="100%", thickness=2, color=CLR_GOLD, spaceAfter=10))
 
-                # Imágenes lado a lado
-                try:
-                    imgs_row = []
-                    for p, label in [(path_a, "A"), (path_b, "B")]:
-                        img = ImageOps.exif_transpose(Image.open(p))
-                        if img.mode not in ("RGB", "L"):
-                            img = img.convert("RGB")
-                        img.thumbnail((8*cm, 5*cm), Image.LANCZOS)
-                        buf = io.BytesIO()
-                        img.save(buf, format="JPEG", quality=85)
-                        buf.seek(0)
-                        rl_img = RLImage(buf)
-                        rl_img.drawWidth = min(8*cm, rl_img.drawWidth)
-                        rl_img.drawHeight = min(5*cm, rl_img.drawHeight)
-                        imgs_row.append([
-                            Paragraph(f"<b>{label}: {Path(p).name}</b>", s_name),
-                            rl_img
-                        ])
+                # Resumen general
+                total_same = total_diff = total_new_a = total_new_b = 0
 
-                    img_table = Table(
-                        [[imgs_row[0][0], imgs_row[1][0]],
-                         [imgs_row[0][1], imgs_row[1][1]]],
-                        colWidths=[8.5*cm, 8.5*cm])
-                    img_table.setStyle(TableStyle([
-                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                        ("BOX", (0, 0), (-1, -1), 1, CLR_GOLD),
-                        ("BACKGROUND", (0, 0), (-1, -1), CLR_PAPER),
-                        ("TOPPADDING", (0, 0), (-1, -1), 6),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                    ]))
-                    flowables.append(img_table)
-                    flowables.append(Spacer(1, 0.3*cm))
-                except Exception:
-                    pass
+                all_pair_data = []
+                for i in range(total):
+                    if cancelled.is_set():
+                        self.after(0, prog.destroy)
+                        return
+                    self.after(0, update_prog, (i + 0.5) / total, f"Analizando imagen {i+1}/{total}...")
 
-                # Tabla de metadatos lado a lado
-                all_keys = sorted(set(meta_a) | set(meta_b))
-                if all_keys:
-                    tbl_data = [[Paragraph("<b>Campo</b>", s_key),
-                                 Paragraph(f"<b>Valor en {name_a}</b>", s_key),
-                                 Paragraph(f"<b>Valor en {name_b}</b>", s_key)]]
-                    for k in all_keys:
-                        va = meta_a.get(k, "—")
-                        vb = meta_b.get(k, "—")
-                        color_a = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#7EB8C9")
-                        color_b = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#BB86FC")
-                        tbl_data.append([
-                            Paragraph(k, s_key),
-                            Paragraph(f'<font color="{color_a}">{va}</font>', s_val),
-                            Paragraph(f'<font color="{color_b}">{vb}</font>', s_val),
-                        ])
+                    meta_a = extract_meta(imgs_a[i])
+                    meta_b = extract_meta(imgs_b[i])
+                    all_pair_data.append((imgs_a[i], imgs_b[i], meta_a, meta_b))
 
-                    meta_table = Table(tbl_data, colWidths=[5*cm, 6*cm, 6*cm])
-                    meta_table.setStyle(TableStyle([
-                        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, CLR_STRIPE]),
-                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5DED5")),
-                        ("BOX", (0, 0), (-1, -1), 1, CLR_LINE),
-                        ("TOPPADDING", (0, 0), (-1, -1), 3),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ]))
-                    flowables.append(meta_table)
+                    keys_a, keys_b = set(meta_a), set(meta_b)
+                    total_same += len(keys_a & keys_b)
+                    total_diff += sum(1 for k in keys_a & keys_b if meta_a[k] != meta_b[k])
+                    total_new_a += len(keys_a - keys_b)
+                    total_new_b += len(keys_b - keys_a)
 
-            # Pie
-            flowables.append(Spacer(1, 1*cm))
-            flowables.append(HRFlowable(width="100%", thickness=1, color=CLR_LINE))
-            flowables.append(Paragraph(
-                "<b>MetaTag Visor v9.0</b>  •  Generado automáticamente", s_sub))
+                self.after(0, update_prog, 0.8, "Generando documento PDF...")
 
-            doc.build(flowables)
-            messagebox.showinfo("PDF Exportado", f"Comparación guardada en:\n\n{output_path}")
-        except Exception as e:
-            messagebox.showerror("Error PDF", str(e))
-        finally:
-            self.config(cursor="")
+                # Resumen ejecutivo
+                flowables.append(Paragraph("RESUMEN EJECUTIVO", s_section))
+                summary_data = [
+                    [Paragraph("<b>Métrica</b>", s_key), Paragraph("<b>Cantidad</b>", s_key)],
+                    [Paragraph("Pares comparados", s_key), Paragraph(str(total), s_val)],
+                    [Paragraph("Campos idénticos", s_key), Paragraph(f'<font color="#7EC894">{total_same}</font>', s_val)],
+                    [Paragraph("Campos diferentes", s_key), Paragraph(f'<font color="#E05050">{total_diff}</font>', s_val)],
+                    [Paragraph(f"Sólo en {name_a}", s_key), Paragraph(f'<font color="#7EB8C9">{total_new_a}</font>', s_val)],
+                    [Paragraph(f"Sólo en {name_b}", s_key), Paragraph(f'<font color="#BB86FC">{total_new_b}</font>', s_val)],
+                ]
+                summary_table = Table(summary_data, colWidths=[10*cm, 6*cm])
+                summary_table.setStyle(TableStyle([
+                    ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, CLR_STRIPE]),
+                    ("GRID", (0, 0), (-1, -1), 0.5, CLR_LINE),
+                    ("BOX", (0, 0), (-1, -1), 1, CLR_GOLD),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]))
+                flowables.append(summary_table)
+                flowables.append(Spacer(1, 0.5*cm))
+
+                # Detalle por par
+                for i, (path_a, path_b, meta_a, meta_b) in enumerate(all_pair_data):
+                    if cancelled.is_set():
+                        self.after(0, prog.destroy)
+                        return
+                    self.after(0, update_prog, 0.8 + 0.2 * (i / total), f"Escribiendo par {i+1}/{total}...")
+
+                    flowables.append(HRFlowable(width="100%", thickness=1, color=CLR_LINE, spaceBefore=8))
+                    flowables.append(Paragraph(
+                        f"Par {i+1}/{total}:  {Path(path_a).name}  vs  {Path(path_b).name}", s_section))
+
+                    # Imágenes lado a lado
+                    try:
+                        imgs_row = []
+                        for p in [(path_a, "A"), (path_b, "B")]:
+                            img = ImageOps.exif_transpose(Image.open(p[0]))
+                            if img.mode not in ("RGB", "L"):
+                                img = img.convert("RGB")
+                            img.thumbnail((8*cm, 5*cm), Image.LANCZOS)
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG", quality=85)
+                            buf.seek(0)
+                            rl_img = RLImage(buf)
+                            rl_img.drawWidth = min(8*cm, rl_img.drawWidth)
+                            rl_img.drawHeight = min(5*cm, rl_img.drawHeight)
+                            imgs_row.append([
+                                Paragraph(f"<b>{p[1]}: {Path(p[0]).name}</b>", s_name),
+                                rl_img
+                            ])
+                        img_table = Table(
+                            [[imgs_row[0][0], imgs_row[1][0]],
+                             [imgs_row[0][1], imgs_row[1][1]]],
+                            colWidths=[8.5*cm, 8.5*cm])
+                        img_table.setStyle(TableStyle([
+                            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("BOX", (0, 0), (-1, -1), 1, CLR_GOLD),
+                            ("BACKGROUND", (0, 0), (-1, -1), CLR_PAPER),
+                            ("TOPPADDING", (0, 0), (-1, -1), 6),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                        ]))
+                        flowables.append(img_table)
+                        flowables.append(Spacer(1, 0.3*cm))
+                    except Exception:
+                        pass
+
+                    # Análisis del par
+                    keys_a, keys_b = set(meta_a), set(meta_b)
+                    identical = keys_a & keys_b
+                    identical_same = {k for k in identical if meta_a[k] == meta_b[k]}
+                    identical_diff = identical - identical_same
+                    only_a = keys_a - keys_b
+                    only_b = keys_b - keys_a
+
+                    if identical_diff or only_a or only_b:
+                        analysis_items = []
+                        if identical_diff:
+                            analysis_items.append(
+                                f'<font color="#E05050"><b>Diferentes ({len(identical_diff)}):</b></font> ' +
+                                ", ".join(sorted(identical_diff)))
+                        if only_a:
+                            analysis_items.append(
+                                f'<font color="#7EB8C9"><b>Sólo en A ({len(only_a)}):</b></font> ' +
+                                ", ".join(sorted(only_a)))
+                        if only_b:
+                            analysis_items.append(
+                                f'<font color="#BB86FC"><b>Sólo en B ({len(only_b)}):</b></font> ' +
+                                ", ".join(sorted(only_b)))
+                        for item in analysis_items:
+                            flowables.append(Paragraph(f"• {item}", s_val))
+                        flowables.append(Spacer(1, 0.2*cm))
+
+                    # Tabla de metadatos
+                    all_keys = sorted(keys_a | keys_b)
+                    if all_keys:
+                        tbl_data = [[Paragraph("<b>Campo</b>", s_key),
+                                     Paragraph(f"<b>{name_a}</b>", s_key),
+                                     Paragraph(f"<b>{name_b}</b>", s_key)]]
+                        for k in all_keys:
+                            va = meta_a.get(k, "—")
+                            vb = meta_b.get(k, "—")
+                            ca = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#7EB8C9")
+                            cb = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#BB86FC")
+                            tbl_data.append([
+                                Paragraph(k, s_key),
+                                Paragraph(f'<font color="{ca}">{va}</font>', s_val),
+                                Paragraph(f'<font color="{cb}">{vb}</font>', s_val),
+                            ])
+                        meta_table = Table(tbl_data, colWidths=[5*cm, 6*cm, 6*cm])
+                        meta_table.setStyle(TableStyle([
+                            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, CLR_STRIPE]),
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5DED5")),
+                            ("BOX", (0, 0), (-1, -1), 1, CLR_LINE),
+                            ("TOPPADDING", (0, 0), (-1, -1), 3),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ]))
+                        flowables.append(meta_table)
+
+                # Pie
+                flowables.append(Spacer(1, 1*cm))
+                flowables.append(HRFlowable(width="100%", thickness=1, color=CLR_LINE))
+                flowables.append(Paragraph(
+                    "<b>MetaTag Visor v9.0</b>  •  Análisis generado automáticamente", s_sub))
+
+                self.after(0, update_prog, 0.95, "Guardando archivo...")
+                doc.build(flowables)
+
+                def finish():
+                    try:
+                        prog.destroy()
+                    except Exception:
+                        pass
+                    messagebox.showinfo("PDF Exportado", f"Comparación guardada en:\n\n{output_path}")
+
+                self.after(0, finish)
+
+            except Exception as e:
+                def show_err():
+                    try:
+                        prog.destroy()
+                    except Exception:
+                        pass
+                    messagebox.showerror("Error PDF", str(e))
+                self.after(0, show_err)
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
     # ─────────────────────────────────────────────────────────────
