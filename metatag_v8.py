@@ -1387,7 +1387,17 @@ class MetaTagApp(tk.Tk):
             if not visor_path:
                 return messagebox.showerror("Error",
                     f"No se encontró el archivo visor.py en:\n{self.output_base}")
-            subprocess.Popen([sys.executable, visor_path, "STANDALONE", CURRENT_THEME])
+            self.withdraw()
+            proc = subprocess.Popen([sys.executable, visor_path, "STANDALONE", CURRENT_THEME])
+
+            def _check_visor():
+                if proc.poll() is not None:
+                    self.deiconify()
+                    self.lift()
+                    self.focus_force()
+                else:
+                    self.after(500, _check_visor)
+            self.after(500, _check_visor)
 
         self._btn_visor = tk.Button(vhdr, text="👁 Visor Pro", bg=C["surface"],
                                     fg=C["accent"], font=FONTS["LABEL_B"], relief="flat",
