@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 import os, json, re, threading, shutil, sys, subprocess
+from typing import Union, Optional
 
 if sys.platform == "win32":
     try:
@@ -150,10 +151,10 @@ class ExcelGrid(tk.Frame):
         self.on_row_click        = on_row_click
         self.app_ref             = app_ref
 
-        self.df: pd.DataFrame | None = None
-        self.col_widths: list[int]   = []
-        self.selected_cells: set     = set()
-        self.hovered_row: int | None = None
+        self.df = None  # type: Optional[pd.DataFrame]
+        self.col_widths = []  # type: list
+        self.selected_cells = set()
+        self.hovered_row = None  # type: Optional[int]
         self.hidden_columns: set     = set()
         self._redraw_pending         = False   # evita redraws dobles
 
@@ -190,9 +191,13 @@ class ExcelGrid(tk.Frame):
 
     # ── Alturas dinámicas ──
     @property
-    def ROW_H(self): return int(26 * getattr(self.app_ref, "current_scale", 1.0))
+    def ROW_H(self):
+        scale = getattr(self.app_ref, "current_scale", 1.0) if self.app_ref else 1.0
+        return int(26 * scale)
     @property
-    def HDR_H(self): return int(28 * getattr(self.app_ref, "current_scale", 1.0))
+    def HDR_H(self):
+        scale = getattr(self.app_ref, "current_scale", 1.0) if self.app_ref else 1.0
+        return int(28 * scale)
 
     # ── Scroll sincronizado + repintado ──
     def _on_vscroll(self, *args):
@@ -245,14 +250,34 @@ class ExcelGrid(tk.Frame):
     def _calc_col_widths(self):
         if self.df is None: return
         self.col_widths = []
-        scale = getattr(self.app_ref, "current_scale", 1.0)
+        scale = getattr(self.app_ref, "current_scale", 1.0) if self.app_ref else 1.0
         min_cw, max_cw, pad = int(80*scale), int(250*scale), int(8*scale)
         for col in self.df.columns:
             max_len = len(str(col))
-            for val in self.df[col].head(50):         # muestra de 50 filas es suficiente
-                max_len = max(max_len, len(str(val)))
+            for val in self.df[col].head(50):
+                try:
+                    max_len = max(max_len, len(str(val)))
+                except Exception:
+                    pass
             w = max(min_cw, min(max_cw, int(max_len * 7 * scale) + pad * 2))
             self.col_widths.append(w)
+
+    @staticmethod
+    def _sanitize_cell(val, max_len=200):
+        try:
+            if pd.isna(val):
+                return ""
+        except (ValueError, TypeError):
+            pass
+        try:
+            s = str(val).strip()
+        except Exception:
+            return "N/A"
+        if s.lower() in ("nan", "none", "nat"):
+            return ""
+        if len(s) > max_len:
+            s = s[:max_len] + "..."
+        return s
 
     # ── RENDER OPTIMIZADO — solo filas en viewport ──
     def redraw(self):
@@ -299,7 +324,10 @@ class ExcelGrid(tk.Frame):
         # ── Solo filas dentro del viewport ──
         for ri in range(first_vis, last_vis + 1):
             if ri >= nrows: break
-            row = self.df.iloc[ri]
+            try:
+                row = self.df.iloc[ri]
+            except Exception:
+                continue
             y   = self.HDR_H + ri * self.ROW_H
             row_bg = C["row_even"] if ri % 2 == 0 else C["row_odd"]
             x = 0
@@ -314,8 +342,12 @@ class ExcelGrid(tk.Frame):
 
                 self.canvas.create_rectangle(x, y, x + cw, y + self.ROW_H,
                                              fill=bg, outline=C["grid_line"], width=1)
+                try:
+                    cell_text = self._sanitize_cell(row[col])
+                except Exception:
+                    cell_text = "ERROR"
                 self.canvas.create_text(x + pad, y + self.ROW_H // 2,
-                                        text=str(row[col]), anchor="w",
+                                        text=cell_text, anchor="w",
                                         font=FONTS["CELL"], fill=fg)
                 x += cw
 
@@ -459,11 +491,14 @@ class ExcelGrid(tk.Frame):
         if s.lower() in ("nan", "none"): return ""
         return s
 
-    def get_selected_metadata(self, img_col_idx: int) -> dict:
+    def get_selected_metadata(self, img_col_idx):
         if self.df is None: return {}
         cols   = list(self.df.columns)
         result = {}
-        omit_empty = self.app_ref.omit_empty_var.get() if self.app_ref else True
+        omit_empty = True
+        if self.app_ref:
+            omit_var = getattr(self.app_ref, 'omit_empty_var', None)
+            omit_empty = omit_var.get() if omit_var else True
 
         temp_result = {}
         for (ri, ci) in self.selected_cells:
@@ -473,24 +508,29 @@ class ExcelGrid(tk.Frame):
             if omit_empty and not val: continue
             temp_result.setdefault(ri, {})[cols[ci]] = val
 
-        if self.app_ref and self.app_ref.locked_columns:
-            for ri in temp_result.keys():
-                for col in self.app_ref.locked_columns:
-                    if col in cols and col not in self.hidden_columns:
-                        ci  = cols.index(col)
-                        val = self._get_val(self.df.iloc[ri, ci])
-                        if omit_empty and not val: continue
-                        temp_result[ri][col] = val
+        if self.app_ref:
+            locked = getattr(self.app_ref, 'locked_columns', None)
+            if locked:
+                for ri in temp_result.keys():
+                    for col in locked:
+                        if col in cols and col not in self.hidden_columns:
+                            ci  = cols.index(col)
+                            val = self._get_val(self.df.iloc[ri, ci])
+                            if omit_empty and not val: continue
+                            temp_result[ri][col] = val
 
         for ri, row_data in temp_result.items():
             result[ri] = {col: row_data[col] for col in cols
                           if col in row_data and col not in self.hidden_columns}
         return result
 
-    def get_row_metadata(self, ri: int, img_col_idx: int) -> dict:
+    def get_row_metadata(self, ri, img_col_idx):
         if self.df is None: return {}
         cols       = list(self.df.columns)
-        omit_empty = self.app_ref.omit_empty_var.get() if self.app_ref else True
+        omit_empty = True
+        if self.app_ref:
+            omit_var = getattr(self.app_ref, 'omit_empty_var', None)
+            omit_empty = omit_var.get() if omit_var else True
         temp_meta  = {}
 
         for ci in range(len(cols)):
@@ -500,12 +540,14 @@ class ExcelGrid(tk.Frame):
                 val = self._get_val(self.df.iloc[ri, ci])
                 if not omit_empty or val: temp_meta[cols[ci]] = val
 
-        if self.app_ref and self.app_ref.locked_columns:
-            for col in self.app_ref.locked_columns:
-                if col in cols and col not in self.hidden_columns:
-                    ci  = cols.index(col)
-                    val = self._get_val(self.df.iloc[ri, ci])
-                    if not omit_empty or val: temp_meta[col] = val
+        if self.app_ref:
+            locked = getattr(self.app_ref, 'locked_columns', None)
+            if locked:
+                for col in locked:
+                    if col in cols and col not in self.hidden_columns:
+                        ci  = cols.index(col)
+                        val = self._get_val(self.df.iloc[ri, ci])
+                        if not omit_empty or val: temp_meta[col] = val
 
         return {col: temp_meta[col] for col in cols if col in temp_meta}
 
@@ -1002,6 +1044,8 @@ class MetaTagApp(tk.Tk):
             fig.patch.set_facecolor(S_BG)
             total_count = len(data)
             n_cats = len(counts)
+            _small_items_for_insight = []
+            LABEL_THRESHOLD_PCT = 4.5
 
             if total_count == 0:
                 ax = fig.add_subplot(111)
@@ -1011,100 +1055,106 @@ class MetaTagApp(tk.Tk):
 
             # ── PIE / DONA ────────────────────────────────────────────
             elif "Dona" in ctype or "Pastel" in ctype:
-                ax = fig.add_axes([0.18, 0.10, 0.60, 0.80])
+                ax = fig.add_axes([0.22, 0.08, 0.56, 0.84])
                 ax.set_facecolor(S_BG)
                 counts_sorted = counts.sort_values(ascending=True)
                 wedge_w = 0.45 if "Dona" in ctype else 1.0
+                colors_cycle = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
 
-                wedges, _, autotexts = ax.pie(
+                pie_result = ax.pie(
                     counts_sorted,
                     labels=None,
-                    autopct=lambda p: f"{p:.1f}%" if p >= 5.0 else "",
-                    pctdistance=0.75,
-                    colors=S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1),
+                    autopct=None,
+                    colors=colors_cycle[:n_cats],
                     wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=2),
                     startangle=90)
+                wedges = pie_result[0]
 
-                for at in autotexts:
-                    at.set_color("#FFFFFF" if wedge_w == 1.0 else S_TEXT)
-                    at.set_fontsize(9)
-                    at.set_fontweight("bold")
+                LABEL_THRESHOLD_PCT = 4.5
 
-                left_labels  = []
-                right_labels = []
+                left_items  = []
+                right_items = []
+                small_items = []
 
                 for i, p in enumerate(wedges):
-                    ang  = (p.theta2 - p.theta1) / 2.0 + p.theta1
+                    ang = (p.theta2 - p.theta1) / 2.0 + p.theta1
                     if ang % 90 == 0:
                         ang += 0.5
-                    ys_orig = np.sin(np.deg2rad(ang))
-                    xs_orig = np.cos(np.deg2rad(ang))
-                    pct_lbl = f"{counts_sorted.values[i]/total_count*100:.1f}%"
-                    txt     = f"{counts_sorted.index[i]}  {pct_lbl}"
-                    if xs_orig < 0:
-                        left_labels.append((ys_orig, txt, xs_orig, i))
-                    else:
-                        right_labels.append((ys_orig, txt, xs_orig, i))
+                    pct = counts_sorted.values[i] / total_count * 100
+                    nombre = counts_sorted.index[i]
+                    n_abs  = int(counts_sorted.values[i])
 
-                def place_labels(label_list, side):
-                    if not label_list:
+                    if pct < LABEL_THRESHOLD_PCT:
+                        small_items.append((nombre, n_abs, pct))
+                        continue
+
+                    ys_ang = np.sin(np.deg2rad(ang))
+                    xs_ang = np.cos(np.deg2rad(ang))
+                    label  = f"{nombre}  {pct:.1f}%"
+                    if xs_ang < 0:
+                        left_items.append((ys_ang, label, xs_ang, i, pct))
+                    else:
+                        right_items.append((ys_ang, label, xs_ang, i, pct))
+
+                def place_labels_clean(items, side):
+                    if not items:
                         return
-                    sorted_list = sorted(label_list, key=lambda x: -x[0])
-                    n = len(sorted_list)
-                    if n == 1:
-                        ys_placed = [sorted_list[0][0]]
-                    else:
-                        span     = min(1.3, max(0.9, n * 0.18))
-                        ys_placed = [span - k * (2 * span / (n - 1))
-                                     for k in range(n)]
-                        for j in range(n):
-                            y_orig   = sorted_list[j][0]
-                            y_placed = ys_placed[j]
-                            ys_placed[j] = (y_orig + y_placed) / 2.0
+                    ordered = sorted(items, key=lambda x: -x[0])
+                    n = len(ordered)
 
-                    bbox_props = dict(boxstyle="round,pad=0.25",
-                                      fc=S_CARD, ec=S_BORDER,
-                                      lw=0.7, alpha=0.88)
-                    x_txt   = -1.72 if side == "left" else 1.72
-                    ha      = "right" if side == "left" else "left"
+                    y_top  =  1.15
+                    y_bot  = -1.15
+                    step   = (y_top - y_bot) / max(n, 1)
+                    total_h = step * (n - 1)
+                    y_start = (y_top + y_bot) / 2.0 + total_h / 2.0
 
-                    for j, (y_orig, txt, xs_orig, idx_w) in enumerate(sorted_list):
-                        y_label = ys_placed[j]
+                    ys_placed = [y_start - k * step for k in range(n)]
+
+                    x_col = -1.80 if side == "left" else 1.80
+                    ha    = "right" if side == "left" else "left"
+                    bbox  = dict(boxstyle="round,pad=0.28",
+                                 fc=S_CARD, ec=S_BORDER, lw=0.7, alpha=0.90)
+
+                    for k, (y_orig, label, xs_ang, idx_w, pct) in enumerate(ordered):
+                        y_lbl = ys_placed[k]
+                        ang_mid = ((wedges[idx_w].theta2 - wedges[idx_w].theta1)
+                                   / 2.0 + wedges[idx_w].theta1)
+                        r_arrow = 1.02
+                        xa = r_arrow * np.cos(np.deg2rad(ang_mid))
+                        ya = r_arrow * np.sin(np.deg2rad(ang_mid))
                         ax.annotate(
-                            txt,
-                            xy=(np.sign(xs_orig) * 1.0,
-                                np.sin(np.deg2rad(
-                                    (wedges[idx_w].theta2 - wedges[idx_w].theta1)
-                                    / 2.0 + wedges[idx_w].theta1))),
-                            xytext=(x_txt, y_label),
+                            label,
+                            xy=(xa, ya),
+                            xytext=(x_col, y_lbl),
                             horizontalalignment=ha,
                             fontsize=8,
                             color=S_TEXT,
                             arrowprops=dict(
                                 arrowstyle="-",
                                 color=S_BORDER,
-                                lw=0.8,
+                                lw=0.7,
                                 connectionstyle="arc3,rad=0.0"),
-                            bbox=bbox_props,
+                            bbox=bbox,
                             va="center",
-                            zorder=5)
+                            zorder=5,
+                            annotation_clip=False)
 
-                place_labels(left_labels,  "left")
-                place_labels(right_labels, "right")
+                place_labels_clean(left_items,  "left")
+                place_labels_clean(right_items, "right")
 
                 tk_chart_title.configure(text=f"Distribución de {col}")
 
                 if wedge_w < 1.0:
                     top_val = counts_sorted.index[-1]
                     top_pct = counts_sorted.max() / total_count * 100
-                    ax.text(0, 0.10,
-                            f"TOTAL\n{total_count}\npiezas",
+                    ax.text(0, 0.10, f"TOTAL\n{total_count}\npiezas",
                             ha="center", va="center",
                             color=S_TEXT, fontsize=13, fontweight="bold")
-                    ax.text(0, -0.30,
-                            f"Dominante:\n{top_val} ({top_pct:.1f}%)",
+                    ax.text(0, -0.30, f"Dominante:\n{top_val} ({top_pct:.1f}%)",
                             ha="center", va="center",
                             color=S_TEXT_MUTE, fontsize=8, fontstyle="italic")
+
+                _small_items_for_insight = small_items
 
             # ── BARRAS HORIZONTAL ─────────────────────────────────────
             elif "Horizontal" in ctype:
@@ -1208,45 +1258,83 @@ class MetaTagApp(tk.Tk):
                 ax.set_xlim(-max_val * 0.02, max_val * 1.30)
                 tk_chart_title.configure(text=f"Distribución: {col}")
 
-            fig.tight_layout(pad=1.8)
+            try:
+                if "Dona" in ctype or "Pastel" in ctype:
+                    fig.subplots_adjust(left=0.02, right=0.98, top=0.96, bottom=0.04)
+                else:
+                    fig.tight_layout(pad=1.8)
+            except Exception:
+                fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
+
             canvas_widget.draw()
+            canvas_widget.get_tk_widget().update_idletasks()
 
             # ── Panel de insights ─────────────────────────────────────
-            insight_text.configure(state="normal")
-            insight_text.delete("1.0", "end")
-            if total_count > 0:
-                counts_desc = counts.sort_values(ascending=False)
-                top_val     = counts_desc.index[0]
-                top_count_v = counts_desc.iloc[0]
-                low_val     = counts_desc.index[-1]
-                low_count_v = counts_desc.iloc[-1]
-                pct_top     = top_count_v / total_count * 100
-                diversidad  = len(counts_desc)
+            try:
+                insight_text.configure(state="normal")
+                insight_text.delete("1.0", "end")
+                if total_count > 0:
+                    counts_desc = counts.sort_values(ascending=False)
+                    top_val     = counts_desc.index[0]
+                    top_count_v = int(counts_desc.iloc[0])
+                    low_val     = counts_desc.index[-1]
+                    low_count_v = int(counts_desc.iloc[-1])
+                    pct_top     = top_count_v / total_count * 100
+                    pct_low     = low_count_v / total_count * 100
+                    diversidad  = len(counts_desc)
 
-                insight_text.tag_configure("h",  font=FONTS["LABEL_B"], foreground=S_ACCENT)
-                insight_text.tag_configure("li", font=FONTS["BODY"],    spacing1=5)
+                    insight_text.tag_configure("h",
+                        font=FONTS["LABEL_B"], foreground=S_ACCENT)
+                    insight_text.tag_configure("li",
+                        font=FONTS["BODY"], spacing1=4)
+                    insight_text.tag_configure("small_h",
+                        font=FONTS["LABEL_B"], foreground=S_TEXT_MUTE)
+                    insight_text.tag_configure("small_row",
+                        font=FONTS["BODY"], spacing1=3,
+                        foreground=S_TEXT_MUTE)
 
-                insight_text.insert("end", f"ANÁLISIS DE '{col.upper()}'\n\n", "h")
-                insight_text.insert("end",
-                    f"Se analizaron {total_count} elementos con esta "
-                    f"característica registrada.\n\n")
-                insight_text.insert("end", "🥇 Categoría Dominante:\n", "li")
-                insight_text.insert("end",
-                    f" ▸ '{top_val}' lidera con {top_count_v} piezas.\n", "li")
-                insight_text.insert("end",
-                    f" ▸ Representa el {pct_top:.1f}% de la muestra.\n\n", "li")
-                if diversidad > 1:
-                    pct_low = low_count_v / total_count * 100
-                    insight_text.insert("end", "📉 Categoría Minoritaria:\n", "li")
                     insight_text.insert("end",
-                        f" ▸ '{low_val}' es la menos frecuente, "
-                        f"con {low_count_v} apariciones ({pct_low:.1f}%).\n\n", "li")
-                insight_text.insert("end", "⚖️ Diversidad Registrada:\n", "li")
-                insight_text.insert("end",
-                    f" ▸ Existen {diversidad} variaciones únicas documentadas.\n", "li")
-            else:
-                insight_text.insert("end", "Carga datos para visualizar el análisis.")
-            insight_text.configure(state="disabled")
+                        f"ANÁLISIS DE '{col.upper()}'\n\n", "h")
+                    insight_text.insert("end",
+                        f"Se analizaron {total_count} elementos con esta "
+                        f"característica registrada.\n\n")
+                    insight_text.insert("end",
+                        "🥇 Categoría Dominante:\n", "li")
+                    insight_text.insert("end",
+                        f" ▸ '{top_val}' lidera con {top_count_v} piezas.\n", "li")
+                    insight_text.insert("end",
+                        f" ▸ Representa el {pct_top:.1f}% de la muestra.\n\n", "li")
+                    if diversidad > 1:
+                        insight_text.insert("end",
+                            "📉 Categoría Minoritaria:\n", "li")
+                        insight_text.insert("end",
+                            f" ▸ '{low_val}' es la menos frecuente, "
+                            f"con {low_count_v} apariciones ({pct_low:.1f}%).\n\n", "li")
+                    insight_text.insert("end",
+                        "⚖️ Diversidad Registrada:\n", "li")
+                    insight_text.insert("end",
+                        f" ▸ Existen {diversidad} variaciones únicas "
+                        f"documentadas.\n", "li")
+
+                    small = _small_items_for_insight
+                    if small:
+                        insight_text.insert("end",
+                            f"\n\n🔎 Categorías menores "
+                            f"(< {LABEL_THRESHOLD_PCT:.0f}%, sin etiqueta "
+                            f"en el gráfico):\n", "small_h")
+                        for nombre, n_abs, pct in sorted(small,
+                                                         key=lambda x: -x[2]):
+                            insight_text.insert("end",
+                                f" ▸ {nombre}: "
+                                f"{n_abs} piezas ({pct:.1f}%)\n",
+                                "small_row")
+
+                else:
+                    insight_text.insert("end",
+                        "Carga datos para visualizar el análisis.")
+                insight_text.configure(state="disabled")
+            except Exception:
+                pass
 
         tk_chart_title = tk.Label(chart_frame, text="", bg=S_BG, fg=S_TEXT,
                                   font=("Georgia", int(13*self.current_scale), "bold"), pady=10)
@@ -2229,7 +2317,7 @@ class MetaTagApp(tk.Tk):
                 f"{', '.join(no_encontradas[:8])}"
                 f"{' …' if len(no_encontradas) > 8 else ''}\n", "warn")
 
-    def _pick_sort_columns(self, all_cols: list) -> list | None:
+    def _pick_sort_columns(self, all_cols):  # -> Optional[list]
         S = C
         sc = self.current_scale
         win = tk.Toplevel(self)
@@ -2571,7 +2659,7 @@ class MetaTagApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     # ── Selección de columnas para lote ──
-    def _batch_pick_columns(self, all_cols: list, img_col: str = "") -> list | None:
+    def _batch_pick_columns(self, all_cols, img_col=""):  # -> Optional[list]
         S = C
         sc = self.current_scale
         win = tk.Toplevel(self)
@@ -2724,7 +2812,7 @@ class MetaTagApp(tk.Tk):
         return result[0]
 
     # ── Selección de orden de fotos ──
-    def _batch_pick_sort(self) -> str | None:
+    def _batch_pick_sort(self):  # -> Optional[str]
         S = C
         sc = self.current_scale
         win = tk.Toplevel(self)
@@ -3029,7 +3117,7 @@ class MetaTagApp(tk.Tk):
     def _normalize_numbers(self, s: str) -> str:
         return re.sub(r"\d+", lambda m: str(int(m.group())), s)
 
-    def _extract_id_suffix(self, s: str) -> tuple[str, str] | None:
+    def _extract_id_suffix(self, s):  # -> Optional[tuple]
         """
         Extrae (numero_pieza, sufijo_vista) de un nombre, sin importar
         cuántos campos haya en medio, NI si el string trae extensión
@@ -3055,7 +3143,7 @@ class MetaTagApp(tk.Tk):
         sufijo = m_suf.group(0) if m_suf else ""
         return (numero, sufijo)
 
-    def _find_image(self, name: str, folder: str) -> str | None:
+    def _find_image(self, name, folder):  # -> Optional[str]
         name = name.strip()
         if not name: return None
         folder_path = Path(folder)
@@ -3153,7 +3241,7 @@ class MetaTagApp(tk.Tk):
             pass
         return {}
 
-    def _check_metadata_divergence(self, path: str, expected_meta: dict) -> list[str]:
+    def _check_metadata_divergence(self, path, expected_meta):  # -> list
         """
         Compara los metadatos ya escritos en la imagen contra los valores
         que el Excel dice que DEBERÍAN estar ahí (expected_meta).
@@ -3428,4 +3516,4 @@ class MetaTagApp(tk.Tk):
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app = MetaTagApp()
-    app.mainloop()
+    app.mainloop()  
