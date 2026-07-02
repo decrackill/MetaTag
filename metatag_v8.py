@@ -1045,7 +1045,7 @@ class MetaTagApp(tk.Tk):
             total_count = len(data)
             n_cats = len(counts)
             _small_items_for_insight = []
-            LABEL_THRESHOLD_PCT = 4.5
+            LABEL_THRESHOLD_PCT = 1.0
 
             if total_count == 0:
                 ax = fig.add_subplot(111)
@@ -1070,7 +1070,7 @@ class MetaTagApp(tk.Tk):
                     startangle=90)
                 wedges = pie_result[0]
 
-                LABEL_THRESHOLD_PCT = 4.5
+                LABEL_THRESHOLD_PCT = 1.0
 
                 left_items  = []
                 right_items = []
