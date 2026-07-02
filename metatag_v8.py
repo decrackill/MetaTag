@@ -607,9 +607,9 @@ class ImageBrowser(tk.Frame):
         q = self.search_var.get().lower()
         self.listbox.delete(0, "end")
         self._filtered = [f for f in self.img_files if q in f.name.lower()]
-        excel_n = getattr(self, "_excel_count", None)
+        orphans = getattr(self, "_orphan_files", set())
         for i, f in enumerate(self._filtered):
-            if excel_n is not None and i >= excel_n:
+            if f.name in orphans:
                 self.listbox.insert("end", f"  {f.name}  [sin fila]")
                 self.listbox.itemconfigure(i, foreground="#888888")
             else:
@@ -2072,27 +2072,41 @@ class MetaTagApp(tk.Tk):
 
     def _on_img_select(self, path: str):
         self._load_image(path)
-        if self.process_mode.get() == "Inteligente" and self.grid.df is not None:
-            name       = Path(path).name.lower()
-            stem       = Path(path).stem.lower()
-            stem_clean = stem.lstrip("#").strip()
+        if self.process_mode.get() != "Inteligente" or self.grid.df is None:
+            return
+
+        img_stem = self._full_stem(Path(path).name).lower()
+        img_col  = self.img_col_var.get()
+
+        # Paso 1: buscar SOLO en la columna de imagen, por stem exacto
+        if img_col and img_col in self.grid.df.columns:
             for ri in range(len(self.grid.df)):
-                row = self.grid.df.iloc[ri]
-                for col in self.grid.df.columns:
-                    val = str(row[col]).strip()
-                    if not val or val.lower() in ("nan", "none"):
-                        continue
-                    v_lower = val.lower()
-                    v_stem  = Path(val).stem.lower()
-                    if v_lower in (name, stem) or v_stem == stem or \
-                       v_stem.lstrip("#").strip() == stem_clean or \
-                       stem in v_lower or stem in v_stem:
-                        self.current_row = ri
-                        self.grid.clear_selection()
-                        self.grid.select_row(ri)
-                        self.grid.scroll_to_row(ri)
-                        self._update_meta_preview()
-                        return
+                val = str(self.grid.df.iloc[ri][img_col]).strip()
+                if not val or val.lower() in ("nan", "none", ""):
+                    continue
+                val_stem = self._full_stem(val).lower()
+                if val_stem == img_stem:
+                    self.current_row = ri
+                    self.grid.clear_selection()
+                    self.grid.select_row(ri)
+                    self.grid.scroll_to_row(ri)
+                    self._update_meta_preview()
+                    return
+
+        # Paso 2: fallback — buscar en todas las columnas, solo por stem exacto
+        for ri in range(len(self.grid.df)):
+            row = self.grid.df.iloc[ri]
+            for col in self.grid.df.columns:
+                val = str(row[col]).strip()
+                if not val or val.lower() in ("nan", "none", ""):
+                    continue
+                if self._full_stem(val).lower() == img_stem:
+                    self.current_row = ri
+                    self.grid.clear_selection()
+                    self.grid.select_row(ri)
+                    self.grid.scroll_to_row(ri)
+                    self._update_meta_preview()
+                    return
 
     def _select_active_row(self):
         if self.current_row is None:
@@ -2287,13 +2301,25 @@ class MetaTagApp(tk.Tk):
             [f for f in all_files if f not in used_files],
             key=lambda p: p.name.lower())
 
+        # Construir razón explicativa por cada huérfana
+        orphan_reasons = {}
+        no_encontradas_set = {self._full_stem(v).lower() for v in no_encontradas}
+        for f in huerfanas:
+            stem_f = self._full_stem(f.name).lower()
+            if stem_f in no_encontradas_set:
+                orphan_reasons[f.name] = "el Excel tiene esta fila pero el nombre no coincidió exactamente"
+            else:
+                orphan_reasons[f.name] = "no existe ninguna fila en el Excel con este nombre"
+
         self._sync_excel_count  = len(ordered_files)
         self._sync_orphan_count = len(huerfanas)
 
         ordered_files.extend(huerfanas)
 
-        self.browser.img_files    = ordered_files
-        self.browser._excel_count = self._sync_excel_count
+        self.browser.img_files     = ordered_files
+        self.browser._excel_count  = self._sync_excel_count
+        self.browser._orphan_files = {f.name for f in huerfanas}
+        self.browser._orphan_reasons = orphan_reasons
         self.browser._filter()
 
         msg = (f"{len(ordered_files)} imágenes  "
@@ -2322,11 +2348,12 @@ class MetaTagApp(tk.Tk):
 
         if huerfanas:
             self._log(
-                f"  ⚠ {len(huerfanas)} imagen(es) en la carpeta SIN fila "
-                f"correspondiente en el Excel (se muestran al final, marcadas "
-                f"[SIN EXCEL]):\n"
-                f"     {', '.join(f.name for f in huerfanas[:8])}"
-                f"{' …' if len(huerfanas) > 8 else ''}\n", "warn")
+                f"  ⚠ {len(huerfanas)} imagen(es) marcadas [sin fila]:\n", "warn")
+            for f in huerfanas[:12]:
+                razon = orphan_reasons.get(f.name, "razón desconocida")
+                self._log(f"     • {f.name}\n       → {razon}\n", "warn")
+            if len(huerfanas) > 12:
+                self._log(f"     … y {len(huerfanas)-12} más.\n", "warn")
         if no_encontradas:
             self._log(
                 f"  ⚠ {len(no_encontradas)} valores de '{img_col}' en el Excel "
@@ -2483,7 +2510,7 @@ class MetaTagApp(tk.Tk):
                 batch_df = (pd.read_csv(excel_path, dtype=str, keep_default_na=False, na_values=[])
                             if ext == ".csv"
                             else pd.read_excel(excel_path, dtype=str, keep_default_na=False, na_values=[]))
-                batch_df = batch_df.applymap(lambda v: "" if (
+                batch_df = batch_df.map(lambda v: "" if (
                     v is None or
                     (isinstance(v, float) and str(v).lower() == "nan") or
                     str(v).strip().lower() in ("nat", "none")

@@ -1570,59 +1570,53 @@ class VisorApp(tk.Tk):
             tk.Label(panel, text=f"  {Path(folder_name).name}  ({len(imgs)} imgs)",
                      bg=C["bg"], fg=accent_col, font=F_BOLD, anchor="w").pack(fill="x", padx=8, pady=(6, 4))
 
-            # Canvas scrollable con imagen + metadatos
-            canvas = tk.Canvas(panel, bg=C["surface"], highlightthickness=0)
-            vsb = ttk.Scrollbar(panel, orient="vertical", command=canvas.yview)
-            inner = tk.Frame(canvas, bg=C["surface"])
-            canvas.create_window((0, 0), window=inner, anchor="nw", tags="inner_win")
-            canvas.configure(yscrollcommand=vsb.set)
-            vsb.pack(side="right", fill="y")
-            canvas.pack(fill="both", expand=True)
+            # ── Zona FIJA: imagen + info de archivo (no scrollea) ──
+            img_zone = tk.Frame(panel, bg=C["surface"],
+                                highlightthickness=1,
+                                highlightbackground=C["border"])
+            img_zone.pack(fill="x", padx=4, pady=(0, 4))
 
-            def _fit_width(event, c=canvas):
-                c.itemconfigure("inner_win", width=event.width)
-            canvas.bind("<Configure>", _fit_width)
+            img_lbl = tk.Label(img_zone, bg=C["surface"])
+            img_lbl.pack(pady=(8, 4), padx=8)
 
-            # Label de imagen
-            img_lbl = tk.Label(inner, bg=C["surface"])
-            img_lbl.pack(padx=8, pady=(8, 4))
+            name_lbl = tk.Label(img_zone, text="", bg=C["surface"], fg=C["text2"],
+                                font=F_TINY, anchor="w", wraplength=int(sw * 0.42))
+            name_lbl.pack(fill="x", padx=12)
 
-            # Label de nombre
-            name_lbl = tk.Label(inner, text="", bg=C["surface"], fg=C["text2"],
-                                font=F_TINY, anchor="w", wraplength=400)
-            name_lbl.pack(fill="x", padx=8)
+            info_lbl = tk.Label(img_zone, text="", bg=C["surface"], fg=C["text3"],
+                                font=F_MICRO, anchor="w", wraplength=int(sw * 0.42))
+            info_lbl.pack(fill="x", padx=12, pady=(0, 6))
 
-            # Info del archivo
-            info_lbl = tk.Label(inner, text="", bg=C["surface"], fg=C["text3"],
-                                font=F_MICRO, anchor="w", wraplength=400)
-            info_lbl.pack(fill="x", padx=8, pady=(0, 4))
+            # ── Zona SCROLLABLE: solo la tabla de metadatos ──
+            meta_outer = tk.Frame(panel, bg=C["border"])
+            meta_outer.pack(fill="both", expand=True, padx=4, pady=(0, 4))
 
-            # Tabla de metadatos
-            tree_frame = tk.Frame(inner, bg=C["border"])
-            tree_frame.pack(fill="x", padx=8, pady=(0, 8))
-            tree_frame.pack_propagate(False)
-            tree_frame.configure(height=220)
-
-            tree = ttk.Treeview(tree_frame, columns=("Campo", "Valor"), show="headings", selectmode="browse")
+            tree_vsb = ttk.Scrollbar(meta_outer, orient="vertical")
+            tree = ttk.Treeview(meta_outer, columns=("Campo", "Valor"),
+                                show="headings", selectmode="browse",
+                                yscrollcommand=tree_vsb.set)
             tree.heading("Campo", text="Campo", anchor="w")
-            tree.heading("Valor", text="Valor", anchor="w")
-            tree.column("Campo", width=150, anchor="w", minwidth=80)
-            tree.column("Valor", width=300, anchor="w", minwidth=100)
-
-            tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-            tree.configure(yscrollcommand=tree_scroll.set)
-            tree_scroll.pack(side="right", fill="y")
+            tree.heading("Valor", text="Información", anchor="w")
+            col_w = max(120, int(sw * 0.12))
+            tree.column("Campo", width=col_w, anchor="w", minwidth=80)
+            tree.column("Valor", width=col_w * 2, anchor="w", minwidth=100)
+            tree_vsb.configure(command=tree.yview)
+            tree_vsb.pack(side="right", fill="y")
             tree.pack(fill="both", expand=True)
 
             tree.tag_configure("hdr", foreground=accent_col, font=F_BOLD, background=C["panel2"])
-            tree.tag_configure("odd", background=C["surface"])
+            tree.tag_configure("odd",  background=C["surface"])
             tree.tag_configure("even", background=C["row_alt"])
+
+            # canvas y inner son dummies para mantener compatibilidad con show_current
+            canvas = meta_outer
+            inner  = meta_outer
 
             panels.append({
                 "canvas": canvas, "inner": inner, "img_lbl": img_lbl,
                 "name_lbl": name_lbl, "info_lbl": info_lbl, "tree": tree,
                 "folder_name": folder_name, "imgs": imgs, "idx_key": idx_key,
-                "accent": accent_col,
+                "accent": accent_col, "img_zone": img_zone,
             })
 
         # ── Barra de navegación inferior ──
@@ -1680,7 +1674,9 @@ class VisorApp(tk.Tk):
 
                     # Thumbnail para la tabla
                     thumb = img.copy()
-                    thumb.thumbnail((400, 300), Image.LANCZOS)
+                    thumb_w = max(320, int(sw * 0.42) - 32)
+                    thumb_h = max(200, int(sh * 0.38) - 16)
+                    thumb.thumbnail((thumb_w, thumb_h), Image.LANCZOS)
                     tk_img = ImageTk.PhotoImage(thumb)
                     p["img_lbl"].configure(image=tk_img, text="")
                     p["img_lbl"]._img_ref = tk_img
@@ -1710,35 +1706,12 @@ class VisorApp(tk.Tk):
                 except Exception:
                     pass
 
-                # Scroll arriba
-                p["canvas"].yview_moveto(0)
-                p["inner"].update_idletasks()
-                p["canvas"].configure(scrollregion=p["canvas"].bbox("all"))
+                # Al cambiar imagen, la tabla de metadatos vuelve al principio
+                if p["tree"].get_children():
+                    p["tree"].see(p["tree"].get_children()[0])
 
         show_current()
 
-        # ── Scroll con rueda: ambos paneles se mueven juntos ──
-        def _scroll_both(delta):
-            pos = panels[0]["canvas"].yview()
-            new_pos = pos[0] + delta
-            new_pos = max(0.0, min(1.0, new_pos))
-            panels[0]["canvas"].yview_moveto(new_pos)
-            panels[1]["canvas"].yview_moveto(new_pos)
-
-        def _on_wheel(event):
-            _scroll_both(-0.05 if event.delta > 0 else 0.05)
-
-        def _on_wheel_linux(event):
-            _scroll_both(-0.08 if event.num == 4 else 0.08)
-
-        def _bind_scroll(widget):
-            widget.bind("<MouseWheel>", _on_wheel, add=True)
-            widget.bind("<Button-4>", _on_wheel_linux, add=True)
-            widget.bind("<Button-5>", _on_wheel_linux, add=True)
-            for child in widget.winfo_children():
-                _bind_scroll(child)
-
-        win.after(200, lambda: _bind_scroll(win))
         win.bind("<Left>", lambda e: go_prev())
         win.bind("<Right>", lambda e: go_next())
         win.bind("<Escape>", lambda e: self._close_comparison(win))
