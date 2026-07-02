@@ -1841,7 +1841,10 @@ class MetaTagApp(tk.Tk):
             factor = 1 / 1.12
         new_zoom = max(0.2, min(self._preview_zoom * factor, 12.0))
         self._preview_zoom = new_zoom
-        self._redraw_preview_zoomed()
+        self._redraw_preview_zoomed(fast=True)
+        if hasattr(self, "_preview_hq_timer"):
+            self.after_cancel(self._preview_hq_timer)
+        self._preview_hq_timer = self.after(120, lambda: self._redraw_preview_zoomed(fast=False))
 
     def _on_preview_drag_start(self, event):
         self._preview_drag_start = (event.x, event.y)
@@ -1855,7 +1858,10 @@ class MetaTagApp(tk.Tk):
         self._preview_pan_x += dx
         self._preview_pan_y += dy
         self._preview_drag_start = (event.x, event.y)
-        self._redraw_preview_zoomed()
+        self._redraw_preview_zoomed(fast=True)
+        if hasattr(self, "_preview_hq_timer"):
+            self.after_cancel(self._preview_hq_timer)
+        self._preview_hq_timer = self.after(120, lambda: self._redraw_preview_zoomed(fast=False))
 
     def _on_preview_drag_end(self, event):
         self._preview_drag_start = None
@@ -1867,7 +1873,7 @@ class MetaTagApp(tk.Tk):
         self._preview_pan_y = 0
         self._redraw_preview_zoomed()
 
-    def _redraw_preview_zoomed(self):
+    def _redraw_preview_zoomed(self, fast=False):
         if not hasattr(self, "_preview_pil") or self._preview_pil is None:
             return
         cw = max(self.img_canvas.winfo_width(),  int(310 * self.current_scale))
@@ -1876,7 +1882,20 @@ class MetaTagApp(tk.Tk):
         scale = min(cw / iw, ch / ih) * self._preview_zoom
         nw = max(1, int(iw * scale))
         nh = max(1, int(ih * scale))
-        resized = self._preview_pil.resize((nw, nh), Image.LANCZOS)
+
+        # Durante interacción (rueda/arrastre) usamos un resample barato
+        # (BILINEAR) para que el redibujo sea instantáneo y fluido; solo
+        # al terminar el gesto (debounce) hacemos la pasada de calidad
+        # con LANCZOS. Además cacheamos por tamaño para no recomputar si
+        # el usuario solo está paneando (dx/dy) sin cambiar el zoom.
+        cache = getattr(self, "_preview_resize_cache", None)
+        if cache is not None and cache[0] == (nw, nh) and cache[1] == fast:
+            resized = cache[2]
+        else:
+            resample = Image.BILINEAR if fast else Image.LANCZOS
+            resized = self._preview_pil.resize((nw, nh), resample)
+            self._preview_resize_cache = ((nw, nh), fast, resized)
+
         cx = cw // 2 + self._preview_pan_x
         cy = ch // 2 + self._preview_pan_y
         self.current_img_tk = ImageTk.PhotoImage(resized)
@@ -2193,6 +2212,7 @@ class MetaTagApp(tk.Tk):
             self._preview_zoom  = 1.0
             self._preview_pan_x = 0
             self._preview_pan_y = 0
+            self._preview_resize_cache = None
             self._redraw_preview_zoomed()
         except Exception as e:
             self.img_canvas.delete("all")
@@ -3264,8 +3284,20 @@ class MetaTagApp(tk.Tk):
 
     def _safe_stem(self, s: str) -> str:
         p = Path(s)
-        while p.suffix.lower() in self._IMG_EXTS_LOWER:
-            p = p.with_suffix("")
+        changed = True
+        while changed:
+            changed = False
+            if p.suffix.lower() in self._IMG_EXTS_LOWER:
+                p = p.with_suffix("")
+                changed = True
+                continue
+            # Despoja marcadores de duplicado tipo "nombre (1)", "nombre(2)"
+            # que quedaban pegados al stem impidiendo el emparejamiento
+            # (ej: "0006_UM_C4_IX_00034_P.jpg (1).JPG").
+            m = re.match(r"^(.*?)\s*\(\d+\)$", p.name)
+            if m and m.group(1):
+                p = p.with_name(m.group(1))
+                changed = True
         return p.name
 
     def _full_stem(self, s: str) -> str:
@@ -3291,6 +3323,10 @@ class MetaTagApp(tk.Tk):
                 if s.lower().endswith(ext):
                     s = s[: -len(ext)]
                     changed = True
+            m_dup = re.match(r"^(.*?)\s*\(\d+\)$", s)
+            if m_dup and m_dup.group(1):
+                s = m_dup.group(1)
+                changed = True
         s = s.lstrip("#").strip("_-").upper()
         m_num = re.match(r"^0*(\d+)", s)
         if not m_num:
@@ -3673,4 +3709,4 @@ class MetaTagApp(tk.Tk):
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app = MetaTagApp()
-    app.mainloop()  
+    app.mainloop()
