@@ -1599,7 +1599,9 @@ class VisorApp(tk.Tk):
 
             # Tabla de metadatos
             tree_frame = tk.Frame(inner, bg=C["border"])
-            tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+            tree_frame.pack(fill="x", padx=8, pady=(0, 8))
+            tree_frame.pack_propagate(False)
+            tree_frame.configure(height=220)
 
             tree = ttk.Treeview(tree_frame, columns=("Campo", "Valor"), show="headings", selectmode="browse")
             tree.heading("Campo", text="Campo", anchor="w")
@@ -1710,6 +1712,8 @@ class VisorApp(tk.Tk):
 
                 # Scroll arriba
                 p["canvas"].yview_moveto(0)
+                p["inner"].update_idletasks()
+                p["canvas"].configure(scrollregion=p["canvas"].bbox("all"))
 
         show_current()
 

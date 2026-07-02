@@ -610,7 +610,8 @@ class ImageBrowser(tk.Frame):
         excel_n = getattr(self, "_excel_count", None)
         for i, f in enumerate(self._filtered):
             if excel_n is not None and i >= excel_n:
-                self.listbox.insert("end", f"⚠ {f.name}  [SIN EXCEL]")
+                self.listbox.insert("end", f"  {f.name}  [sin fila]")
+                self.listbox.itemconfigure(i, foreground="#888888")
             else:
                 self.listbox.insert("end", f.name)
 
@@ -875,6 +876,12 @@ class MetaTagApp(tk.Tk):
         win = tk.Toplevel(self)
         win.title("📊 Análisis Cuantitativo Arqueológico (v8.9)")
         win.geometry(f"{int(1100*self.current_scale)}x{int(720*self.current_scale)}")
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        ww = min(int(1200 * self.current_scale), sw - 40)
+        wh = min(int(720  * self.current_scale), sh - 60)
+        win.geometry(f"{ww}x{wh}")
+        win.minsize(800, 500)
         win.configure(bg=S_BG)
 
         img_c  = self.img_col_var.get()
@@ -1029,7 +1036,12 @@ class MetaTagApp(tk.Tk):
 
         chart_frame = tk.Frame(body_paned, bg=S_BG)
         body_paned.add(chart_frame, minsize=int(500*self.current_scale))
-        fig = Figure(figsize=(8, 6), dpi=200, facecolor=S_BG)
+        try:
+            _dpi_screen = win.winfo_fpixels("1i")
+        except Exception:
+            _dpi_screen = 96
+        _fig_dpi = min(120, max(72, int(_dpi_screen)))
+        fig = Figure(figsize=(8, 6), dpi=_fig_dpi, facecolor=S_BG)
         canvas_widget = FigureCanvasTkAgg(fig, master=chart_frame)
         canvas_widget.get_tk_widget().pack(fill="both", expand=True)
 
@@ -1951,9 +1963,14 @@ class MetaTagApp(tk.Tk):
             return messagebox.showerror("Error", "Selecciona un archivo válido.")
         try:
             ext = Path(p).suffix.lower()
-            df  = (pd.read_csv(p, dtype=str) if ext == ".csv"
-                   else pd.read_excel(p, dtype=str))
-            df  = df.fillna("")
+            df  = (pd.read_csv(p, dtype=str, keep_default_na=False, na_values=[])
+                   if ext == ".csv"
+                   else pd.read_excel(p, dtype=str, keep_default_na=False, na_values=[]))
+            df = df.map(lambda v: "" if (
+                v is None or
+                (isinstance(v, float) and str(v).lower() == "nan") or
+                str(v).strip().lower() in ("nat", "none")
+            ) else str(v).strip())
             df.columns = [str(c).strip() for c in df.columns]
             self.original_df = df
             self.df          = df.copy()
@@ -2362,17 +2379,33 @@ class MetaTagApp(tk.Tk):
         def _sync_scroll(e=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
         inner.bind("<Configure>", _sync_scroll)
-
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         def _on_mousewheel_linux(event):
-            if event.num == 4: canvas.yview_scroll(-1, "units")
-            elif event.num == 5: canvas.yview_scroll(1, "units")
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
         for w in (canvas, inner, list_frame):
             w.bind("<MouseWheel>", _on_mousewheel)
             w.bind("<Button-4>", _on_mousewheel_linux)
             w.bind("<Button-5>", _on_mousewheel_linux)
 
+        def _bind_all_children(widget):
+            widget.bind("<MouseWheel>", _on_mousewheel)
+            widget.bind("<Button-4>",   _on_mousewheel_linux)
+            widget.bind("<Button-5>",   _on_mousewheel_linux)
+
+        def _update_vsb(*_):
+            lo, hi = canvas.yview()
+            if lo <= 0.0 and hi >= 1.0:
+                vsb.pack_forget()
+            else:
+                if not vsb.winfo_ismapped():
+                    vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.bind("<Configure>", lambda e: (inner.update_idletasks(), _update_vsb()))
+        inner.bind("<Configure>",  lambda e: _update_vsb())
         for idx, col in enumerate(all_cols):
             row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
             var = tk.BooleanVar(value=False)
@@ -2447,9 +2480,14 @@ class MetaTagApp(tk.Tk):
             if not excel_path: return
             try:
                 ext      = Path(excel_path).suffix.lower()
-                batch_df = (pd.read_csv(excel_path, dtype=str) if ext == ".csv"
-                            else pd.read_excel(excel_path, dtype=str))
-                batch_df = batch_df.fillna("")
+                batch_df = (pd.read_csv(excel_path, dtype=str, keep_default_na=False, na_values=[])
+                            if ext == ".csv"
+                            else pd.read_excel(excel_path, dtype=str, keep_default_na=False, na_values=[]))
+                batch_df = batch_df.applymap(lambda v: "" if (
+                    v is None or
+                    (isinstance(v, float) and str(v).lower() == "nan") or
+                    str(v).strip().lower() in ("nat", "none")
+                ) else str(v).strip())
                 batch_df.columns = [str(c).strip() for c in batch_df.columns]
             except Exception as e:
                 return messagebox.showerror("Error al leer Excel", str(e))
@@ -2724,8 +2762,6 @@ class MetaTagApp(tk.Tk):
         inner = tk.Frame(canvas, bg=S["surface"])
         canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -2738,6 +2774,22 @@ class MetaTagApp(tk.Tk):
             w.bind("<MouseWheel>", _on_mousewheel)
             w.bind("<Button-4>", _on_mousewheel_linux)
             w.bind("<Button-5>", _on_mousewheel_linux)
+
+        def _bind_all_children(widget):
+            widget.bind("<MouseWheel>", _on_mousewheel)
+            widget.bind("<Button-4>",   _on_mousewheel_linux)
+            widget.bind("<Button-5>",   _on_mousewheel_linux)
+
+        def _update_vsb(*_):
+            lo, hi = canvas.yview()
+            if lo <= 0.0 and hi >= 1.0:
+                vsb.pack_forget()
+            else:
+                if not vsb.winfo_ismapped():
+                    vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.bind("<Configure>", lambda e: (inner.update_idletasks(), _update_vsb()))
+        inner.bind("<Configure>",  lambda e: _update_vsb())
 
         def _update_count():
             n = sum(1 for v in col_vars.values() if v.get())
@@ -2787,6 +2839,7 @@ class MetaTagApp(tk.Tk):
                 row.bind("<Leave>", _leave)
                 cb.bind("<Enter>", _enter)
                 cb.bind("<Leave>", _leave)
+            _bind_all_children(row)
 
         def _sync_scroll(e=None):
             inner.update_idletasks()
@@ -2860,8 +2913,6 @@ class MetaTagApp(tk.Tk):
         inner = tk.Frame(canvas, bg=S["surface"])
         canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
 
         def _sync_scroll(e=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
@@ -2916,6 +2967,11 @@ class MetaTagApp(tk.Tk):
                 w.bind("<Enter>", _enter)
                 w.bind("<Leave>", _leave)
                 w.bind("<Button-1>", _click)
+            for lbl in text_frame.winfo_children():
+                lbl.bind("<MouseWheel>",  _on_mousewheel)
+                lbl.bind("<Button-4>",    _on_mousewheel_linux)
+                lbl.bind("<Button-5>",    _on_mousewheel_linux)
+                lbl.bind("<Button-1>",    _click)
 
         def _highlight_selected(*_):
             sel = sort_var.get()
