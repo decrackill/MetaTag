@@ -1029,8 +1029,7 @@ class MetaTagApp(tk.Tk):
 
         chart_frame = tk.Frame(body_paned, bg=S_BG)
         body_paned.add(chart_frame, minsize=int(500*self.current_scale))
-        fig = Figure(figsize=(8, 6), dpi=200, facecolor=S_BG,
-                     constrained_layout=True)
+        fig = Figure(figsize=(8, 6), dpi=200, facecolor=S_BG)
         canvas_widget = FigureCanvasTkAgg(fig, master=chart_frame)
         canvas_widget.get_tk_widget().pack(fill="both", expand=True)
 
