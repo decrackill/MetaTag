@@ -1741,7 +1741,7 @@ class MetaTagApp(tk.Tk):
         vhdr = tk.Frame(parent, bg=C["panel"])
         vhdr.pack(fill="x", padx=8, pady=(8, 4))
         tk.Label(vhdr, text="Vista previa", bg=C["panel"],
-                 fg=C["header_bg"], font=FONTS["H2"]).pack(side="left")
+                 fg=C["text"], font=FONTS["H2"]).pack(side="left")
 
         def launch_visor():
             visor_path = None
@@ -1779,19 +1779,30 @@ class MetaTagApp(tk.Tk):
                                      bg=C["panel"], fg=C["accent"], font=FONTS["TINY"],
                                      anchor="w", wraplength=int(310*self.current_scale), justify="left")
         self.img_name_lbl.pack(fill="x", padx=8, pady=(2, 0))
-        self.img_hint_lbl = tk.Label(parent, text="Doble clic en la imagen para ver en HD",
+        self.img_hint_lbl = tk.Label(parent, text="Rueda del mouse para zoom · Clic y arrastra para mover",
                                      bg=C["panel"], fg=C["text3"], font=FONTS["TINY"], anchor="w")
         self.img_hint_lbl.pack(fill="x", padx=8, pady=(0, 4))
 
         self.img_canvas = tk.Canvas(parent, bg=C["surface"], highlightthickness=1,
-                                    highlightbackground=C["border_light"], cursor="hand2")
+                                    highlightbackground=C["border_light"], cursor="crosshair")
         self.img_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         self.img_canvas.create_text(int(155*self.current_scale), int(120*self.current_scale),
                                     text="Sin imagen", fill=C["text3"], font=FONTS["LABEL"],
                                     justify="center", tags="ph")
         self.current_img_tk = None
-        self.img_canvas.bind("<Double-Button-1>", self._show_loupe_window)
-        self.img_canvas.bind("<Configure>", self._on_preview_resize)
+        self._preview_zoom    = 1.0
+        self._preview_pan_x   = 0
+        self._preview_pan_y   = 0
+        self._preview_drag_start = None
+        self._preview_pil     = None
+        self.img_canvas.bind("<Configure>",   self._on_preview_resize)
+        self.img_canvas.bind("<MouseWheel>",  self._on_preview_wheel)
+        self.img_canvas.bind("<Button-4>",    self._on_preview_wheel)
+        self.img_canvas.bind("<Button-5>",    self._on_preview_wheel)
+        self.img_canvas.bind("<ButtonPress-1>",   self._on_preview_drag_start)
+        self.img_canvas.bind("<B1-Motion>",       self._on_preview_drag)
+        self.img_canvas.bind("<ButtonRelease-1>", self._on_preview_drag_end)
+        self.img_canvas.bind("<Double-Button-1>", lambda e: self._reset_preview_zoom())
 
         tk.Frame(parent, bg=C["border_light"], height=1).pack(fill="x", padx=8, pady=4)
         tk.Label(parent, text="Metadatos a escribir:", bg=C["panel"],
@@ -1821,13 +1832,68 @@ class MetaTagApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     #  LUPA HD
     # ─────────────────────────────────────────────────────────────
+    def _on_preview_wheel(self, event):
+        if not hasattr(self, "_preview_pil") or self._preview_pil is None:
+            return
+        if event.num == 4 or (hasattr(event, "delta") and event.delta > 0):
+            factor = 1.12
+        else:
+            factor = 1 / 1.12
+        new_zoom = max(0.2, min(self._preview_zoom * factor, 12.0))
+        self._preview_zoom = new_zoom
+        self._redraw_preview_zoomed()
+
+    def _on_preview_drag_start(self, event):
+        self._preview_drag_start = (event.x, event.y)
+        self.img_canvas.configure(cursor="fleur")
+
+    def _on_preview_drag(self, event):
+        if self._preview_drag_start is None:
+            return
+        dx = event.x - self._preview_drag_start[0]
+        dy = event.y - self._preview_drag_start[1]
+        self._preview_pan_x += dx
+        self._preview_pan_y += dy
+        self._preview_drag_start = (event.x, event.y)
+        self._redraw_preview_zoomed()
+
+    def _on_preview_drag_end(self, event):
+        self._preview_drag_start = None
+        self.img_canvas.configure(cursor="crosshair")
+
+    def _reset_preview_zoom(self):
+        self._preview_zoom  = 1.0
+        self._preview_pan_x = 0
+        self._preview_pan_y = 0
+        self._redraw_preview_zoomed()
+
+    def _redraw_preview_zoomed(self):
+        if not hasattr(self, "_preview_pil") or self._preview_pil is None:
+            return
+        cw = max(self.img_canvas.winfo_width(),  int(310 * self.current_scale))
+        ch = max(self.img_canvas.winfo_height(), int(260 * self.current_scale))
+        iw, ih = self._preview_pil.size
+        scale = min(cw / iw, ch / ih) * self._preview_zoom
+        nw = max(1, int(iw * scale))
+        nh = max(1, int(ih * scale))
+        resized = self._preview_pil.resize((nw, nh), Image.LANCZOS)
+        cx = cw // 2 + self._preview_pan_x
+        cy = ch // 2 + self._preview_pan_y
+        self.current_img_tk = ImageTk.PhotoImage(resized)
+        self.img_canvas.delete("all")
+        self.img_canvas.create_image(cx, cy, anchor="center", image=self.current_img_tk)
+        if abs(self._preview_zoom - 1.0) > 0.05:
+            self.img_canvas.create_text(
+                cw - 8, ch - 8, anchor="se",
+                text=f"×{self._preview_zoom:.1f}",
+                fill=C["accent"], font=FONTS["TINY"])
+
     def _on_preview_resize(self, event):
         if hasattr(self, "_preview_resize_timer"): self.after_cancel(self._preview_resize_timer)
         self._preview_resize_timer = self.after(150, self._redraw_preview)
 
     def _redraw_preview(self):
-        if self.current_img and os.path.exists(self.current_img):
-            self._load_image(self.current_img, update_loupe=False)
+        self._redraw_preview_zoomed()
 
     def _show_loupe_window(self, event=None):
         if not self.current_img or not os.path.exists(self.current_img): return
@@ -2123,13 +2189,11 @@ class MetaTagApp(tk.Tk):
         if not PIL_OK: return
         try:
             img = ImageOps.exif_transpose(Image.open(path))
-            w = max(self.img_canvas.winfo_width(),  int(310*self.current_scale))
-            h = max(self.img_canvas.winfo_height(), int(260*self.current_scale))
-            img.thumbnail((w - 8, h - 8), Image.LANCZOS)
-            self.current_img_tk = ImageTk.PhotoImage(img)
-            self.img_canvas.delete("all")
-            self.img_canvas.create_image(w // 2, h // 2, anchor="center",
-                                         image=self.current_img_tk)
+            self._preview_pil   = img.copy()
+            self._preview_zoom  = 1.0
+            self._preview_pan_x = 0
+            self._preview_pan_y = 0
+            self._redraw_preview_zoomed()
         except Exception as e:
             self.img_canvas.delete("all")
             self.img_canvas.create_text(
@@ -2251,7 +2315,10 @@ class MetaTagApp(tk.Tk):
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
         by_exact_name = {f.name.lower(): f for f in all_files}
-        by_stem       = {self._full_stem(f.name).lower(): f for f in all_files}
+        by_stem: dict = {}
+        for f in all_files:
+            key = self._safe_stem(f.name).lower()
+            by_stem.setdefault(key, []).append(f)
 
         ordered_files     = []
         used_files        = set()     # rutas ya asignadas a una fila (evita colisiones)
@@ -2270,12 +2337,14 @@ class MetaTagApp(tk.Tk):
             if cand and cand not in used_files:
                 found_path = cand
 
-            # 2) Coincidencia EXACTA por stem (sin extensión)
+            # 2) Coincidencia EXACTA por stem (sin extensión de imagen)
             if found_path is None:
-                stem = self._full_stem(val).lower()
-                cand = by_stem.get(stem)
-                if cand and cand not in used_files:
-                    found_path = cand
+                stem = self._safe_stem(val).lower()
+                candidates = by_stem.get(stem, [])
+                for cand in candidates:
+                    if cand not in used_files:
+                        found_path = cand
+                        break
 
             # 3) Solo si lo anterior falló, usar la búsqueda tolerante
             if found_path is None:
@@ -3191,11 +3260,16 @@ class MetaTagApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     #  BÚSQUEDA INTELIGENTE DE IMAGEN
     # ─────────────────────────────────────────────────────────────
-    def _full_stem(self, s: str) -> str:
+    _IMG_EXTS_LOWER = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
+
+    def _safe_stem(self, s: str) -> str:
         p = Path(s)
-        while p.suffix:
+        while p.suffix.lower() in self._IMG_EXTS_LOWER:
             p = p.with_suffix("")
         return p.name
+
+    def _full_stem(self, s: str) -> str:
+        return self._safe_stem(s)
 
     def _normalize_numbers(self, s: str) -> str:
         return re.sub(r"\d+", lambda m: str(int(m.group())), s)
