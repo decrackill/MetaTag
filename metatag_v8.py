@@ -640,7 +640,14 @@ class MetaTagApp(tk.Tk):
 
         self.update_idletasks()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.current_scale = 1.0
+        # current_scale antes quedaba fijo en 1.0 sin importar la pantalla,
+        # así que en un laptop pequeño (ej. 1366×768) la UI se veía grande/
+        # apretada, y en un monitor grande (ej. 2560×1440+) se veía chica.
+        # Se calcula contra una resolución de referencia de escritorio
+        # (1920×1080) y se limita entre 0.82 y 1.35 para no deformar la UI
+        # en extremos (netbooks muy chicos o monitores 4K muy grandes).
+        _ref_w = 1920
+        self.current_scale = max(0.82, min(1.35, sw / _ref_w))
         set_font_scale(self.current_scale)
 
         win_w = int(sw * 0.85)
@@ -1841,6 +1848,23 @@ class MetaTagApp(tk.Tk):
             factor = 1 / 1.12
         new_zoom = max(0.2, min(self._preview_zoom * factor, 12.0))
         self._preview_zoom = new_zoom
+        self._schedule_preview_redraw()
+
+    def _schedule_preview_redraw(self):
+        # Si el usuario mueve la rueda muy rápido, Tk genera muchos eventos
+        # en ráfaga. Antes cada uno disparaba su propio resize+redraw, y
+        # como no daba tiempo a terminar uno antes de que llegara el
+        # siguiente, se iban encolando y la UI se sentía "trabada".
+        # Con after_idle solo programamos UN redraw por ciclo de eventos:
+        # si llegan más eventos antes de que se ejecute, simplemente
+        # actualizan _preview_zoom/_preview_pan y el redraw pendiente
+        # toma el valor más reciente cuando por fin corre.
+        if not getattr(self, "_preview_redraw_pending", False):
+            self._preview_redraw_pending = True
+            self.after_idle(self._flush_preview_redraw)
+
+    def _flush_preview_redraw(self):
+        self._preview_redraw_pending = False
         self._redraw_preview_zoomed(fast=True)
         if hasattr(self, "_preview_hq_timer"):
             self.after_cancel(self._preview_hq_timer)
@@ -1858,10 +1882,7 @@ class MetaTagApp(tk.Tk):
         self._preview_pan_x += dx
         self._preview_pan_y += dy
         self._preview_drag_start = (event.x, event.y)
-        self._redraw_preview_zoomed(fast=True)
-        if hasattr(self, "_preview_hq_timer"):
-            self.after_cancel(self._preview_hq_timer)
-        self._preview_hq_timer = self.after(120, lambda: self._redraw_preview_zoomed(fast=False))
+        self._schedule_preview_redraw()
 
     def _on_preview_drag_end(self, event):
         self._preview_drag_start = None
@@ -1884,16 +1905,22 @@ class MetaTagApp(tk.Tk):
         nh = max(1, int(ih * scale))
 
         # Durante interacción (rueda/arrastre) usamos un resample barato
-        # (BILINEAR) para que el redibujo sea instantáneo y fluido; solo
-        # al terminar el gesto (debounce) hacemos la pasada de calidad
-        # con LANCZOS. Además cacheamos por tamaño para no recomputar si
-        # el usuario solo está paneando (dx/dy) sin cambiar el zoom.
+        # (BILINEAR) sobre una miniatura pre-reducida (_preview_pil_fast,
+        # ~1400px de lado mayor) en vez de la imagen original a full
+        # resolución. Redimensionar una foto de 4000×3000 en cada frame
+        # es lo que más pesaba; partir de una miniatura lo vuelve casi
+        # instantáneo. Solo al terminar el gesto (debounce de 120ms) se
+        # usa la imagen completa con LANCZOS para nitidez real.
         cache = getattr(self, "_preview_resize_cache", None)
         if cache is not None and cache[0] == (nw, nh) and cache[1] == fast:
             resized = cache[2]
         else:
-            resample = Image.BILINEAR if fast else Image.LANCZOS
-            resized = self._preview_pil.resize((nw, nh), resample)
+            if fast and getattr(self, "_preview_pil_fast", None) is not None:
+                resample = Image.BILINEAR
+                resized = self._preview_pil_fast.resize((nw, nh), resample)
+            else:
+                resample = Image.BILINEAR if fast else Image.LANCZOS
+                resized = self._preview_pil.resize((nw, nh), resample)
             self._preview_resize_cache = ((nw, nh), fast, resized)
 
         cx = cw // 2 + self._preview_pan_x
@@ -2155,43 +2182,50 @@ class MetaTagApp(tk.Tk):
                             break
         self._update_meta_preview()
 
+
+    def _get_stem_index(self):
+        df = self.grid.df
+        if df is None:
+            return {}, {}
+        img_col = self.img_col_var.get()
+        cache = getattr(self, "_stem_index_cache", None)
+        if cache is not None and cache[0] is df and cache[1] == img_col:
+            return cache[2], cache[3]
+
+        col_index = {}
+        if img_col and img_col in df.columns:
+            for ri in range(len(df)):
+                val = str(df.iloc[ri][img_col]).strip()
+                if val and val.lower() not in ("nan", "none", ""):
+                    col_index.setdefault(self._full_stem(val).lower(), ri)
+
+        all_index = {}
+        for ri in range(len(df)):
+            row = df.iloc[ri]
+            for col in df.columns:
+                val = str(row[col]).strip()
+                if val and val.lower() not in ("nan", "none", ""):
+                    all_index.setdefault(self._full_stem(val).lower(), ri)
+
+        self._stem_index_cache = (df, img_col, col_index, all_index)
+        return col_index, all_index
+
     def _on_img_select(self, path: str):
         self._load_image(path)
         if self.process_mode.get() != "Inteligente" or self.grid.df is None:
             return
 
         img_stem = self._full_stem(Path(path).name).lower()
-        img_col  = self.img_col_var.get()
-
-        # Paso 1: buscar SOLO en la columna de imagen, por stem exacto
-        if img_col and img_col in self.grid.df.columns:
-            for ri in range(len(self.grid.df)):
-                val = str(self.grid.df.iloc[ri][img_col]).strip()
-                if not val or val.lower() in ("nan", "none", ""):
-                    continue
-                val_stem = self._full_stem(val).lower()
-                if val_stem == img_stem:
-                    self.current_row = ri
-                    self.grid.clear_selection()
-                    self.grid.select_row(ri)
-                    self.grid.scroll_to_row(ri)
-                    self._update_meta_preview()
-                    return
-
-        # Paso 2: fallback — buscar en todas las columnas, solo por stem exacto
-        for ri in range(len(self.grid.df)):
-            row = self.grid.df.iloc[ri]
-            for col in self.grid.df.columns:
-                val = str(row[col]).strip()
-                if not val or val.lower() in ("nan", "none", ""):
-                    continue
-                if self._full_stem(val).lower() == img_stem:
-                    self.current_row = ri
-                    self.grid.clear_selection()
-                    self.grid.select_row(ri)
-                    self.grid.scroll_to_row(ri)
-                    self._update_meta_preview()
-                    return
+        col_index, all_index = self._get_stem_index()
+        ri = col_index.get(img_stem)
+        if ri is None:
+            ri = all_index.get(img_stem)
+        if ri is not None:
+            self.current_row = ri
+            self.grid.clear_selection()
+            self.grid.select_row(ri)
+            self.grid.scroll_to_row(ri)
+            self._update_meta_preview()
 
     def _select_active_row(self):
         if self.current_row is None:
@@ -2213,7 +2247,21 @@ class MetaTagApp(tk.Tk):
             self._preview_pan_x = 0
             self._preview_pan_y = 0
             self._preview_resize_cache = None
-            self._redraw_preview_zoomed()
+            # Miniatura pre-reducida usada solo para el redibujo "rápido"
+            # (rueda/arrastre). Evita redimensionar la imagen a full
+            # resolución en cada evento de la rueda del mouse.
+            _fw, _fh = self._preview_pil.size
+            _fmax = 1400
+            if max(_fw, _fh) > _fmax:
+                _fscale = _fmax / max(_fw, _fh)
+                self._preview_pil_fast = self._preview_pil.resize(
+                    (max(1, int(_fw * _fscale)), max(1, int(_fh * _fscale))), Image.BILINEAR)
+            else:
+                self._preview_pil_fast = self._preview_pil
+            self._redraw_preview_zoomed(fast=True)
+            if hasattr(self, "_preview_hq_timer"):
+                self.after_cancel(self._preview_hq_timer)
+            self._preview_hq_timer = self.after(80, lambda: self._redraw_preview_zoomed(fast=False))
         except Exception as e:
             self.img_canvas.delete("all")
             self.img_canvas.create_text(
