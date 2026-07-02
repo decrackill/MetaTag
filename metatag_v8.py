@@ -1029,7 +1029,8 @@ class MetaTagApp(tk.Tk):
 
         chart_frame = tk.Frame(body_paned, bg=S_BG)
         body_paned.add(chart_frame, minsize=int(500*self.current_scale))
-        fig = Figure(figsize=(8, 6), facecolor=S_BG, dpi=100)
+        fig = Figure(figsize=(8, 6), dpi=200, facecolor=S_BG,
+                     constrained_layout=True)
         canvas_widget = FigureCanvasTkAgg(fig, master=chart_frame)
         canvas_widget.get_tk_widget().pack(fill="both", expand=True)
 
@@ -1262,7 +1263,7 @@ class MetaTagApp(tk.Tk):
                 if "Dona" in ctype or "Pastel" in ctype:
                     fig.subplots_adjust(left=0.02, right=0.98, top=0.96, bottom=0.04)
                 else:
-                    fig.tight_layout(pad=1.8)
+                    fig.subplots_adjust(left=0.08, right=0.95, top=0.95, bottom=0.10)
             except Exception:
                 fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
 
