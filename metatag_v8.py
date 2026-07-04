@@ -1230,7 +1230,6 @@ class MetaTagApp(tk.Tk):
                         xa = r_arrow * np.cos(np.deg2rad(ang_mid))
                         ya = r_arrow * np.sin(np.deg2rad(ang_mid))
                         wedge_color = colors_cycle[idx_w % len(colors_cycle)]
-                        angleA = 180 if side == "left" else 0
                         ax.annotate(
                             label,
                             xy=(xa, ya),
@@ -1241,18 +1240,13 @@ class MetaTagApp(tk.Tk):
                             arrowprops=dict(
                                 arrowstyle="-",
                                 color=wedge_color,
-                                lw=1.3,
-                                alpha=0.75,
-                                shrinkA=0, shrinkB=4,
-                                connectionstyle=f"angle,angleA={angleA},angleB=90,rad=6",
-                                capstyle="round"),
+                                lw=1.0,
+                                alpha=0.55,
+                                shrinkA=0, shrinkB=4),
                             bbox=bbox,
                             va="center",
                             zorder=5,
                             annotation_clip=False)
-                        ax.scatter([xa], [ya], s=14, color=wedge_color,
-                                   edgecolor=S_BG, linewidth=0.6, zorder=6,
-                                   clip_on=False)
 
                 place_labels_clean(left_items,  "left")
                 place_labels_clean(right_items, "right")
