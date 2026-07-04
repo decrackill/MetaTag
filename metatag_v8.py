@@ -870,6 +870,10 @@ class MetaTagApp(tk.Tk):
         if not MATPLOTLIB_OK:
             return messagebox.showerror("Falta Librería", "pip install matplotlib")
 
+        plt.rcParams['lines.antialiased']  = True
+        plt.rcParams['patch.antialiased']  = True
+        plt.rcParams['path.simplify']      = True
+
         S_BG           = C["bg"]
         S_CARD         = C["surface"]
         S_BORDER       = C["border"]
@@ -1018,8 +1022,21 @@ class MetaTagApp(tk.Tk):
         selector_style_frame.pack(side="left", padx=(30, 0))
 
         def export_chart():
+            # Carpeta inicial adaptada al sistema operativo
+            if sys.platform == "win32":
+                default_dir = os.path.join(os.path.expanduser("~"), "Pictures")
+            elif sys.platform == "darwin":
+                default_dir = os.path.join(os.path.expanduser("~"), "Pictures")
+            else:  # Linux
+                default_dir = os.path.join(os.path.expanduser("~"), "Imágenes")
+                if not os.path.isdir(default_dir):
+                    default_dir = os.path.expanduser("~")
+            if not os.path.isdir(default_dir):
+                default_dir = os.path.expanduser("~")
+
             path = filedialog.asksaveasfilename(
                 title="Exportar gráfica",
+                initialdir=default_dir,
                 defaultextension=".png",
                 filetypes=[("Imagen PNG (alta calidad)", "*.png"),
                            ("PDF vectorial", "*.pdf"),
@@ -1027,6 +1044,11 @@ class MetaTagApp(tk.Tk):
                 initialfile=f"grafica_{combo_var.get()}")
             if not path:
                 return
+
+            # En Linux, algunos diálogos GTK no respetan defaultextension.
+            # Si el usuario no escribió extensión, se la agregamos manualmente.
+            if not os.path.splitext(path)[1]:
+                path += ".png"
             try:
                 fig.savefig(path, dpi=300, facecolor=fig.get_facecolor(),
                             bbox_inches="tight", pad_inches=0.3)
@@ -1070,7 +1092,7 @@ class MetaTagApp(tk.Tk):
             _dpi_screen = win.winfo_fpixels("1i")
         except Exception:
             _dpi_screen = 96
-        _fig_dpi = min(120, max(72, int(_dpi_screen)))
+        _fig_dpi = min(160, max(100, int(_dpi_screen * 1.25)))
         fig = Figure(figsize=(8, 6), dpi=_fig_dpi, facecolor=S_BG)
         canvas_widget = FigureCanvasTkAgg(fig, master=chart_frame)
         canvas_widget.get_tk_widget().pack(fill="both", expand=True)
@@ -1108,7 +1130,8 @@ class MetaTagApp(tk.Tk):
                     labels=None,
                     autopct=None,
                     colors=colors_cycle[:n_cats],
-                    wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=2),
+                    wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=1.4,
+                                    antialiased=True),
                     startangle=90)
                 wedges = pie_result[0]
 
@@ -1178,9 +1201,12 @@ class MetaTagApp(tk.Tk):
                             color=S_TEXT,
                             arrowprops=dict(
                                 arrowstyle="-",
-                                color=S_BORDER,
-                                lw=0.7,
-                                connectionstyle="arc3,rad=0.0"),
+                                color=S_TEXT_MUTE,
+                                lw=1.1,
+                                alpha=0.55,
+                                shrinkA=0, shrinkB=4,
+                                connectionstyle="arc3,rad=0.15",
+                                capstyle="round"),
                             bbox=bbox,
                             va="center",
                             zorder=5,
@@ -1221,7 +1247,8 @@ class MetaTagApp(tk.Tk):
                 for sp in ("top", "right", "left"):
                     ax.spines[sp].set_visible(False)
                 ax.spines["bottom"].set_color(S_BORDER)
-                ax.xaxis.grid(True, linestyle=":", alpha=0.4, color=S_BORDER)
+                ax.xaxis.grid(True, linestyle=(0, (4, 4)), alpha=0.22,
+                               linewidth=0.6, color=S_BORDER)
                 ax.set_axisbelow(True)
                 max_val = counts_asc.max()
                 for bar, val in zip(bars, counts_asc.values):
@@ -1259,7 +1286,8 @@ class MetaTagApp(tk.Tk):
                     ax.spines[sp].set_visible(False)
                 ax.spines["left"].set_color(S_BORDER)
                 ax.spines["bottom"].set_color(S_BORDER)
-                ax.yaxis.grid(True, linestyle=":", alpha=0.4, color=S_BORDER)
+                ax.yaxis.grid(True, linestyle=(0, (4, 4)), alpha=0.22,
+                               linewidth=0.6, color=S_BORDER)
                 ax.set_axisbelow(True)
                 max_val = counts.max()
                 for bar, val in zip(bars, counts.values):
@@ -1308,7 +1336,8 @@ class MetaTagApp(tk.Tk):
                 for sp in ("top", "right", "left"):
                     ax.spines[sp].set_visible(False)
                 ax.spines["bottom"].set_color(S_BORDER)
-                ax.xaxis.grid(True, linestyle=":", alpha=0.3, color=S_BORDER)
+                ax.xaxis.grid(True, linestyle=(0, (4, 4)), alpha=0.22,
+                               linewidth=0.6, color=S_BORDER)
                 ax.set_axisbelow(True)
                 ax.set_xlim(-max_val * 0.02, max_val * 1.30)
                 tk_chart_title.configure(text=f"Distribución: {col}")
