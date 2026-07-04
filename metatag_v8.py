@@ -1035,6 +1035,7 @@ class MetaTagApp(tk.Tk):
                 default_dir = os.path.expanduser("~")
 
             path = filedialog.asksaveasfilename(
+                parent=win,
                 title="Exportar gráfica",
                 initialdir=default_dir,
                 defaultextension=".png",
@@ -1052,9 +1053,9 @@ class MetaTagApp(tk.Tk):
             try:
                 fig.savefig(path, dpi=300, facecolor=fig.get_facecolor(),
                             bbox_inches="tight", pad_inches=0.3)
-                messagebox.showinfo("Exportado", f"Gráfica guardada en:\n{path}")
+                messagebox.showinfo("Exportado", f"Gráfica guardada en:\n{path}", parent=win)
             except Exception as e:
-                messagebox.showerror("Error al exportar", str(e))
+                messagebox.showerror("Error al exportar", str(e), parent=win)
 
         export_btn_frame = tk.Frame(top_frame, bg=S_BG)
         export_btn_frame.pack(side="right", anchor="s")
@@ -1192,6 +1193,7 @@ class MetaTagApp(tk.Tk):
                         r_arrow = 1.02
                         xa = r_arrow * np.cos(np.deg2rad(ang_mid))
                         ya = r_arrow * np.sin(np.deg2rad(ang_mid))
+                        wedge_color = colors_cycle[idx_w % len(colors_cycle)]
                         ax.annotate(
                             label,
                             xy=(xa, ya),
@@ -1201,16 +1203,19 @@ class MetaTagApp(tk.Tk):
                             color=S_TEXT,
                             arrowprops=dict(
                                 arrowstyle="-",
-                                color=S_TEXT_MUTE,
-                                lw=1.1,
-                                alpha=0.55,
+                                color=wedge_color,
+                                lw=1.3,
+                                alpha=0.75,
                                 shrinkA=0, shrinkB=4,
-                                connectionstyle="arc3,rad=0.15",
+                                connectionstyle="angle3,angleA=0,angleB=90",
                                 capstyle="round"),
                             bbox=bbox,
                             va="center",
                             zorder=5,
                             annotation_clip=False)
+                        ax.scatter([xa], [ya], s=14, color=wedge_color,
+                                   edgecolor=S_BG, linewidth=0.6, zorder=6,
+                                   clip_on=False)
 
                 place_labels_clean(left_items,  "left")
                 place_labels_clean(right_items, "right")
@@ -3560,7 +3565,7 @@ class MetaTagApp(tk.Tk):
         elif ext in (".tif", ".tiff"):  self._write_tiff(path, meta, organizado)
         else:
             try:    self._write_jpeg(path, meta, organizado)
-            except: raise RuntimeError(f"Formato no soportado: {ext}")
+            except Exception: raise RuntimeError(f"Formato no soportado: {ext}")
 
     def _read_existing_metadata(self, path: str) -> dict:
         """
@@ -3626,6 +3631,10 @@ class MetaTagApp(tk.Tk):
             return messagebox.showinfo("Carpeta vacía",
                 "No hay imágenes compatibles en esta carpeta.")
 
+        if getattr(self, "_verify_running", False):
+            return
+        self._verify_running = True
+
         total = len(all_files)
         self._log(f"\n🔍 Verificando metadatos previos en {total} "
                   f"imágenes de la carpeta original...\n", "info")
@@ -3667,6 +3676,7 @@ class MetaTagApp(tk.Tk):
             self.after(0, finish, ocupadas)
 
         def finish(ocupadas):
+            self._verify_running = False
             prog_win.destroy()
             if not ocupadas:
                 self._log(
@@ -3799,7 +3809,7 @@ class MetaTagApp(tk.Tk):
         as_json          = json.dumps(meta, ensure_ascii=False)
         keywords         = ";".join(v for v in meta.values() if v.strip())
         try:    exif = piexif.load(img.info.get("exif", b""))
-        except: exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
+        except Exception: exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
         exif["0th"][piexif.ImageIFD.ImageDescription] = texto_organizado.encode("utf-8")
         exif["Exif"][piexif.ExifIFD.UserComment] = piexif.helper.UserComment.dump(
             as_json, encoding="unicode")
@@ -3821,7 +3831,7 @@ class MetaTagApp(tk.Tk):
         img  = Image.open(path)
         texto_organizado = self._formatear_metadatos(meta, organizado)
         try:    exif = piexif.load(img.info.get("exif", b""))
-        except: exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
+        except Exception: exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
         exif["0th"][piexif.ImageIFD.ImageDescription] = texto_organizado.encode("utf-8")
         img.save(path, exif=piexif.dump(exif))
 
