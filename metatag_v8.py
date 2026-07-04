@@ -1017,6 +1017,29 @@ class MetaTagApp(tk.Tk):
         selector_var_frame.pack(side="left")
         selector_style_frame.pack(side="left", padx=(30, 0))
 
+        def export_chart():
+            path = filedialog.asksaveasfilename(
+                title="Exportar gráfica",
+                defaultextension=".png",
+                filetypes=[("Imagen PNG (alta calidad)", "*.png"),
+                           ("PDF vectorial", "*.pdf"),
+                           ("Imagen JPEG", "*.jpg")],
+                initialfile=f"grafica_{combo_var.get()}")
+            if not path:
+                return
+            try:
+                fig.savefig(path, dpi=300, facecolor=fig.get_facecolor(),
+                            bbox_inches="tight", pad_inches=0.3)
+                messagebox.showinfo("Exportado", f"Gráfica guardada en:\n{path}")
+            except Exception as e:
+                messagebox.showerror("Error al exportar", str(e))
+
+        export_btn_frame = tk.Frame(top_frame, bg=S_BG)
+        export_btn_frame.pack(side="right", anchor="s")
+        tk.Button(export_btn_frame, text="⬇ Exportar gráfica", command=export_chart,
+                  bg=C["accent"], fg=S_BG, font=FONTS["LABEL_B"], relief="flat",
+                  cursor="hand2", padx=14, pady=6).pack()
+
         body_paned = tk.PanedWindow(win, orient="horizontal",
                                     bg=S_BORDER, sashwidth=4, bd=0)
         body_paned.pack(fill="both", expand=True, padx=20, pady=15)
@@ -1088,6 +1111,11 @@ class MetaTagApp(tk.Tk):
                     wedgeprops=dict(width=wedge_w, edgecolor=S_BG, linewidth=2),
                     startangle=90)
                 wedges = pie_result[0]
+
+                for i, p in enumerate(wedges):
+                    pct = counts_sorted.values[i] / total_count * 100
+                    p._metatag_valor = f"{int(counts_sorted.values[i])} piezas ({pct:.1f}%)"
+                    p._metatag_label = counts_sorted.index[i]
 
                 LABEL_THRESHOLD_PCT = 1.0
 
@@ -1206,6 +1234,10 @@ class MetaTagApp(tk.Tk):
                             fontsize=max(7, min(9, 100 // max(n_cats, 1))),
                             fontweight="bold")
                 ax.set_xlim(0, max_val * 1.32)
+                for bar, val in zip(bars, counts_asc.values):
+                    pct = val / total_count * 100
+                    bar._metatag_valor = f"{val} piezas ({pct:.1f}%)"
+                    bar._metatag_label = counts_asc.index[list(counts_asc.values).index(val)]
                 tk_chart_title.configure(text=f"Frecuencia: {col}")
 
             # ── BARRAS VERTICAL ───────────────────────────────────────
@@ -1240,6 +1272,10 @@ class MetaTagApp(tk.Tk):
                             fontsize=max(6, min(8, 80 // max(n_cats, 1))),
                             fontweight="bold")
                 ax.set_ylim(0, max_val * 1.28)
+                for bar, val in zip(bars, counts.values):
+                    pct = val / total_count * 100
+                    bar._metatag_valor = f"{val} piezas ({pct:.1f}%)"
+                    bar._metatag_label = counts.index[list(counts.values).index(val)]
                 fig.subplots_adjust(bottom=0.18)
                 tk_chart_title.configure(text=f"Frecuencia: {col}")
 
@@ -1356,8 +1392,47 @@ class MetaTagApp(tk.Tk):
                 pass
 
         tk_chart_title = tk.Label(chart_frame, text="", bg=S_BG, fg=S_TEXT,
-                                  font=("Georgia", int(13*self.current_scale), "bold"), pady=10)
+                                   font=("Georgia", int(13*self.current_scale), "bold"), pady=10)
         tk_chart_title.pack(fill="x")
+
+        # ── Tooltip interactivo al pasar el mouse sobre barras/sectores ──
+        tooltip_annot = None
+
+        def on_hover(event):
+            nonlocal tooltip_annot
+            if event.inaxes is None:
+                if tooltip_annot is not None:
+                    tooltip_annot.set_visible(False)
+                    canvas_widget.draw_idle()
+                return
+            ax = event.inaxes
+            found = False
+            for patch in ax.patches:
+                contains, _ = patch.contains(event)
+                if contains:
+                    found = True
+                    valor = getattr(patch, "_metatag_valor", None)
+                    etiqueta = getattr(patch, "_metatag_label", None)
+                    if valor is None:
+                        continue
+                    if tooltip_annot is None or tooltip_annot.axes != ax:
+                        if tooltip_annot is not None:
+                            tooltip_annot.remove()
+                        tooltip_annot = ax.annotate(
+                            "", xy=(0, 0), xytext=(15, 15), textcoords="offset points",
+                            bbox=dict(boxstyle="round,pad=0.4", fc=S_ACCENT, ec="none", alpha=0.95),
+                            color=S_BG, fontsize=9, fontweight="bold", zorder=10)
+                    tooltip_annot.xy = (event.xdata, event.ydata)
+                    tooltip_annot.set_text(f"{etiqueta}\n{valor}")
+                    tooltip_annot.set_visible(True)
+                    canvas_widget.draw_idle()
+                    break
+            if not found and tooltip_annot is not None:
+                tooltip_annot.set_visible(False)
+                canvas_widget.draw_idle()
+
+        canvas_widget.mpl_connect("motion_notify_event", on_hover)
+
         update_chart()
         combo_var.trace_add("write", update_chart)
         chart_type_var.trace_add("write", update_chart)
@@ -3522,50 +3597,82 @@ class MetaTagApp(tk.Tk):
             return messagebox.showinfo("Carpeta vacía",
                 "No hay imágenes compatibles en esta carpeta.")
 
-        self.config(cursor="watch")
-        self._log(f"\n🔍 Verificando metadatos previos en {len(all_files)} "
+        total = len(all_files)
+        self._log(f"\n🔍 Verificando metadatos previos en {total} "
                   f"imágenes de la carpeta original...\n", "info")
 
-        ocupadas = []
-        for f in all_files:
-            existing = self._read_existing_metadata(str(f))
-            if existing:
-                ocupadas.append((f, existing))
+        prog_win = tk.Toplevel(self)
+        prog_win.title("Verificando imágenes originales…")
+        prog_win.configure(bg=C["panel"])
+        prog_win.geometry("480x180")
+        prog_win.resizable(False, False)
+        prog_win.grab_set()
+        tk.Label(prog_win, text="Revisando metadatos previos",
+                 bg=C["panel"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(18, 4))
+        lbl_file = tk.Label(prog_win, text="Iniciando…",
+                            bg=C["panel"], fg=C["text2"], font=FONTS["LABEL"])
+        lbl_file.pack()
+        lbl_count = tk.Label(prog_win, text=f"0 / {total}",
+                             bg=C["panel"], fg=C["text3"], font=FONTS["TINY"])
+        lbl_count.pack()
+        bar_outer = tk.Frame(prog_win, bg=C["border"], height=10)
+        bar_outer.pack(fill="x", padx=24, pady=12)
+        bar_fill = tk.Frame(bar_outer, bg=C["accent"], height=10)
+        bar_fill.place(x=0, y=0, relheight=1, width=0)
+        prog_win.update_idletasks()
+        bar_w = bar_outer.winfo_width() or 432
 
-        self.config(cursor="")
+        def update_ui(done, filename):
+            bar_fill.place(width=int(bar_w * (done / total)))
+            lbl_file.configure(text=filename)
+            lbl_count.configure(text=f"{done} / {total}")
 
-        if not ocupadas:
+        def worker():
+            ocupadas = []
+            for i, f in enumerate(all_files):
+                existing = self._read_existing_metadata(str(f))
+                if existing:
+                    ocupadas.append((f, existing))
+                if (i + 1) % 3 == 0 or (i + 1) == total:
+                    self.after(0, update_ui, i + 1, f.name)
+            self.after(0, finish, ocupadas)
+
+        def finish(ocupadas):
+            prog_win.destroy()
+            if not ocupadas:
+                self._log(
+                    f"✔ Verificación completa: {len(all_files)} imágenes revisadas, "
+                    f"NINGUNA tiene metadatos previos de MetaTag. Todas las "
+                    f"secciones están limpias.\n", "ok")
+                messagebox.showinfo("Verificación completa",
+                    f"Se revisaron {len(all_files)} imágenes en:\n{folder}\n\n"
+                    f"✔ Ninguna tiene metadatos previos de MetaTag.\n"
+                    f"Puedes escribir los nuevos datos sin riesgo de mezclas.")
+                return
+
             self._log(
-                f"✔ Verificación completa: {len(all_files)} imágenes revisadas, "
-                f"NINGUNA tiene metadatos previos de MetaTag. Todas las "
-                f"secciones están limpias.\n", "ok")
-            messagebox.showinfo("Verificación completa",
-                f"Se revisaron {len(all_files)} imágenes en:\n{folder}\n\n"
-                f"✔ Ninguna tiene metadatos previos de MetaTag.\n"
-                f"Puedes escribir los nuevos datos sin riesgo de mezclas.")
-            return
+                f"⚠ Verificación completa: {len(all_files)} revisadas, "
+                f"{len(ocupadas)} YA TIENEN metadatos de MetaTag escritos:\n", "warn")
+            for f, meta in ocupadas[:15]:
+                preview = ", ".join(f"{k}={v}" for k, v in list(meta.items())[:3])
+                self._log(f"   • {f.name}: {preview}{' …' if len(meta) > 3 else ''}\n", "warn")
+            if len(ocupadas) > 15:
+                self._log(f"   … y {len(ocupadas)-15} más.\n", "warn")
 
-        self._log(
-            f"⚠ Verificación completa: {len(all_files)} revisadas, "
-            f"{len(ocupadas)} YA TIENEN metadatos de MetaTag escritos:\n", "warn")
-        for f, meta in ocupadas[:15]:
-            preview = ", ".join(f"{k}={v}" for k, v in list(meta.items())[:3])
-            self._log(f"   • {f.name}: {preview}{' …' if len(meta) > 3 else ''}\n", "warn")
-        if len(ocupadas) > 15:
-            self._log(f"   … y {len(ocupadas)-15} más.\n", "warn")
+            respuesta = messagebox.askyesno(
+                "Metadatos previos encontrados",
+                f"Se revisaron {len(all_files)} imágenes en la carpeta original.\n\n"
+                f"⚠ {len(ocupadas)} YA TIENEN metadatos de MetaTag escritos "
+                f"(la sección donde se guardan los datos no está vacía).\n\n"
+                f"Si escribes los nuevos metadatos ahora, estos se MEZCLARÁN "
+                f"con los datos viejos.\n\n"
+                f"¿Quieres limpiar esos {len(ocupadas)} archivos ahora mismo "
+                f"(borrar solo la sección de metadatos de MetaTag, sin tocar "
+                f"el resto de la imagen) antes de continuar?")
+            if respuesta:
+                self._clear_metatag_sections([f for f, _ in ocupadas])
 
-        respuesta = messagebox.askyesno(
-            "Metadatos previos encontrados",
-            f"Se revisaron {len(all_files)} imágenes en la carpeta original.\n\n"
-            f"⚠ {len(ocupadas)} YA TIENEN metadatos de MetaTag escritos "
-            f"(la sección donde se guardan los datos no está vacía).\n\n"
-            f"Si escribes los nuevos metadatos ahora, estos se MEZCLARÁN "
-            f"con los datos viejos.\n\n"
-            f"¿Quieres limpiar esos {len(ocupadas)} archivos ahora mismo "
-            f"(borrar solo la sección de metadatos de MetaTag, sin tocar "
-            f"el resto de la imagen) antes de continuar?")
-        if respuesta:
-            self._clear_metatag_sections([f for f, _ in ocupadas])
+        threading.Thread(target=worker, daemon=True).start()
 
     def _clear_metatag_sections(self, files: list):
         """
@@ -3573,57 +3680,89 @@ class MetaTagApp(tk.Tk):
         (ImageDescription, UserComment/Comment con el JSON, XPComment,
         XPKeywords) — sin tocar ninguna otra propiedad de la imagen.
         """
-        self.config(cursor="watch")
-        ok = err = 0
+        total = len(files)
+        prog_win = tk.Toplevel(self)
+        prog_win.title("Limpiando metadatos previos…")
+        prog_win.configure(bg=C["panel"])
+        prog_win.geometry("480x180")
+        prog_win.resizable(False, False)
+        prog_win.grab_set()
+        tk.Label(prog_win, text="Limpiando secciones de metadatos MetaTag",
+                 bg=C["panel"], fg=C["accent"], font=FONTS["H2"]).pack(pady=(18, 4))
+        lbl_file = tk.Label(prog_win, text="Iniciando…",
+                            bg=C["panel"], fg=C["text2"], font=FONTS["LABEL"])
+        lbl_file.pack()
+        lbl_count = tk.Label(prog_win, text=f"0 / {total}",
+                             bg=C["panel"], fg=C["text3"], font=FONTS["TINY"])
+        lbl_count.pack()
+        bar_outer = tk.Frame(prog_win, bg=C["border"], height=10)
+        bar_outer.pack(fill="x", padx=24, pady=12)
+        bar_fill = tk.Frame(bar_outer, bg=C["accent"], height=10)
+        bar_fill.place(x=0, y=0, relheight=1, width=0)
+        prog_win.update_idletasks()
+        bar_w = bar_outer.winfo_width() or 432
 
-        for f in files:
-            try:
-                ext = f.suffix.lower()
-                if ext in (".jpg", ".jpeg"):
-                    img = Image.open(str(f))
-                    try:
-                        exif = piexif.load(img.info.get("exif", b""))
-                    except Exception:
-                        exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
-                    exif["0th"].pop(piexif.ImageIFD.ImageDescription, None)
-                    exif["0th"].pop(40092, None)
-                    exif["0th"].pop(40094, None)
-                    exif["Exif"].pop(piexif.ExifIFD.UserComment, None)
-                    img.save(str(f), "jpeg", exif=piexif.dump(exif), quality=95)
+        def update_ui(done, filename):
+            bar_fill.place(width=int(bar_w * (done / total)))
+            lbl_file.configure(text=filename)
+            lbl_count.configure(text=f"{done} / {total}")
 
-                elif ext == ".png":
-                    from PIL import PngImagePlugin
-                    img = Image.open(str(f))
-                    new_info = PngImagePlugin.PngInfo()
-                    old_text = dict(getattr(img, "text", {}))
-                    for k in ("Description", "Comment"):
-                        old_text.pop(k, None)
-                    for k, v in old_text.items():
-                        new_info.add_text(k, v)
-                    img.save(str(f), "PNG", pnginfo=new_info)
+        def worker():
+            ok = err = 0
+            for i, f in enumerate(files):
+                try:
+                    ext = f.suffix.lower()
+                    if ext in (".jpg", ".jpeg"):
+                        img = Image.open(str(f))
+                        try:
+                            exif = piexif.load(img.info.get("exif", b""))
+                        except Exception:
+                            exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
+                        exif["0th"].pop(piexif.ImageIFD.ImageDescription, None)
+                        exif["0th"].pop(40092, None)
+                        exif["0th"].pop(40094, None)
+                        exif["Exif"].pop(piexif.ExifIFD.UserComment, None)
+                        img.save(str(f), "jpeg", exif=piexif.dump(exif), quality=95)
 
-                elif ext in (".tif", ".tiff"):
-                    img = Image.open(str(f))
-                    try:
-                        exif = piexif.load(img.info.get("exif", b""))
-                    except Exception:
-                        exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
-                    exif["0th"].pop(piexif.ImageIFD.ImageDescription, None)
-                    img.save(str(f), exif=piexif.dump(exif))
+                    elif ext == ".png":
+                        from PIL import PngImagePlugin
+                        img = Image.open(str(f))
+                        new_info = PngImagePlugin.PngInfo()
+                        old_text = dict(getattr(img, "text", {}))
+                        for k in ("Description", "Comment"):
+                            old_text.pop(k, None)
+                        for k, v in old_text.items():
+                            new_info.add_text(k, v)
+                        img.save(str(f), "PNG", pnginfo=new_info)
 
-                ok += 1
-            except Exception as e:
-                self._log(f"  ✗ Error limpiando {f.name}: {e}\n", "err")
-                err += 1
+                    elif ext in (".tif", ".tiff"):
+                        img = Image.open(str(f))
+                        try:
+                            exif = piexif.load(img.info.get("exif", b""))
+                        except Exception:
+                            exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
+                        exif["0th"].pop(piexif.ImageIFD.ImageDescription, None)
+                        img.save(str(f), exif=piexif.dump(exif))
 
-        self.config(cursor="")
-        self._log(f"\n🧹 Limpieza de secciones MetaTag: {ok} limpiadas · "
-                  f"{err} errores.\n", "head")
-        self.status_var.set(f"✔ {ok} imágenes limpiadas, listas para nuevos metadatos")
-        messagebox.showinfo("Limpieza completa",
-            f"✔ {ok} imágenes quedaron con la sección de metadatos vacía.\n"
-            f"{f'✗ {err} con errores.' if err else ''}\n\n"
-            f"Ya puedes escribir los metadatos nuevos sin riesgo de mezclas.")
+                    ok += 1
+                except Exception as e:
+                    self._log(f"  ✗ Error limpiando {f.name}: {e}\n", "err")
+                    err += 1
+                self.after(0, update_ui, i + 1, f.name)
+
+            def finish():
+                prog_win.destroy()
+                self._log(f"\n🧹 Limpieza de secciones MetaTag: {ok} limpiadas · "
+                          f"{err} errores.\n", "head")
+                self.status_var.set(f"✔ {ok} imágenes limpiadas, listas para nuevos metadatos")
+                messagebox.showinfo("Limpieza completa",
+                    f"✔ {ok} imágenes quedaron con la sección de metadatos vacía.\n"
+                    f"{f'✗ {err} con errores.' if err else ''}\n\n"
+                    f"Ya puedes escribir los metadatos nuevos sin riesgo de mezclas.")
+
+            self.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _write_jpeg(self, path: str, meta: dict, organizado: bool = True):
         img              = Image.open(path)
