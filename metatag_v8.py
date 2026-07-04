@@ -140,6 +140,43 @@ def _native_folder_open(title="Seleccionar carpeta"):
     return filedialog.askdirectory(title=title)
 
 
+def _native_file_save(title="Guardar archivo", initialdir="", initialfile="",
+                       default_ext=".png", zenity_filters=None, tk_filetypes=None):
+    if sys.platform == "linux":
+        start_path = os.path.join(initialdir or os.path.expanduser("~"),
+                                   initialfile or "")
+        cmd = ["zenity", "--file-selection", "--save", "--confirm-overwrite",
+               "--title", title, "--filename", start_path]
+        for f in (zenity_filters or []):
+            cmd += ["--file-filter", f]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                path = r.stdout.strip().split("\n")[0]
+                if not os.path.splitext(path)[1]:
+                    path += default_ext
+                return path
+            if r.returncode == 1:
+                return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        cmd = ["kdialog", "--getsavefilename", start_path, "--title", title]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                path = r.stdout.strip().split("\n")[0]
+                if not os.path.splitext(path)[1]:
+                    path += default_ext
+                return path
+            if r.returncode == 1:
+                return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    return filedialog.asksaveasfilename(
+        title=title, initialdir=initialdir, initialfile=initialfile,
+        defaultextension=default_ext, filetypes=tk_filetypes or [])
+
+
 # ══════════════════════════════════════════════════════════════════
 #  TABLA DE CELDAS INDIVIDUALES — OPTIMIZADA PARA 300+ FILAS
 #  (viewport culling: solo pinta las filas visibles en pantalla)
@@ -1022,7 +1059,6 @@ class MetaTagApp(tk.Tk):
         selector_style_frame.pack(side="left", padx=(30, 0))
 
         def export_chart():
-            # Carpeta inicial adaptada al sistema operativo
             if sys.platform == "win32":
                 default_dir = os.path.join(os.path.expanduser("~"), "Pictures")
             elif sys.platform == "darwin":
@@ -1034,22 +1070,19 @@ class MetaTagApp(tk.Tk):
             if not os.path.isdir(default_dir):
                 default_dir = os.path.expanduser("~")
 
-            path = filedialog.asksaveasfilename(
-                parent=win,
+            path = _native_file_save(
                 title="Exportar gráfica",
                 initialdir=default_dir,
-                defaultextension=".png",
-                filetypes=[("Imagen PNG (alta calidad)", "*.png"),
-                           ("PDF vectorial", "*.pdf"),
-                           ("Imagen JPEG", "*.jpg")],
-                initialfile=f"grafica_{combo_var.get()}")
+                initialfile=f"grafica_{combo_var.get()}.png",
+                default_ext=".png",
+                zenity_filters=["Imagen PNG | *.png",
+                                "PDF vectorial | *.pdf",
+                                "Imagen JPEG | *.jpg"],
+                tk_filetypes=[("Imagen PNG (alta calidad)", "*.png"),
+                              ("PDF vectorial", "*.pdf"),
+                              ("Imagen JPEG", "*.jpg")])
             if not path:
                 return
-
-            # En Linux, algunos diálogos GTK no respetan defaultextension.
-            # Si el usuario no escribió extensión, se la agregamos manualmente.
-            if not os.path.splitext(path)[1]:
-                path += ".png"
             try:
                 fig.savefig(path, dpi=300, facecolor=fig.get_facecolor(),
                             bbox_inches="tight", pad_inches=0.3)
@@ -1105,6 +1138,7 @@ class MetaTagApp(tk.Tk):
                 return
             data   = self.df[col].replace("", pd.NA).dropna()
             counts = data.value_counts().sort_values(ascending=False)
+            category_colors = {}
             fig.clear()
             fig.patch.set_facecolor(S_BG)
             total_count = len(data)
@@ -1125,6 +1159,8 @@ class MetaTagApp(tk.Tk):
                 counts_sorted = counts.sort_values(ascending=True)
                 wedge_w = 0.45 if "Dona" in ctype else 1.0
                 colors_cycle = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
+                for _i, _name in enumerate(counts_sorted.index):
+                    category_colors[_name] = colors_cycle[_i % len(colors_cycle)]
 
                 pie_result = ax.pie(
                     counts_sorted,
@@ -1194,6 +1230,7 @@ class MetaTagApp(tk.Tk):
                         xa = r_arrow * np.cos(np.deg2rad(ang_mid))
                         ya = r_arrow * np.sin(np.deg2rad(ang_mid))
                         wedge_color = colors_cycle[idx_w % len(colors_cycle)]
+                        angleA = 180 if side == "left" else 0
                         ax.annotate(
                             label,
                             xy=(xa, ya),
@@ -1207,7 +1244,7 @@ class MetaTagApp(tk.Tk):
                                 lw=1.3,
                                 alpha=0.75,
                                 shrinkA=0, shrinkB=4,
-                                connectionstyle="angle3,angleA=0,angleB=90",
+                                connectionstyle=f"angle,angleA={angleA},angleB=90,rad=6",
                                 capstyle="round"),
                             bbox=bbox,
                             va="center",
@@ -1241,6 +1278,8 @@ class MetaTagApp(tk.Tk):
                 counts_asc = counts.sort_values(ascending=True)
                 bar_h = max(0.35, min(0.65, 4.0 / max(n_cats, 1)))
                 colors_list = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
+                for _i, _name in enumerate(counts_asc.index):
+                    category_colors[_name] = colors_list[_i % len(colors_list)]
                 bars = ax.barh(range(n_cats), counts_asc.values,
                                color=colors_list[:n_cats],
                                edgecolor=S_BG, linewidth=1.2, height=bar_h)
@@ -1277,6 +1316,8 @@ class MetaTagApp(tk.Tk):
                 ax = fig.add_subplot(111)
                 ax.set_facecolor(S_BG)
                 colors_list = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
+                for _i, _name in enumerate(counts.index):
+                    category_colors[_name] = colors_list[_i % len(colors_list)]
                 bars = ax.bar(range(n_cats), counts.values,
                               color=colors_list[:n_cats],
                               edgecolor=S_BG, linewidth=1.2, width=0.65)
@@ -1320,6 +1361,8 @@ class MetaTagApp(tk.Tk):
                 y_pos   = list(range(n_cats))
                 max_val = counts_asc.max()
                 colors_list = (S_CHART_COLORS * (n_cats // len(S_CHART_COLORS) + 1))
+                for _i, _name in enumerate(counts_asc.index):
+                    category_colors[_name] = colors_list[_i % len(colors_list)]
                 for i, (y, val) in enumerate(zip(y_pos, counts_asc.values)):
                     color = colors_list[i]
                     ax.plot([0, val], [y, y], color=color, linewidth=1.8,
@@ -1404,6 +1447,16 @@ class MetaTagApp(tk.Tk):
                     insight_text.insert("end",
                         f" ▸ Existen {diversidad} variaciones únicas "
                         f"documentadas.\n", "li")
+
+                    insight_text.insert("end", "\n🎨 Leyenda de Colores:\n", "h")
+                    for _i, (_name, _cnt) in enumerate(counts_desc.items()):
+                        _color = category_colors.get(_name, S_TEXT_MUTE)
+                        _tag = f"swatch_{_i}"
+                        insight_text.tag_configure(_tag, foreground=_color)
+                        _pct = _cnt / total_count * 100
+                        insight_text.insert("end", "■ ", _tag)
+                        insight_text.insert("end",
+                            f"{_name}: {int(_cnt)} ({_pct:.1f}%)\n", "small_row")
 
                     small = _small_items_for_insight
                     if small:
@@ -3752,7 +3805,8 @@ class MetaTagApp(tk.Tk):
                 try:
                     ext = f.suffix.lower()
                     if ext in (".jpg", ".jpeg"):
-                        img = Image.open(str(f))
+                        with Image.open(str(f)) as _img_src:
+                            img = _img_src.copy()
                         try:
                             exif = piexif.load(img.info.get("exif", b""))
                         except Exception:
@@ -3765,7 +3819,8 @@ class MetaTagApp(tk.Tk):
 
                     elif ext == ".png":
                         from PIL import PngImagePlugin
-                        img = Image.open(str(f))
+                        with Image.open(str(f)) as _img_src:
+                            img = _img_src.copy()
                         new_info = PngImagePlugin.PngInfo()
                         old_text = dict(getattr(img, "text", {}))
                         for k in ("Description", "Comment"):
@@ -3775,7 +3830,8 @@ class MetaTagApp(tk.Tk):
                         img.save(str(f), "PNG", pnginfo=new_info)
 
                     elif ext in (".tif", ".tiff"):
-                        img = Image.open(str(f))
+                        with Image.open(str(f)) as _img_src:
+                            img = _img_src.copy()
                         try:
                             exif = piexif.load(img.info.get("exif", b""))
                         except Exception:
@@ -3804,7 +3860,8 @@ class MetaTagApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _write_jpeg(self, path: str, meta: dict, organizado: bool = True):
-        img              = Image.open(path)
+        with Image.open(path) as _img_src:
+            img = _img_src.copy()
         texto_organizado = self._formatear_metadatos(meta, organizado)
         as_json          = json.dumps(meta, ensure_ascii=False)
         keywords         = ";".join(v for v in meta.values() if v.strip())
@@ -3819,7 +3876,8 @@ class MetaTagApp(tk.Tk):
 
     def _write_png(self, path: str, meta: dict, organizado: bool = True):
         from PIL import PngImagePlugin
-        img  = Image.open(path)
+        with Image.open(path) as _img_src:
+            img = _img_src.copy()
         info = PngImagePlugin.PngInfo()
         texto_organizado = self._formatear_metadatos(meta, organizado)
         for k, v in meta.items(): info.add_text(str(k), str(v))
@@ -3828,7 +3886,8 @@ class MetaTagApp(tk.Tk):
         img.save(path, "PNG", pnginfo=info)
 
     def _write_tiff(self, path: str, meta: dict, organizado: bool = True):
-        img  = Image.open(path)
+        with Image.open(path) as _img_src:
+            img = _img_src.copy()
         texto_organizado = self._formatear_metadatos(meta, organizado)
         try:    exif = piexif.load(img.info.get("exif", b""))
         except Exception: exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
