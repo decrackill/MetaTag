@@ -2165,6 +2165,56 @@ class MetaTagApp(tk.Tk):
     #  Optimizado para 300 fotos: hilo independiente + actualizaciones
     #  de barra cada 5 imágenes.
     # ─────────────────────────────────────────────────────────────
+    def _ask_yes_no_cancel(self, title: str, message: str):
+        """
+        Diálogo Sí / No con detección real de X (cancelar).
+        Devuelve: True = Sí, False = No, None = cerró con X.
+        Necesario en Linux donde messagebox.askyesno devuelve False con X.
+        """
+        result = [None]
+
+        dlg = tk.Toplevel(self)
+        dlg.title(title)
+        dlg.configure(bg=C["panel"])
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        self.update_idletasks()
+        px = self.winfo_x() + self.winfo_width()  // 2
+        py = self.winfo_y() + self.winfo_height() // 2
+        dlg.geometry(f"420x210+{px - 210}+{py - 105}")
+
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+
+        tk.Label(dlg, text=title, bg=C["panel"], fg=C["accent"],
+                 font=FONTS["H2"]).pack(pady=(18, 6), padx=20)
+        tk.Label(dlg, text=message, bg=C["panel"], fg=C["text2"],
+                 font=FONTS["BODY"], justify="left",
+                 wraplength=380).pack(pady=(0, 18), padx=20)
+
+        btn_row = tk.Frame(dlg, bg=C["panel"])
+        btn_row.pack(pady=(0, 16))
+
+        def _yes():
+            result[0] = True
+            dlg.destroy()
+
+        def _no():
+            result[0] = False
+            dlg.destroy()
+
+        tk.Button(btn_row, text="Sí", width=10,
+                  bg=C["accent"], fg=C["header_fg"],
+                  font=FONTS["LABEL_B"], relief="flat",
+                  cursor="hand2", command=_yes).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="No", width=10,
+                  bg=C["btn_ghost_bg"], fg=C["text"],
+                  font=FONTS["LABEL"], relief="flat",
+                  cursor="hand2", command=_no).pack(side="left")
+
+        self.wait_window(dlg)
+        return result[0]
+
     def _batch_write_by_order(self):
         """Abre diálogos para seleccionar Excel y carpeta, y escribe metadatos por posición."""
         if not PIL_OK:
@@ -2173,14 +2223,14 @@ class MetaTagApp(tk.Tk):
         # ── Opción A: usar el Excel ya cargado ──
         use_loaded = False
         if self.df is not None and len(self.df) > 0:
-            use_loaded = messagebox.askyesno(
+            use_loaded = self._ask_yes_no_cancel(
                 "¿Usar tabla cargada?",
                 f"Ya tienes un archivo cargado con {len(self.df)} filas.\n\n"
                 "¿Usar esos datos para el lote por orden?\n\n"
                 "• Sí → usa la tabla actual\n"
                 "• No → selecciona un Excel nuevo")
 
-        if use_loaded is None:   # usuario cerró el diálogo con X → cancelar
+        if use_loaded is None:   # X presionada → cancelar completamente
             return
         if use_loaded:
             batch_df = self.df.copy()
