@@ -2180,6 +2180,8 @@ class MetaTagApp(tk.Tk):
                 "• Sí → usa la tabla actual\n"
                 "• No → selecciona un Excel nuevo")
 
+        if use_loaded is None:   # usuario cerró el diálogo con X → cancelar
+            return
         if use_loaded:
             batch_df = self.df.copy()
         else:
@@ -2310,6 +2312,7 @@ class MetaTagApp(tk.Tk):
                                fg=C["text"], font=FONTS["LABEL"], relief="flat",
                                cursor="hand2", command=on_cancel)
         btn_cancel.pack(pady=(0, 8))
+        prog_win.protocol("WM_DELETE_WINDOW", on_cancel)
 
         def worker():
             nonlocal ok_count, errors
@@ -2569,6 +2572,7 @@ class MetaTagApp(tk.Tk):
                   font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
                   activebackground=S["accent_hover"],
                   command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
+        win.protocol("WM_DELETE_WINDOW", on_cancel)
 
         self.wait_window(win)
         return result[0]
@@ -2707,6 +2711,7 @@ class MetaTagApp(tk.Tk):
                   font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
                   activebackground=S["accent_hover"],
                   command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
+        win.protocol("WM_DELETE_WINDOW", on_cancel)
 
         self.wait_window(win)
         return result[0]
