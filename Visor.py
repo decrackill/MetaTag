@@ -249,6 +249,29 @@ ZOOM_STEP = 1.18
 ZOOM_FIT = -1.0
 
 
+def _extract_meta_from_image(path):
+    """Lee metadatos JSON de una imagen (EXIF UserComment o PNG Comment)."""
+    try:
+        with Image.open(path) as img:
+            info = img.info
+            ext = Path(path).suffix.lower()
+            data = None
+            if ext in (".jpg", ".jpeg") and "exif" in info:
+                exif_d = piexif.load(info["exif"])
+                uc = exif_d.get("Exif", {}).get(piexif.ExifIFD.UserComment)
+                if uc:
+                    data = json.loads(piexif.helper.UserComment.load(uc))
+            elif ext == ".png":
+                c = getattr(img, "text", {}).get("Comment", "")
+                if c:
+                    data = json.loads(c)
+            if data and isinstance(data, dict):
+                return {k: str(v) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+
 # ══════════════════════════════════════════════════════════════════
 #  CLASE PRINCIPAL DEL VISOR
 # ══════════════════════════════════════════════════════════════════
@@ -1426,106 +1449,108 @@ class VisorApp(tk.Tk):
             return min((cw - 4) / self._pil_image.width, (ch - 4) / self._pil_image.height)
         return self._zoom_level if self._zoom_level != ZOOM_FIT else 1.0
 
-    def _redraw_zoom(self, final_pass: bool = False):
-        """
-        El núcleo gráfico del Visor.
-        Calcula qué parte de la imagen choca con la ventana (Viewport) y SOLO 
-        recorta, reescala y dibuja ese pedazo. Previene congelamientos.
-        """
-        if not self._pil_image: return
+    def _calc_viewport(self):
+        """Calcula qué parte de la imagen es visible en el canvas. Devuelve dict o None."""
+        if not self._pil_image:
+            return None
 
-        # Cancelamos hilos obsoletos incrementando el generador
         self._render_gen += 1
-        current_gen = self._render_gen
-        
         z = self._current_zoom_value()
-        
+
         canvas_w = self.img_canvas.winfo_width()
         canvas_h = self.img_canvas.winfo_height()
-        
-        # Precaución si la UI aún no ha dibujado
-        if canvas_w < 10 or canvas_h < 10: 
+        if canvas_w < 10 or canvas_h < 10:
             canvas_w, canvas_h = 800, 600
 
-        # Punto central desplazado por el paneo
         center_x = canvas_w // 2 + int(self._pan_offset[0])
         center_y = canvas_h // 2 + int(self._pan_offset[1])
-        
+
         img_w, img_h = self._pil_image.size
-        
-        # Dimensiones que tendría la imagen completa
         scaled_full_w = img_w * z
         scaled_full_h = img_h * z
 
-        # 1. Bounding box de la imagen completa en el canvas virtual
         img_cx0 = center_x - scaled_full_w / 2
         img_cy0 = center_y - scaled_full_h / 2
-        
-        # 2. Intersección entre la Imagen Virtual y el Canvas Físico (Viewport)
+
         viewport_x0 = max(0, img_cx0)
         viewport_y0 = max(0, img_cy0)
         viewport_x1 = min(canvas_w, img_cx0 + scaled_full_w)
         viewport_y1 = min(canvas_h, img_cy0 + scaled_full_h)
 
-        # Si la imagen está fuera de pantalla, borrar
         if viewport_x1 <= viewport_x0 or viewport_y1 <= viewport_y0:
-            self.img_canvas.delete("img")
-            return
+            return None
 
-        # 3. Mapear ese pedazo visible (pantalla) hacia los píxeles de la imagen original
         orig_x0 = int((viewport_x0 - img_cx0) / z)
         orig_y0 = int((viewport_y0 - img_cy0) / z)
         orig_x1 = int((viewport_x1 - img_cx0) / z)
         orig_y1 = int((viewport_y1 - img_cy0) / z)
 
-        # Limitar bordes
         orig_x0, orig_y0 = max(0, min(img_w, orig_x0)), max(0, min(img_h, orig_y0))
         orig_x1, orig_y1 = max(0, min(img_w, orig_x1)), max(0, min(img_h, orig_y1))
 
-        if orig_x1 <= orig_x0 or orig_y1 <= orig_y0: return
-        
-        # Tamaño final del recorte escalado
+        if orig_x1 <= orig_x0 or orig_y1 <= orig_y0:
+            return None
+
         crop_render_w = int((orig_x1 - orig_x0) * z)
         crop_render_h = int((orig_y1 - orig_y0) * z)
-        
-        if crop_render_w < 1 or crop_render_h < 1: return
+        if crop_render_w < 1 or crop_render_h < 1:
+            return None
 
-        # Punto donde anclaremos el recorte en el canvas
-        place_x = viewport_x0 + (viewport_x1 - viewport_x0) / 2
-        place_y = viewport_y0 + (viewport_y1 - viewport_y0) / 2
+        return {
+            "orig_x0": orig_x0, "orig_y0": orig_y0,
+            "orig_x1": orig_x1, "orig_y1": orig_y1,
+            "crop_render_w": crop_render_w, "crop_render_h": crop_render_h,
+            "place_x": viewport_x0 + (viewport_x1 - viewport_x0) / 2,
+            "place_y": viewport_y0 + (viewport_y1 - viewport_y0) / 2,
+            "gen": self._render_gen,
+        }
 
-        if final_pass:
-            # ── PASO FINAL: Render de Alta Calidad (LANCZOS) en hilo secundario ──
-            def _do_lanczos_thread():
-                if current_gen != self._render_gen: return # Si el usuario movió, abortar
-                try:
-                    crop = self._pil_image.crop((orig_x0, orig_y0, orig_x1, orig_y1))
-                    scaled = crop.resize((crop_render_w, crop_render_h), Image.LANCZOS)
-                    
-                    if current_gen != self._render_gen: return # Comprobar de nuevo tras proceso pesado
-                    
-                    # ImageTk.PhotoImage solo puede crearse en el hilo principal
-                    self.after(0, lambda s=scaled: self._apply_zoom_image_safely(
-                        ImageTk.PhotoImage(s), place_x, place_y, current_gen))
-                except Exception:
-                    pass
-                    
-            threading.Thread(target=_do_lanczos_thread, daemon=True).start()
-            
-        else:
-            # ── PASO BORRADOR: Rápido (NEAREST) mientras arrastramos ──
+    def _render_draft(self, vp):
+        """Render rápido (NEAREST) mientras el usuario arrastra."""
+        try:
+            crop = self._pil_image.crop((vp["orig_x0"], vp["orig_y0"],
+                                          vp["orig_x1"], vp["orig_y1"]))
+            draft = crop.resize((vp["crop_render_w"], vp["crop_render_h"]), Image.NEAREST)
+            self._zoom_img_tk_draft = ImageTk.PhotoImage(draft)
+            self.img_canvas.delete("img")
+            self.img_canvas.create_image(
+                vp["place_x"], vp["place_y"], anchor="center",
+                image=self._zoom_img_tk_draft, tags="img")
+        except Exception:
+            pass
+
+    def _schedule_lanczos(self, vp):
+        """Lanza hilo LANCZOS de alta calidad para el viewport calculado."""
+        current_gen = vp["gen"]
+
+        def _do_lanczos_thread():
+            if current_gen != self._render_gen:
+                return
             try:
-                crop = self._pil_image.crop((orig_x0, orig_y0, orig_x1, orig_y1))
-                draft = crop.resize((crop_render_w, crop_render_h), Image.NEAREST)
-                self._zoom_img_tk_draft = ImageTk.PhotoImage(draft)
-                
-                self.img_canvas.delete("img")
-                self.img_canvas.create_image(
-                    place_x, place_y, anchor="center", 
-                    image=self._zoom_img_tk_draft, tags="img"
-                )
+                crop = self._pil_image.crop((vp["orig_x0"], vp["orig_y0"],
+                                              vp["orig_x1"], vp["orig_y1"]))
+                scaled = crop.resize((vp["crop_render_w"], vp["crop_render_h"]),
+                                     Image.LANCZOS)
+                if current_gen != self._render_gen:
+                    return
+                self.after(0, lambda s=scaled: self._apply_zoom_image_safely(
+                    ImageTk.PhotoImage(s), vp["place_x"], vp["place_y"], current_gen))
             except Exception:
                 pass
+
+        threading.Thread(target=_do_lanczos_thread, daemon=True).start()
+
+    def _redraw_zoom(self, final_pass: bool = False):
+        """El núcleo gráfico del Visor. Calcula viewport y renderiza."""
+        vp = self._calc_viewport()
+        if vp is None:
+            self.img_canvas.delete("img")
+            return
+
+        if final_pass:
+            self._schedule_lanczos(vp)
+        else:
+            self._render_draft(vp)
 
             # Programamos el paso final
             if self._zoom_debounce_job:
@@ -2021,27 +2046,6 @@ class VisorApp(tk.Tk):
 
         def worker():
             try:
-                def extract_meta(path):
-                    try:
-                        with Image.open(path) as img:
-                            info = img.info
-                            ext = Path(path).suffix.lower()
-                            data = None
-                            if ext in (".jpg", ".jpeg") and "exif" in info:
-                                exif_d = piexif.load(info["exif"])
-                                uc = exif_d.get("Exif", {}).get(piexif.ExifIFD.UserComment)
-                                if uc:
-                                    data = json.loads(piexif.helper.UserComment.load(uc))
-                            elif ext == ".png":
-                                c = getattr(img, "text", {}).get("Comment", "")
-                                if c:
-                                    data = json.loads(c)
-                            if data and isinstance(data, dict):
-                                return {k: str(v) for k, v in data.items()}
-                    except Exception:
-                        pass
-                    return {}
-
                 doc = SimpleDocTemplate(
                     output_path, pagesize=A4,
                     topMargin=1.5*cm, bottomMargin=1.5*cm,
@@ -2085,8 +2089,8 @@ class VisorApp(tk.Tk):
                         return
                     self.after(0, update_prog, (i + 0.5) / total, f"Analizando imagen {i+1}/{total}...")
 
-                    meta_a = extract_meta(imgs_a[i])
-                    meta_b = extract_meta(imgs_b[i])
+                    meta_a = _extract_meta_from_image(imgs_a[i])
+                    meta_b = _extract_meta_from_image(imgs_b[i])
                     all_pair_data.append((imgs_a[i], imgs_b[i], meta_a, meta_b))
 
                     keys_a, keys_b = set(meta_a), set(meta_b)

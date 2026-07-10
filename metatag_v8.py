@@ -1506,65 +1506,42 @@ class MetaTagApp(tk.Tk):
         self.status_var.set(f"✓ Excel reordenado según imágenes ({len(self.grid.df)} filas)")
         self._log(f"✓ Excel reordenado según orden de imágenes\n", "ok")
 
-    def _sync_images_to_excel(self):
-        """
-        Hace que las imágenes en el explorador sigan EXACTAMENTE el orden
-        de filas que ya tiene el Excel cargado — sin reordenar ni una sola
-        fila del Excel. Usa matching EXACTO primero (nombre de archivo
-        idéntico o stem idéntico) para evitar que la búsqueda tolerante
-        haga que dos filas distintas colisionen en la misma imagen.
-        Solo si el matching exacto falla, intenta la búsqueda tolerante
-        de _find_image, marcando esos casos como "aproximados" en el log.
-        """
-        if self.grid.df is None:
-            return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
-        folder = self.img_folder_var.get()
-        if not folder or not os.path.isdir(folder):
-            return messagebox.showwarning("Sin carpeta", "Selecciona la carpeta de imágenes.")
-
-        img_col = self.img_col_var.get()
-        if not img_col or img_col not in self.grid.df.columns:
-            return messagebox.showwarning("Sin columna de imagen",
-                "Selecciona la columna de imagen en la herramienta principal.")
-
-        df_actual = self.grid.df
-
-        # ── Índice de archivos en disco, por nombre exacto y por stem ──
+    def _build_file_index(self, folder):
+        """Construye índices de archivos en disco para matching rápido."""
         all_files = [f for f in Path(folder).iterdir()
                      if f.is_file() and f.suffix.lower() in IMG_EXTS]
         by_exact_name = {f.name.lower(): f for f in all_files}
-        by_stem: dict = {}
+        by_stem = {}
         for f in all_files:
             key = self._safe_stem(f.name).lower()
             by_stem.setdefault(key, []).append(f)
+        return all_files, by_exact_name, by_stem
 
-        ordered_files     = []
-        used_files        = set()     # rutas ya asignadas a una fila (evita colisiones)
-        no_encontradas    = []
-        matches_aprox     = []        # filas que solo encontraron match por tolerancia
+    def _match_rows_to_files(self, df, img_col, all_files, by_exact_name, by_stem, folder):
+        """Empareja filas del Excel con archivos en disco. Devuelve (ordered, aprox, missing)."""
+        ordered_files = []
+        used_files = set()
+        matches_aprox = []
+        no_encontradas = []
 
-        for ri in range(len(df_actual)):
-            val = str(df_actual.iloc[ri][img_col]).strip()
+        for ri in range(len(df)):
+            val = str(df.iloc[ri][img_col]).strip()
             if not val or val.lower() in ("nan", "none", ""):
                 continue
 
             found_path = None
 
-            # 1) Coincidencia EXACTA por nombre completo
             cand = by_exact_name.get(val.lower())
             if cand and cand not in used_files:
                 found_path = cand
 
-            # 2) Coincidencia EXACTA por stem (sin extensión de imagen)
             if found_path is None:
                 stem = self._safe_stem(val).lower()
-                candidates = by_stem.get(stem, [])
-                for cand in candidates:
+                for cand in by_stem.get(stem, []):
                     if cand not in used_files:
                         found_path = cand
                         break
 
-            # 3) Solo si lo anterior falló, usar la búsqueda tolerante
             if found_path is None:
                 approx = self._find_image(val, folder)
                 if approx:
@@ -1579,16 +1556,39 @@ class MetaTagApp(tk.Tk):
             else:
                 no_encontradas.append(val)
 
+        return ordered_files, matches_aprox, no_encontradas, used_files
+
+    def _sync_images_to_excel(self):
+        """
+        Hace que las imágenes en el explorador sigan EXACTAMENTE el orden
+        de filas que ya tiene el Excel cargado — sin reordenar ni una sola
+        fila del Excel.
+        """
+        if self.grid.df is None:
+            return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
+        folder = self.img_folder_var.get()
+        if not folder or not os.path.isdir(folder):
+            return messagebox.showwarning("Sin carpeta", "Selecciona la carpeta de imágenes.")
+
+        img_col = self.img_col_var.get()
+        if not img_col or img_col not in self.grid.df.columns:
+            return messagebox.showwarning("Sin columna de imagen",
+                "Selecciona la columna de imagen en la herramienta principal.")
+
+        df_actual = self.grid.df
+
+        all_files, by_exact_name, by_stem = self._build_file_index(folder)
+        ordered_files, matches_aprox, no_encontradas, used_files = \
+            self._match_rows_to_files(df_actual, img_col, all_files, by_exact_name, by_stem, folder)
+
         if not ordered_files:
             return messagebox.showwarning("Sin coincidencias",
                 "No se encontró ninguna imagen que coincida con la columna seleccionada.")
 
-        # ── Imágenes huérfanas: existen en disco pero NUNCA fueron asignadas ──
         huerfanas = sorted(
             [f for f in all_files if f not in used_files],
             key=lambda p: p.name.lower())
 
-        # Construir razón explicativa por cada huérfana
         orphan_reasons = {}
         no_encontradas_set = {self._full_stem(v).lower() for v in no_encontradas}
         for f in huerfanas:
@@ -1862,6 +1862,74 @@ class MetaTagApp(tk.Tk):
         self.wait_window(dlg)
         return result[0]
 
+    def _batch_worker(self, img_files, batch_df, meta_cols, sort_mode,
+                      total, start_idx, omit_empty, organizado,
+                      update_ui, cancelled, progress_file, prog_win):
+        """Hilo de escritura de metadatos en lote."""
+        ok_count = 0
+        errors = []
+
+        for i in range(start_idx, total):
+            if cancelled.is_set():
+                break
+            img_path = img_files[i]
+            row      = batch_df.iloc[i]
+
+            meta = {}
+            for col in meta_cols:
+                val = str(row[col]).strip()
+                if val.lower() in ("nan", "none", ""): val = ""
+                if omit_empty and not val: continue
+                meta[col] = val
+
+            for col in self.locked_columns:
+                if col in batch_df.columns and col not in meta:
+                    val = str(row[col]).strip()
+                    if val.lower() in ("nan", "none", ""): val = ""
+                    if omit_empty and not val: continue
+                    meta[col] = val
+
+            if not meta:
+                if (i + 1) % 5 == 0 or (i + 1) == total:
+                    self.after(0, update_ui, i + 1, img_path.name)
+                continue
+
+            out_path = self.output_folder / img_path.name
+            try:
+                divergencias = self._check_metadata_divergence(str(img_path), meta)
+                if divergencias and (i + 1) % 5 == 0:
+                    self._log(
+                        f"  ⚠ {img_path.name}: divergencia detectada y corregida\n", "warn")
+                shutil.copy2(str(img_path), str(out_path))
+                self._write_meta(str(out_path), meta, organizado)
+                ok_count += 1
+            except Exception as e:
+                errors.append(f"[{img_path.name}]: {e}")
+
+            if (i + 1) % 5 == 0 or (i + 1) == total:
+                self.after(0, update_ui, i + 1, img_path.name)
+
+            if (i + 1) % 10 == 0:
+                progress_data = {
+                    "total": total, "done": i + 1, "ok": ok_count,
+                    "errors": errors, "excel": str(self.csv_path_var.get()),
+                    "sort": sort_mode, "meta_cols": meta_cols,
+                }
+                progress_file.write_text(
+                    json.dumps(progress_data, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+
+        progress_data = {
+            "total": total, "done": total, "ok": ok_count,
+            "errors": errors, "excel": str(self.csv_path_var.get()),
+            "sort": sort_mode, "meta_cols": meta_cols,
+        }
+        progress_file.write_text(
+            json.dumps(progress_data, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+
+        return ok_count, errors
+
     def _batch_write_by_order(self):
         """Abre diálogos para seleccionar Excel y carpeta, y escribe metadatos por posición."""
         if not PIL_OK:
@@ -2012,68 +2080,10 @@ class MetaTagApp(tk.Tk):
         prog_win.protocol("WM_DELETE_WINDOW", on_cancel)
 
         def worker():
-            nonlocal ok_count, errors
-
-            for i in range(start_idx, total):
-                if cancelled.is_set():
-                    break
-                img_path = img_files[i]
-                row      = batch_df.iloc[i]
-
-                meta = {}
-                for col in meta_cols:
-                    val = str(row[col]).strip()
-                    if val.lower() in ("nan", "none", ""): val = ""
-                    if omit_empty and not val: continue
-                    meta[col] = val
-
-                for col in self.locked_columns:
-                    if col in batch_df.columns and col not in meta:
-                        val = str(row[col]).strip()
-                        if val.lower() in ("nan", "none", ""): val = ""
-                        if omit_empty and not val: continue
-                        meta[col] = val
-
-                if not meta:
-                    if (i + 1) % 5 == 0 or (i + 1) == total:
-                        self.after(0, update_ui, i + 1, img_path.name)
-                    continue
-
-                out_path = self.output_folder / img_path.name
-                try:
-                    divergencias = self._check_metadata_divergence(str(img_path), meta)
-                    if divergencias and (i + 1) % 5 == 0:
-                        self._log(
-                            f"  ⚠ {img_path.name}: divergencia detectada y corregida\n", "warn")
-                    shutil.copy2(str(img_path), str(out_path))
-                    self._write_meta(str(out_path), meta, organizado)
-                    ok_count += 1
-                except Exception as e:
-                    errors.append(f"[{img_path.name}]: {e}")
-
-                if (i + 1) % 5 == 0 or (i + 1) == total:
-                    self.after(0, update_ui, i + 1, img_path.name)
-
-                # ── Guardar progreso cada 10 fotos ──
-                if (i + 1) % 10 == 0:
-                    progress_data = {
-                        "total": total, "done": i + 1, "ok": ok_count,
-                        "errors": errors, "excel": str(self.csv_path_var.get()),
-                        "sort": sort_mode, "meta_cols": meta_cols,
-                    }
-                    progress_file.write_text(
-                        json.dumps(progress_data, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
-
-            # Guardar progreso final
-            progress_data = {
-                "total": total, "done": total, "ok": ok_count,
-                "errors": errors, "excel": str(self.csv_path_var.get()),
-                "sort": sort_mode, "meta_cols": meta_cols,
-            }
-            progress_file.write_text(
-                json.dumps(progress_data, ensure_ascii=False, indent=2),
-                encoding="utf-8")
+            ok_count, errors = self._batch_worker(
+                img_files, batch_df, meta_cols, sort_mode,
+                total, start_idx, omit_empty, organizado,
+                update_ui, cancelled, progress_file, prog_win)
 
             def finish():
                 if cancelled.is_set():
