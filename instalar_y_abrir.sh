@@ -51,6 +51,13 @@ echo ""
 echo "  Todo listo. Abriendo MetaTag..."
 echo ""
 
-# Abrir MetaTag
-nohup "$PY" "$SCRIPT_DIR/metatag_v8.py" > /dev/null 2>&1 &
-exit 0
+# Ejecutar MetaTag en primer plano (la terminal se cierra cuando cierres la app)
+"$PY" "$SCRIPT_DIR/metatag_v8.py"
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "  [ERROR] MetaTag terminó con error (código $EXIT_CODE)."
+    echo ""
+fi
+read -p "  Presiona Enter para cerrar..."
