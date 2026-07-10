@@ -897,20 +897,9 @@ class VisorApp(tk.Tk):
     #  CARGA DE IMAGEN PRINCIPAL
     # ─────────────────────────────────────────────────────────────
     def load_image(self, path: str):
-        """Carga la imagen, actualiza la información y dispara la extracción de metadatos."""
-        
-        # --- SEMÁFORO ANTI-TRABA (THROTTLE) ---
-        if getattr(self, "_is_loading", False):
-            self._pending_image = path
-            return
-
-        self._is_loading = True
-        self._pending_image = None
-        # --------------------------------------
-
+        """Carga la imagen visual al instante y extrae metadatos en segundo plano."""
         if not PIL_OK: 
             messagebox.showerror("Error", "Faltan dependencias. Ejecuta: pip install pillow piexif")
-            self._is_loading = False
             return
             
         self._hide_welcome()
@@ -920,21 +909,21 @@ class VisorApp(tk.Tk):
         self._zoom_level = ZOOM_FIT
         self._pan_offset = [0, 0]
 
-        # Limpiar memoria de la imagen anterior
-        self._pil_image = None
-        self._zoom_img_tk = None
-        gc.collect()
-
         try:
-            # Abrir y corregir orientación EXIF automáticamente
+            # Limpiar memoria de la imagen anterior
+            self._pil_image = None
+            self._zoom_img_tk = None
+            gc.collect()
+
+            # Abrir y corregir orientación EXIF automáticamente (rápido)
             raw_img = Image.open(path)
             img = ImageOps.exif_transpose(raw_img)
             self._pil_image = img.copy()
             
-            # Dar tiempo al canvas para calcular dimensiones antes del primer render
-            self.after(30, self._redraw_zoom)
+            # Renderizar la imagen inmediatamente
+            self.after(10, self._redraw_zoom)
             
-            # Actualizar tarjeta de información
+            # Actualizar tarjeta de información básica
             kb = os.path.getsize(path) / 1024
             info_text = (
                 f"📄 {Path(path).name}\n"
@@ -953,21 +942,54 @@ class VisorApp(tk.Tk):
             self._pil_image = None
             self.lbl_info.configure(text="Error de lectura de archivo.")
 
-        # Iniciar motor de extracción
-        self._extract_all_metadata(path)
-        self._filter_tree()
         self.title(f"⬡ MetaTag Visor v9 — {Path(path).name}")
 
-        # --- FIN DEL SEMÁFORO ---
-        self._is_loading = False
+        # Extraer metadatos en segundo plano
+        self._active_metadata_thread = threading.Thread(
+            target=self._extract_metadata_threaded, 
+            args=(path,), 
+            daemon=True
+        )
+        self._active_metadata_thread.start()
+
+    def _extract_metadata_threaded(self, path):
+        """Ejecuta la extracción pesada de EXIF/GPS sin congelar la interfaz."""
+        temp_list = []
         
-        if self._pending_image and self._pending_image != path:
-            self.load_image(self._pending_image)
+        original_list = self.all_metadata
+        self.all_metadata = temp_list
+        
+        try:
+            with Image.open(path) as img:
+                info_dict = img.info
+                
+                temp_list.append(("header", "json", "🏺  DATOS ARQUEOLÓGICOS (JSON)"))
+                self._extract_json(img, info_dict)
+                
+                temp_list.append(("header", "exif", "📸  CONFIGURACIÓN CÁMARA (EXIF)"))
+                self._extract_exif(info_dict)
+                
+                temp_list.append(("header", "gps", "🌍  UBICACIÓN (GPS)"))
+                self._extract_gps(info_dict)
+                
+                temp_list.append(("header", "file", "📄  INFO ARCHIVO SO"))
+                temp_list.extend([
+                    ("file_val", "Nombre del Archivo", Path(path).name),
+                    ("file_val", "Ubicación del Directorio", str(Path(path).parent)),
+                    ("file_val", "Peso Total", f"{os.path.getsize(path)/1024:.1f} KB")
+                ])
+        except Exception as e:
+            logging.error(f"Error en hilo de metadatos: {e}", exc_info=True)
+            
+        self.all_metadata = original_list
+        
+        if getattr(self, "_active_metadata_thread", None) == threading.current_thread():
+            self.after(0, lambda: self._apply_extracted_metadata(temp_list))
 
-        # Iniciar motor de extracción
-        self._extract_all_metadata(path)
+    def _apply_extracted_metadata(self, metadata_list):
+        """Actualiza la tabla de la UI con los datos extraídos en segundo plano."""
+        self.all_metadata = metadata_list
         self._filter_tree()
-        self.title(f"⬡ MetaTag Visor v9 — {Path(path).name}")
 
     # ─────────────────────────────────────────────────────────────
     #  MOTOR DE EXTRACCIÓN DE METADATOS
