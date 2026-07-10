@@ -894,100 +894,94 @@ class VisorApp(tk.Tk):
 
 
     # ─────────────────────────────────────────────────────────────
-    #  CARGA DE IMAGEN PRINCIPAL
+    #  CARGA DE IMAGEN PRINCIPAL (100% EN SEGUNDO PLANO)
     # ─────────────────────────────────────────────────────────────
     def load_image(self, path: str):
-        """Carga la imagen visual al instante y extrae metadatos en segundo plano."""
+        """Inicia la carga en segundo plano. La UI no se congela."""
         if not PIL_OK: 
             messagebox.showerror("Error", "Faltan dependencias. Ejecuta: pip install pillow piexif")
             return
             
         self._hide_welcome()
         self.current_path = path
-        
-        # Resetear variables de zoom
+        self.title(f"⬡ MetaTag Visor v9 — {Path(path).name}")
+
+        self._render_gen += 1
+        gen = self._render_gen
+
+        self._pil_image = None
+        self._zoom_img_tk = None
         self._zoom_level = ZOOM_FIT
         self._pan_offset = [0, 0]
 
-        try:
-            # Limpiar memoria de la imagen anterior
-            self._pil_image = None
-            self._zoom_img_tk = None
-            gc.collect()
+        threading.Thread(
+            target=self._process_image_thread, 
+            args=(path, gen), 
+            daemon=True
+        ).start()
 
-            # Abrir y corregir orientación EXIF automáticamente (rápido)
+    def _process_image_thread(self, path, gen):
+        """Hilo en segundo plano: lee del disco, descomprime y extrae metadatos."""
+        try:
             raw_img = Image.open(path)
             img = ImageOps.exif_transpose(raw_img)
-            self._pil_image = img.copy()
             
-            # Renderizar la imagen inmediatamente
-            self.after(10, self._redraw_zoom)
+            if gen != self._render_gen:
+                return
+
+            self.after(0, lambda: self._apply_image_to_ui(img, path, gen))
+
+            temp_list = []
+            original_list = self.all_metadata
+            self.all_metadata = temp_list
             
-            # Actualizar tarjeta de información básica
-            kb = os.path.getsize(path) / 1024
-            info_text = (
-                f"📄 {Path(path).name}\n"
-                f"📁 {Path(path).parent.name}\n\n"
-                f"⚖  {kb:.1f} KB   |   📐 {img.size[0]}×{img.size[1]} px\n"
-                f"🎨 Formato: {img.format or '—'}  |  Modo: {img.mode}"
-            )
-            self.lbl_info.configure(text=info_text)
+            info_dict = raw_img.info
             
+            temp_list.append(("header", "json", "🏺  DATOS ARQUEOLÓGICOS (JSON)"))
+            self._extract_json(raw_img, info_dict)
+            
+            temp_list.append(("header", "exif", "📸  CONFIGURACIÓN CÁMARA (EXIF)"))
+            self._extract_exif(info_dict)
+            
+            temp_list.append(("header", "gps", "🌍  UBICACIÓN (GPS)"))
+            self._extract_gps(info_dict)
+            
+            temp_list.append(("header", "file", "📄  INFO ARCHIVO SO"))
+            temp_list.extend([
+                ("file_val", "Nombre del Archivo", Path(path).name),
+                ("file_val", "Ubicación del Directorio", str(Path(path).parent)),
+                ("file_val", "Peso Total", f"{os.path.getsize(path)/1024:.1f} KB")
+            ])
+            
+            self.all_metadata = original_list
+            
+            if gen == self._render_gen:
+                self.after(0, lambda: self._apply_extracted_metadata(temp_list))
+
         except Exception as e:
-            self.img_canvas.delete("all")
-            self.img_canvas.create_text(
-                200, 150, text=f"Error cargando la imagen:\n{e}", 
-                fill=C["err"], font=F_BODY, justify="center"
-            )
-            self._pil_image = None
-            self.lbl_info.configure(text="Error de lectura de archivo.")
+            logging.error(f"Error en hilo de imagen/metadatos: {e}", exc_info=True)
+            if gen == self._render_gen:
+                self.after(0, lambda: self.lbl_info.configure(text="Error de lectura de archivo."))
 
-        self.title(f"⬡ MetaTag Visor v9 — {Path(path).name}")
+    def _apply_image_to_ui(self, img, path, gen):
+        """Pinta la imagen en pantalla inmediatamente después de ser leída."""
+        if gen != self._render_gen:
+            return
 
-        # Extraer metadatos en segundo plano
-        self._active_metadata_thread = threading.Thread(
-            target=self._extract_metadata_threaded, 
-            args=(path,), 
-            daemon=True
+        self._pil_image = img
+        self._redraw_zoom()
+        
+        kb = os.path.getsize(path) / 1024
+        info_text = (
+            f"📄 {Path(path).name}\n"
+            f"📁 {Path(path).parent.name}\n\n"
+            f"⚖  {kb:.1f} KB   |   📐 {img.size[0]}×{img.size[1]} px\n"
+            f"🎨 Formato: {img.format or '—'}  |  Modo: {img.mode}"
         )
-        self._active_metadata_thread.start()
-
-    def _extract_metadata_threaded(self, path):
-        """Ejecuta la extracción pesada de EXIF/GPS sin congelar la interfaz."""
-        temp_list = []
-        
-        original_list = self.all_metadata
-        self.all_metadata = temp_list
-        
-        try:
-            with Image.open(path) as img:
-                info_dict = img.info
-                
-                temp_list.append(("header", "json", "🏺  DATOS ARQUEOLÓGICOS (JSON)"))
-                self._extract_json(img, info_dict)
-                
-                temp_list.append(("header", "exif", "📸  CONFIGURACIÓN CÁMARA (EXIF)"))
-                self._extract_exif(info_dict)
-                
-                temp_list.append(("header", "gps", "🌍  UBICACIÓN (GPS)"))
-                self._extract_gps(info_dict)
-                
-                temp_list.append(("header", "file", "📄  INFO ARCHIVO SO"))
-                temp_list.extend([
-                    ("file_val", "Nombre del Archivo", Path(path).name),
-                    ("file_val", "Ubicación del Directorio", str(Path(path).parent)),
-                    ("file_val", "Peso Total", f"{os.path.getsize(path)/1024:.1f} KB")
-                ])
-        except Exception as e:
-            logging.error(f"Error en hilo de metadatos: {e}", exc_info=True)
-            
-        self.all_metadata = original_list
-        
-        if getattr(self, "_active_metadata_thread", None) == threading.current_thread():
-            self.after(0, lambda: self._apply_extracted_metadata(temp_list))
+        self.lbl_info.configure(text=info_text)
 
     def _apply_extracted_metadata(self, metadata_list):
-        """Actualiza la tabla de la UI con los datos extraídos en segundo plano."""
+        """Actualiza la tabla de la UI con los datos extraídos."""
         self.all_metadata = metadata_list
         self._filter_tree()
 
