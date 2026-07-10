@@ -58,6 +58,52 @@ def _native_file_save(title="Guardar archivo", initialdir="", initialfile="",
         defaultextension=default_ext, filetypes=tk_filetypes or [])
 
 
+def _place_labels_clean(items, side, wedges, ax, colors_cycle, S_CARD, S_BORDER, S_TEXT):
+    if not items:
+        return
+    ordered = sorted(items, key=lambda x: -x[0])
+    n = len(ordered)
+
+    y_top  =  1.15
+    y_bot  = -1.15
+    step   = (y_top - y_bot) / max(n, 1)
+    total_h = step * (n - 1)
+    y_start = (y_top + y_bot) / 2.0 + total_h / 2.0
+
+    ys_placed = [y_start - k * step for k in range(n)]
+
+    x_col = -1.80 if side == "left" else 1.80
+    ha    = "right" if side == "left" else "left"
+    bbox  = dict(boxstyle="round,pad=0.28",
+                 fc=S_CARD, ec=S_BORDER, lw=0.7, alpha=0.90)
+
+    for k, (y_orig, label, xs_ang, idx_w, pct) in enumerate(ordered):
+        y_lbl = ys_placed[k]
+        ang_mid = ((wedges[idx_w].theta2 - wedges[idx_w].theta1)
+                   / 2.0 + wedges[idx_w].theta1)
+        r_arrow = 1.02
+        xa = r_arrow * np.cos(np.deg2rad(ang_mid))
+        ya = r_arrow * np.sin(np.deg2rad(ang_mid))
+        wedge_color = colors_cycle[idx_w % len(colors_cycle)]
+        ax.annotate(
+            label,
+            xy=(xa, ya),
+            xytext=(x_col, y_lbl),
+            horizontalalignment=ha,
+            fontsize=8,
+            color=S_TEXT,
+            arrowprops=dict(
+                arrowstyle="-",
+                color=wedge_color,
+                lw=1.0,
+                alpha=0.55,
+                shrinkA=0, shrinkB=4),
+            bbox=bbox,
+            va="center",
+            zorder=5,
+            annotation_clip=False)
+
+
 def show_stats(parent, df, img_col_var, current_scale, C, FONTS):
     """
     Abre la ventana de estadísticas / gráficas.
@@ -194,13 +240,15 @@ def show_stats(parent, df, img_col_var, current_scale, C, FONTS):
             m.deiconify()
 
         def _close_popup(e=None):
-            if popup_ref[0] and popup_ref[0].winfo_exists():
+            focused = win.focus_get()
+            if focused and popup_ref[0] and popup_ref[0].winfo_exists():
+                if popup_ref[0] in [focused, *popup_ref[0].winfo_children()]:
+                    return
                 popup_ref[0].destroy()
                 popup_ref[0] = None
 
         win.bind("<FocusOut>",  _close_popup, add="+")
         win.bind("<Unmap>",     _close_popup, add="+")
-        win.bind("<Configure>", _close_popup, add="+")
 
         for w in (inner, display, arrow):
             w.bind("<Button-1>", toggle)
@@ -378,53 +426,8 @@ def show_stats(parent, df, img_col_var, current_scale, C, FONTS):
                 else:
                     right_items.append((ys_ang, label, xs_ang, i, pct))
 
-            def place_labels_clean(items, side):
-                if not items:
-                    return
-                ordered = sorted(items, key=lambda x: -x[0])
-                n = len(ordered)
-
-                y_top  =  1.15
-                y_bot  = -1.15
-                step   = (y_top - y_bot) / max(n, 1)
-                total_h = step * (n - 1)
-                y_start = (y_top + y_bot) / 2.0 + total_h / 2.0
-
-                ys_placed = [y_start - k * step for k in range(n)]
-
-                x_col = -1.80 if side == "left" else 1.80
-                ha    = "right" if side == "left" else "left"
-                bbox  = dict(boxstyle="round,pad=0.28",
-                             fc=S_CARD, ec=S_BORDER, lw=0.7, alpha=0.90)
-
-                for k, (y_orig, label, xs_ang, idx_w, pct) in enumerate(ordered):
-                    y_lbl = ys_placed[k]
-                    ang_mid = ((wedges[idx_w].theta2 - wedges[idx_w].theta1)
-                               / 2.0 + wedges[idx_w].theta1)
-                    r_arrow = 1.02
-                    xa = r_arrow * np.cos(np.deg2rad(ang_mid))
-                    ya = r_arrow * np.sin(np.deg2rad(ang_mid))
-                    wedge_color = colors_cycle[idx_w % len(colors_cycle)]
-                    ax.annotate(
-                        label,
-                        xy=(xa, ya),
-                        xytext=(x_col, y_lbl),
-                        horizontalalignment=ha,
-                        fontsize=8,
-                        color=S_TEXT,
-                        arrowprops=dict(
-                            arrowstyle="-",
-                            color=wedge_color,
-                            lw=1.0,
-                            alpha=0.55,
-                            shrinkA=0, shrinkB=4),
-                        bbox=bbox,
-                        va="center",
-                        zorder=5,
-                        annotation_clip=False)
-
-            place_labels_clean(left_items,  "left")
-            place_labels_clean(right_items, "right")
+            _place_labels_clean(left_items,  "left",  wedges, ax, colors_cycle, S_CARD, S_BORDER, S_TEXT)
+            _place_labels_clean(right_items, "right", wedges, ax, colors_cycle, S_CARD, S_BORDER, S_TEXT)
 
             tk_chart_title.configure(text=f"Distribución de {col}")
 
@@ -681,5 +684,11 @@ def show_stats(parent, df, img_col_var, current_scale, C, FONTS):
     canvas_widget.mpl_connect("motion_notify_event", on_hover)
 
     update_chart()
-    combo_var.trace_add("write", update_chart)
-    chart_type_var.trace_add("write", update_chart)
+    _combo_trace_id = combo_var.trace_add("write", update_chart)
+    _chart_trace_id = chart_type_var.trace_add("write", update_chart)
+
+    def _on_close_stats():
+        combo_var.trace_remove("write", _combo_trace_id)
+        chart_type_var.trace_remove("write", _chart_trace_id)
+        win.destroy()
+    win.protocol("WM_DELETE_WINDOW", _on_close_stats)

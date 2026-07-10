@@ -1504,10 +1504,9 @@ class VisorApp(tk.Tk):
                     
                     if current_gen != self._render_gen: return # Comprobar de nuevo tras proceso pesado
                     
-                    tk_img = ImageTk.PhotoImage(scaled)
-                    
-                    # Llamar al hilo principal de UI de forma segura
-                    self.after(0, lambda: self._apply_zoom_image_safely(tk_img, place_x, place_y, current_gen))
+                    # ImageTk.PhotoImage solo puede crearse en el hilo principal
+                    self.after(0, lambda s=scaled: self._apply_zoom_image_safely(
+                        ImageTk.PhotoImage(s), place_x, place_y, current_gen))
                 except Exception:
                     pass
                     
@@ -1806,12 +1805,13 @@ class VisorApp(tk.Tk):
                   command=go_next).pack(side="left", padx=4, pady=6)
 
         # ── Generación para cancelar hilos obsoletos ──────────────
-        show_gen = [0]
+        show_gen = 0
 
         def show_current():
+            nonlocal show_gen
             update_counter()
-            show_gen[0] += 1
-            gen = show_gen[0]
+            show_gen += 1
+            gen = show_gen
 
             for p in panels:
                 imgs    = p["imgs"]
@@ -1842,7 +1842,7 @@ class VisorApp(tk.Tk):
                         img = ImageOps.exif_transpose(raw)
                         img = img.copy()
 
-                        if gen != show_gen[0]: return       # cancelado
+                        if gen != show_gen: return       # cancelado
 
                         w, h  = img.size
                         fmt   = raw.format or "—"
@@ -1854,7 +1854,7 @@ class VisorApp(tk.Tk):
                         tk_draft = ImageTk.PhotoImage(draft)
 
                         def _apply_draft(tk_draft=tk_draft, kb=kb, w=w, h=h, fmt=fmt):
-                            if gen != show_gen[0]: return
+                            if gen != show_gen: return
                             p["img_lbl"].configure(image=tk_draft, text="")
                             p["img_lbl"]._img_ref = tk_draft
                             p["info_lbl"].configure(
@@ -1868,7 +1868,7 @@ class VisorApp(tk.Tk):
                         tk_final = ImageTk.PhotoImage(final)
 
                         def _apply_final(tk_final=tk_final, kb=kb, w=w, h=h, fmt=fmt):
-                            if gen != show_gen[0]: return
+                            if gen != show_gen: return
                             p["img_lbl"].configure(image=tk_final, text="")
                             p["img_lbl"]._img_ref = tk_final
                             p["info_lbl"].configure(
@@ -1895,7 +1895,7 @@ class VisorApp(tk.Tk):
                             pass
 
                         def _apply_meta(meta=meta_local):
-                            if gen != show_gen[0]: return
+                            if gen != show_gen: return
                             p["tree"].delete(*p["tree"].get_children())
                             is_odd = True
                             for tag_type, key, val in meta:
@@ -1912,7 +1912,7 @@ class VisorApp(tk.Tk):
 
                     except Exception as e:
                         def _err(e=e):
-                            if gen != show_gen[0]: return
+                            if gen != show_gen: return
                             p["img_lbl"].configure(image="", text=f"Error: {e}")
                         win.after(0, _err)
 

@@ -2115,11 +2115,20 @@ class MetaTagApp(tk.Tk):
         win.grid_columnconfigure(0, weight=1)
 
         col_vars = {}
+        col_trace_ids = []
         result = [None]
+        def _cleanup_traces():
+            for var, tid in col_trace_ids:
+                try:
+                    var.trace_remove("write", tid)
+                except Exception:
+                    pass
         def on_ok():
+            _cleanup_traces()
             result[0] = [c for c, v in col_vars.items() if v.get()]
             win.destroy()
         def on_cancel():
+            _cleanup_traces()
             win.destroy()
         def select_all():
             for c, v in col_vars.items(): v.set(True)
@@ -2209,7 +2218,8 @@ class MetaTagApp(tk.Tk):
             row = tk.Frame(inner, bg=row_bg)
             row.pack(fill="x")
 
-            var.trace_add("write", lambda *_: _update_count())
+            _tid = var.trace_add("write", lambda *_: _update_count())
+            col_trace_ids.append((var, _tid))
 
             if is_img:
                 indicator = tk.Frame(row, bg=S["text3"], width=4)
@@ -2294,10 +2304,17 @@ class MetaTagApp(tk.Tk):
         ]
 
         result = [None]
+        def _cleanup_sort_trace():
+            try:
+                sort_var.trace_remove("write", _sort_trace_id)
+            except Exception:
+                pass
         def on_ok():
+            _cleanup_sort_trace()
             result[0] = sort_var.get()
             win.destroy()
         def on_cancel():
+            _cleanup_sort_trace()
             win.destroy()
 
         hdr = tk.Frame(win, bg=S["header_bg"])
@@ -2390,7 +2407,7 @@ class MetaTagApp(tk.Tk):
                     row.configure(bg=bg)
                     ind.configure(bg=S["accent"])
                     mark.configure(text="  ", fg=S["accent"])
-        sort_var.trace_add("write", _highlight_selected)
+        _sort_trace_id = sort_var.trace_add("write", _highlight_selected)
         _highlight_selected()
 
         sep = tk.Frame(win, bg=S["border"], height=1)
@@ -2404,7 +2421,11 @@ class MetaTagApp(tk.Tk):
                   font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
                   activebackground=S["accent_hover"],
                   command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
-        win.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        def _cleanup_and_close():
+            sort_var.trace_remove("write", _sort_trace_id)
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _cleanup_and_close)
 
         self.wait_window(win)
         return result[0]
