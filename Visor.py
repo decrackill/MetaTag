@@ -15,6 +15,7 @@ import datetime
 import threading
 import subprocess
 import logging
+import gc
 from pathlib import Path
 
 logging.basicConfig(
@@ -897,8 +898,19 @@ class VisorApp(tk.Tk):
     # ─────────────────────────────────────────────────────────────
     def load_image(self, path: str):
         """Carga la imagen, actualiza la información y dispara la extracción de metadatos."""
+        
+        # --- SEMÁFORO ANTI-TRABA (THROTTLE) ---
+        if getattr(self, "_is_loading", False):
+            self._pending_image = path
+            return
+
+        self._is_loading = True
+        self._pending_image = None
+        # --------------------------------------
+
         if not PIL_OK: 
             messagebox.showerror("Error", "Faltan dependencias. Ejecuta: pip install pillow piexif")
+            self._is_loading = False
             return
             
         self._hide_welcome()
@@ -907,6 +919,11 @@ class VisorApp(tk.Tk):
         # Resetear variables de zoom
         self._zoom_level = ZOOM_FIT
         self._pan_offset = [0, 0]
+
+        # Limpiar memoria de la imagen anterior
+        self._pil_image = None
+        self._zoom_img_tk = None
+        gc.collect()
 
         try:
             # Abrir y corregir orientación EXIF automáticamente
@@ -935,6 +952,17 @@ class VisorApp(tk.Tk):
             )
             self._pil_image = None
             self.lbl_info.configure(text="Error de lectura de archivo.")
+
+        # Iniciar motor de extracción
+        self._extract_all_metadata(path)
+        self._filter_tree()
+        self.title(f"⬡ MetaTag Visor v9 — {Path(path).name}")
+
+        # --- FIN DEL SEMÁFORO ---
+        self._is_loading = False
+        
+        if self._pending_image and self._pending_image != path:
+            self.load_image(self._pending_image)
 
         # Iniciar motor de extracción
         self._extract_all_metadata(path)
