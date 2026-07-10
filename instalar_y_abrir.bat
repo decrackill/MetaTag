@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title MetaTag v10.0 - Lanzador Profesional
+title MetaTag v8.9 - Lanzador Profesional
 
 set PROGRAMA=metatag_v8.py
-set VERSION=v10.0
+set VERSION=v8.9
 
 echo.
 echo  ============================================================
@@ -72,4 +72,4 @@ if %ERRORLEVEL% EQU 0 (
     start "" %PYTHON_CMD% "%~dp0%PROGRAMA%"
 )
 
-exit
+exit /b 0

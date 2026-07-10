@@ -6,7 +6,7 @@ PY="$VENV_DIR/bin/python3"
 PIP="$VENV_DIR/bin/pip"
 
 echo " ============================================================"
-echo "    MetaTag v10.0 - Instalador y Lanzador Linux"
+echo "    MetaTag v8.9 - Instalador y Lanzador Linux"
 echo " ============================================================"
 echo ""
 
@@ -53,3 +53,4 @@ echo ""
 
 # Abrir MetaTag
 nohup "$PY" "$SCRIPT_DIR/metatag_v8.py" > /dev/null 2>&1 &
+exit 0
