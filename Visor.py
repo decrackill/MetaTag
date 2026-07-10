@@ -897,66 +897,86 @@ class VisorApp(tk.Tk):
     #  CARGA DE IMAGEN PRINCIPAL (100% EN SEGUNDO PLANO)
     # ─────────────────────────────────────────────────────────────
     def load_image(self, path: str):
-        """Inicia la carga en segundo plano. La UI no se congela."""
+        """
+        Inicia la carga en segundo plano con debounce de 80ms.
+        Si el usuario hace clic 10 veces en 500ms, solo se procesa
+        la última — las anteriores son canceladas antes de lanzar
+        cualquier hilo, manteniendo el main loop libre.
+        """
         if not PIL_OK: 
             messagebox.showerror("Error", "Faltan dependencias. Ejecuta: pip install pillow piexif")
             return
-            
+
+        # Cancelar carga anterior pendiente (debounce)
+        if hasattr(self, "_load_debounce_job") and self._load_debounce_job:
+            self.after_cancel(self._load_debounce_job)
+            self._load_debounce_job = None
+
+        # Respuesta visual INSTANTÁNEA — sin esperar al disco
         self._hide_welcome()
         self.current_path = path
         self.title(f"⬡ MetaTag Visor v9 — {Path(path).name}")
 
+        # Limpiar canvas inmediatamente para feedback visual
+        self.img_canvas.delete("img")
+        self.img_canvas.delete("zoom_badge")
+        self._pil_image   = None
+        self._zoom_img_tk = None
+        self._zoom_level  = ZOOM_FIT
+        self._pan_offset  = [0, 0]
+
+        # Incrementar generación ahora — cualquier hilo anterior
+        # compara contra este valor y se auto-cancela
         self._render_gen += 1
         gen = self._render_gen
 
-        self._pil_image = None
-        self._zoom_img_tk = None
-        self._zoom_level = ZOOM_FIT
-        self._pan_offset = [0, 0]
+        # Lanzar el hilo real después de 80ms de silencio
+        def _launch():
+            self._load_debounce_job = None
+            threading.Thread(
+                target=self._process_image_thread,
+                args=(path, gen),
+                daemon=True
+            ).start()
 
-        threading.Thread(
-            target=self._process_image_thread, 
-            args=(path, gen), 
-            daemon=True
-        ).start()
+        self._load_debounce_job = self.after(80, _launch)
 
     def _process_image_thread(self, path, gen):
         """Hilo en segundo plano: lee del disco, descomprime y extrae metadatos."""
         try:
             raw_img = Image.open(path)
+            raw_img.load()                    # fuerza descompresión AQUÍ, en el hilo
             img = ImageOps.exif_transpose(raw_img)
+            img = img.copy()                  # desacopla del file handle
             
             if gen != self._render_gen:
                 return
 
             self.after(0, lambda: self._apply_image_to_ui(img, path, gen))
 
-            temp_list = []
-            original_list = self.all_metadata
-            self.all_metadata = temp_list
-            
             info_dict = raw_img.info
-            
-            temp_list.append(("header", "json", "🏺  DATOS ARQUEOLÓGICOS (JSON)"))
-            self._extract_json(raw_img, info_dict)
-            
-            temp_list.append(("header", "exif", "📸  CONFIGURACIÓN CÁMARA (EXIF)"))
-            self._extract_exif(info_dict)
-            
-            temp_list.append(("header", "gps", "🌍  UBICACIÓN (GPS)"))
-            self._extract_gps(info_dict)
-            
-            temp_list.append(("header", "file", "📄  INFO ARCHIVO SO"))
-            temp_list.extend([
-                ("file_val", "Nombre del Archivo", Path(path).name),
-                ("file_val", "Ubicación del Directorio", str(Path(path).parent)),
-                ("file_val", "Peso Total", f"{os.path.getsize(path)/1024:.1f} KB")
+
+            # Extraer metadatos en lista LOCAL al hilo
+            local_meta = []
+
+            local_meta.append(("header", "json", "🏺  DATOS ARQUEOLÓGICOS (JSON)"))
+            local_meta.extend(self._extract_json_local(raw_img, info_dict))
+
+            local_meta.append(("header", "exif", "📸  CONFIGURACIÓN CÁMARA (EXIF)"))
+            local_meta.extend(self._extract_exif_local(info_dict))
+
+            local_meta.append(("header", "gps", "🌍  UBICACIÓN (GPS)"))
+            local_meta.extend(self._extract_gps_local(info_dict))
+
+            local_meta.append(("header", "file", "📄  INFO ARCHIVO SO"))
+            local_meta.extend([
+                ("file_val", "Nombre del Archivo",        Path(path).name),
+                ("file_val", "Ubicación del Directorio",  str(Path(path).parent)),
+                ("file_val", "Peso Total",                f"{os.path.getsize(path)/1024:.1f} KB"),
             ])
-            
-            self.all_metadata = original_list
-            
+
             if gen == self._render_gen:
-                self.after(0, lambda: self._apply_extracted_metadata(temp_list))
+                self.after(0, lambda m=local_meta: self._apply_extracted_metadata(m))
 
         except Exception as e:
             logging.error(f"Error en hilo de imagen/metadatos: {e}", exc_info=True)
@@ -1135,6 +1155,94 @@ class VisorApp(tk.Tk):
                 
         except Exception:
             self.all_metadata.append(("gps_val", "Error GPS", "Error procesando el subdirectorio de ubicación."))
+
+    # ── Versiones thread-safe: retornan lista, no mutan self ─────
+    def _extract_json_local(self, img, info) -> list:
+        rows = []
+        data = None
+        ext  = Path(self.current_path).suffix.lower()
+        try:
+            if ext in (".jpg", ".jpeg") and "exif" in info:
+                ed = piexif.load(info["exif"])
+                uc = ed.get("Exif", {}).get(piexif.ExifIFD.UserComment)
+                if uc:
+                    data = json.loads(piexif.helper.UserComment.load(uc))
+            elif ext == ".png":
+                c = getattr(img, "text", {}).get("Comment", "")
+                if c: data = json.loads(c)
+        except Exception:
+            pass
+        if data and isinstance(data, dict):
+            rows.extend(("json_val", k, str(v)) for k, v in data.items())
+        else:
+            rows.append(("json_val", "Aviso del Sistema",
+                         "No se detectó JSON de MetaTag en esta imagen."))
+        return rows
+
+    def _extract_exif_local(self, info) -> list:
+        rows = []
+        if "exif" not in info:
+            rows.append(("exif_val", "Aviso", "Sin datos EXIF técnicos."))
+            return rows
+        try:
+            exif_dict  = piexif.load(info["exif"])
+            found      = False
+            skip_exif  = {piexif.ExifIFD.UserComment, piexif.ExifIFD.MakerNote}
+            skip_0th   = {piexif.ImageIFD.ImageDescription, 40092, 40094}
+            ifd_names  = {"0th": "Image", "Exif": "Exif", "1st": "Image"}
+            for ifd in ("0th", "Exif", "1st"):
+                if ifd not in exif_dict: continue
+                for tid, val in exif_dict[ifd].items():
+                    if ifd == "Exif" and tid in skip_exif: continue
+                    if ifd == "0th"  and tid in skip_0th:  continue
+                    try:    name = piexif.TAGS[ifd_names[ifd]][tid]["name"]
+                    except: name = f"Tag_ID_{tid}"
+                    cleaned = self._clean_exif_value(val, name)
+                    if cleaned:
+                        rows.append(("exif_val", name, cleaned))
+                        found = True
+            if not found:
+                rows.append(("exif_val", "Aviso", "No hay datos legibles de cámara."))
+        except Exception as e:
+            rows.append(("exif_val", "Error", f"EXIF corrupto: {e}"))
+        return rows
+
+    def _extract_gps_local(self, info) -> list:
+        rows = []
+        if "exif" not in info:
+            rows.append(("gps_val", "Aviso", "Sin encabezado GPS."))
+            return rows
+        try:
+            gps = piexif.load(info["exif"]).get("GPS", {})
+            if not gps:
+                rows.append(("gps_val", "Aviso", "Bloque GPS vacío."))
+                return rows
+            labels = {
+                piexif.GPSIFD.GPSLatitudeRef:  "Ref. Latitud",
+                piexif.GPSIFD.GPSLatitude:     "Latitud Exacta",
+                piexif.GPSIFD.GPSLongitudeRef: "Ref. Longitud",
+                piexif.GPSIFD.GPSLongitude:    "Longitud Exacta",
+                piexif.GPSIFD.GPSAltitude:     "Altitud (m)",
+            }
+            coord = {piexif.GPSIFD.GPSLatitude, piexif.GPSIFD.GPSLongitude}
+            found = False
+            for tid, label in labels.items():
+                if tid not in gps: continue
+                v = gps[tid]
+                if tid in coord and isinstance(v, tuple) and len(v) == 3:
+                    try:
+                        d,m,s = v[0][0]/v[0][1], v[1][0]/v[1][1], v[2][0]/v[2][1]
+                        fv = f"{d:.0f}° {m:.0f}' {s:.2f}\""
+                    except: fv = str(v)
+                else:
+                    fv = self._clean_exif_value(v, "GPS")
+                rows.append(("gps_val", label, fv))
+                found = True
+            if not found:
+                rows.append(("gps_val", "Aviso", "Sin coordenadas legibles."))
+        except Exception:
+            rows.append(("gps_val", "Error", "Error procesando GPS."))
+        return rows
 
     def _clean_exif_value(self, value, tag_name: str) -> str:
         """Limpia la basura binaria y decodifica las raciones matemáticas de EXIF."""
