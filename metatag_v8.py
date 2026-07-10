@@ -8,7 +8,7 @@ Dependencias: pip install pandas openpyxl pillow piexif matplotlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import pandas as pd
-import os, json, re, threading, shutil, sys, subprocess
+import os, json, re, threading, queue, shutil, sys, subprocess
 from typing import Union, Optional
 
 if sys.platform == "win32":
@@ -17,7 +17,8 @@ if sys.platform == "win32":
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd: ctypes.windll.user32.ShowWindow(hwnd, 0)
-    except Exception: pass
+    except Exception as e:
+        logging.error(f"Error configurando DPI en Windows: {e}", exc_info=True)
 
 from pathlib import Path
 
@@ -38,6 +39,14 @@ except ImportError:
     MATPLOTLIB_OK = False
 
 from metatag_graficas import show_stats as _show_stats_external
+from metatag_widgets import ExcelGrid
+import logging
+
+logging.basicConfig(
+    filename='metatag_debug.log',
+    level=logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # ══════════════════════════════════════════════════════════════════
 #  TEMAS DE COLOR Y MOTOR DE FUENTES DINÁMICO
@@ -179,417 +188,6 @@ def _native_file_save(title="Guardar archivo", initialdir="", initialfile="",
         defaultextension=default_ext, filetypes=tk_filetypes or [])
 
 
-# ══════════════════════════════════════════════════════════════════
-#  TABLA DE CELDAS INDIVIDUALES — OPTIMIZADA PARA 300+ FILAS
-#  (viewport culling: solo pinta las filas visibles en pantalla)
-# ══════════════════════════════════════════════════════════════════
-class ExcelGrid(tk.Frame):
-    def __init__(self, master, on_selection_change=None, on_row_click=None, app_ref=None, **kw):
-        super().__init__(master, bg=C["surface"], **kw)
-        self.on_selection_change = on_selection_change
-        self.on_row_click        = on_row_click
-        self.app_ref             = app_ref
-
-        self.df = None  # type: Optional[pd.DataFrame]
-        self.col_widths = []  # type: list
-        self.selected_cells = set()
-        self.hovered_row = None  # type: Optional[int]
-        self.hidden_columns: set     = set()
-        self._redraw_pending         = False   # evita redraws dobles
-
-        self.unhide_bar = tk.Frame(self, bg=C["accent_pale"])
-        self.unhide_lbl = tk.Label(self.unhide_bar, text="", bg=C["accent_pale"],
-                                   fg=C["accent"], font=FONTS["TINY"], anchor="w")
-        self.unhide_lbl.pack(side="left", padx=8, pady=2)
-        self.unhide_btn = tk.Button(self.unhide_bar, text="Mostrar todas",
-                                    bg=C["accent"], fg="#FFF5E8", font=FONTS["TINY"],
-                                    relief="flat", bd=0, cursor="hand2",
-                                    command=self._show_all_hidden)
-        self.unhide_btn.pack(side="right", padx=8, pady=2)
-
-        self.canvas = tk.Canvas(self, bg=C["surface"], highlightthickness=0, cursor="arrow")
-        self.vsb = ttk.Scrollbar(self, orient="vertical",   command=self._on_vscroll)
-        self.hsb = ttk.Scrollbar(self, orient="horizontal", command=self._on_hscroll)
-        self.canvas.configure(yscrollcommand=self.vsb.set, xscrollcommand=self.hsb.set)
-
-        self.vsb.pack(side="right",  fill="y")
-        self.hsb.pack(side="bottom", fill="x")
-        self.canvas.pack(fill="both", expand=True)
-
-        self.canvas.bind("<ButtonRelease-1>", self._on_click)
-        self.canvas.bind("<Button-3>",        self._on_right_click)
-        self.canvas.bind("<Motion>",          self._on_motion)
-        self.canvas.bind("<Leave>",           self._on_leave)
-        self.canvas.bind("<MouseWheel>",      self._on_wheel)
-        self.canvas.bind("<Button-4>",        self._on_wheel)
-        self.canvas.bind("<Button-5>",        self._on_wheel)
-        self.canvas.bind("<Shift-Button-4>",  self._on_shift_wheel)
-        self.canvas.bind("<Shift-Button-5>",  self._on_shift_wheel)
-        self.canvas.bind("<Shift-MouseWheel>", self._on_shift_wheel)
-        self.canvas.bind("<Configure>",       self._on_canvas_resize)
-
-    # ── Alturas dinámicas ──
-    @property
-    def ROW_H(self):
-        scale = getattr(self.app_ref, "current_scale", 1.0) if self.app_ref else 1.0
-        return int(26 * scale)
-    @property
-    def HDR_H(self):
-        scale = getattr(self.app_ref, "current_scale", 1.0) if self.app_ref else 1.0
-        return int(28 * scale)
-
-    # ── Scroll sincronizado + repintado ──
-    def _on_vscroll(self, *args):
-        self.canvas.yview(*args)
-        self._schedule_redraw()
-
-    def _on_hscroll(self, *args):
-        self.canvas.xview(*args)
-        self._schedule_redraw()
-
-    def _on_wheel(self, event):
-        if event.num == 4:
-            self.canvas.yview_scroll(-3, "units")
-        elif event.num == 5:
-            self.canvas.yview_scroll(3, "units")
-        else:
-            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        self._schedule_redraw()
-
-    def _on_shift_wheel(self, event):
-        if event.num == 4:
-            self.canvas.xview_scroll(-3, "units")
-        elif event.num == 5:
-            self.canvas.xview_scroll(3, "units")
-        else:
-            self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
-        self._schedule_redraw()
-
-    def _on_canvas_resize(self, event):
-        self._schedule_redraw()
-
-    def _schedule_redraw(self):
-        """Evita redraws múltiples en el mismo frame."""
-        if not self._redraw_pending:
-            self._redraw_pending = True
-            self.canvas.after_idle(self._deferred_redraw)
-
-    def _deferred_redraw(self):
-        self._redraw_pending = False
-        self.redraw()
-
-    # ── Carga de datos ──
-    def load(self, df: pd.DataFrame):
-        self.df = df
-        self.selected_cells.clear()
-        self._calc_col_widths()
-        self.canvas.yview_moveto(0)
-        self.redraw()
-
-    def _calc_col_widths(self):
-        if self.df is None: return
-        self.col_widths = []
-        scale = getattr(self.app_ref, "current_scale", 1.0) if self.app_ref else 1.0
-        min_cw, max_cw, pad = int(80*scale), int(250*scale), int(8*scale)
-        for col in self.df.columns:
-            max_len = len(str(col))
-            for val in self.df[col].head(50):
-                try:
-                    max_len = max(max_len, len(str(val)))
-                except Exception:
-                    pass
-            w = max(min_cw, min(max_cw, int(max_len * 7 * scale) + pad * 2))
-            self.col_widths.append(w)
-
-    @staticmethod
-    def _sanitize_cell(val, max_len=200):
-        try:
-            if pd.isna(val):
-                return ""
-        except (ValueError, TypeError):
-            pass
-        try:
-            s = str(val).strip()
-        except Exception:
-            return "N/A"
-        if s.lower() in ("nan", "none", "nat"):
-            return ""
-        if len(s) > max_len:
-            s = s[:max_len] + "..."
-        return s
-
-    # ── RENDER OPTIMIZADO — solo filas en viewport ──
-    def redraw(self):
-        if self.df is None: return
-        self.canvas.configure(bg=C["surface"])
-        self.canvas.delete("all")
-
-        cols  = list(self.df.columns)
-        nrows = len(self.df)
-        pad   = int(8 * getattr(self.app_ref, "current_scale", 1.0))
-
-        vis_cols = [(ci, col, cw) for ci, (col, cw) in enumerate(zip(cols, self.col_widths))
-                    if col not in self.hidden_columns]
-        total_w = sum(cw for _, _, cw in vis_cols) + 1
-        total_h = self.HDR_H + nrows * self.ROW_H + 1
-        self.canvas.configure(scrollregion=(0, 0, total_w, total_h))
-
-        self._update_unhide_bar()
-
-        # ── Calcular rango de filas visibles ──
-        try:
-            y1_frac, y2_frac = self.canvas.yview()
-        except Exception:
-            y1_frac, y2_frac = 0.0, 1.0
-
-        vis_top = y1_frac * total_h
-        vis_bot = y2_frac * total_h
-
-        first_vis = max(0, int((vis_top - self.HDR_H) / self.ROW_H))
-        last_vis  = min(nrows - 1, int((vis_bot - self.HDR_H) / self.ROW_H) + 1)
-
-        # ── Cabecera (siempre visible) ──
-        x = 0
-        for ci, col, cw in vis_cols:
-            is_col_sel = self._col_fully_selected(ci)
-            bg = C["sel_bg"]    if is_col_sel else C["header_bg"]
-            fg = C["sel_fg"]    if is_col_sel else C["header_fg"]
-            self.canvas.create_rectangle(x, 0, x + cw, self.HDR_H,
-                                         fill=bg, outline=C["grid_line"], width=1)
-            self.canvas.create_text(x + pad, self.HDR_H // 2,
-                                    text=col, anchor="w", font=FONTS["HEAD"], fill=fg)
-            x += cw
-
-        # ── Solo filas dentro del viewport ──
-        for ri in range(first_vis, last_vis + 1):
-            if ri >= nrows: break
-            try:
-                row = self.df.iloc[ri]
-            except Exception:
-                continue
-            y   = self.HDR_H + ri * self.ROW_H
-            row_bg = C["row_even"] if ri % 2 == 0 else C["row_odd"]
-            x = 0
-            for ci, col, cw in vis_cols:
-                is_sel  = (ri, ci) in self.selected_cells
-                col_sel = self._col_fully_selected(ci)
-
-                if is_sel:              bg, fg = C["sel_bg"],    C["sel_fg"]
-                elif col_sel:           bg, fg = C["col_sel"],   C["text"]
-                elif ri == self.hovered_row: bg, fg = C["accent_pale"], C["text"]
-                else:                   bg, fg = row_bg,         C["text"]
-
-                self.canvas.create_rectangle(x, y, x + cw, y + self.ROW_H,
-                                             fill=bg, outline=C["grid_line"], width=1)
-                try:
-                    cell_text = self._sanitize_cell(row[col])
-                except Exception:
-                    cell_text = "ERROR"
-                self.canvas.create_text(x + pad, y + self.ROW_H // 2,
-                                        text=cell_text, anchor="w",
-                                        font=FONTS["CELL"], fill=fg)
-                x += cw
-
-    def _col_fully_selected(self, ci: int) -> bool:
-        if self.df is None or len(self.df) == 0: return False
-        return all((r, ci) in self.selected_cells for r in range(len(self.df)))
-
-    def _hit(self, cx, cy):
-        if self.df is None: return None, None
-        cols = list(self.df.columns)
-        x, ci = 0, None
-        for i, cw in enumerate(self.col_widths):
-            if cols[i] in self.hidden_columns: continue
-            if x <= cx < x + cw: ci = i; break
-            x += cw
-        if ci is None: return None, None
-        if cy < self.HDR_H: return None, ci
-        ri = int((cy - self.HDR_H) // self.ROW_H)
-        if ri < 0 or ri >= len(self.df): return None, ci
-        return ri, ci
-
-    def _on_click(self, event):
-        cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-        ri, ci = self._hit(cx, cy)
-        if ci is None: return
-        if ri is None: self._toggle_column(ci)
-        else:
-            key = (ri, ci)
-            if key in self.selected_cells: self.selected_cells.discard(key)
-            else: self.selected_cells.add(key)
-            if self.on_row_click: self.on_row_click(ri)
-        self.redraw()
-        if self.on_selection_change: self.on_selection_change()
-
-    def _toggle_column(self, ci: int):
-        nrows = len(self.df)
-        if self._col_fully_selected(ci):
-            for r in range(nrows): self.selected_cells.discard((r, ci))
-        else:
-            for r in range(nrows): self.selected_cells.add((r, ci))
-
-    def _on_motion(self, event):
-        cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-        ri, _ = self._hit(cx, cy)
-        if ri != self.hovered_row:
-            self.hovered_row = ri
-            self._schedule_redraw()
-
-    def _on_leave(self, event):
-        self.hovered_row = None
-        self._schedule_redraw()
-
-    def _on_right_click(self, event):
-        if self.df is None: return
-        self._dismiss_col_menu()
-        cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-        _, ci = self._hit(cx, cy)
-        if ci is None: return
-        col_name = self.df.columns[ci]
-        self._col_menu = tk.Menu(self, tearoff=0, bg=C["surface"], fg=C["text"],
-                                 font=FONTS["LABEL"], relief="flat")
-        if col_name in self.hidden_columns:
-            self._col_menu.add_command(label=f"Mostrar columna '{col_name}'",
-                                       command=lambda c=col_name: self._toggle_col_visibility(c))
-        else:
-            self._col_menu.add_command(label=f"Ocultar columna '{col_name}'",
-                                       command=lambda c=col_name: self._toggle_col_visibility(c))
-        if self.hidden_columns:
-            self._col_menu.add_separator()
-            self._col_menu.add_command(label=f"Mostrar todas ({len(self.hidden_columns)} ocultas)",
-                                       command=self._show_all_hidden)
-        self._col_menu.post(event.x_root, event.y_root)
-        root = self.winfo_toplevel()
-        root.bind("<Button-1>", self._dismiss_col_menu, add=True)
-        root.bind("<Button-3>", self._dismiss_col_menu, add=True)
-
-    def _dismiss_col_menu(self, event=None):
-        if hasattr(self, "_col_menu") and self._col_menu:
-            try: self._col_menu.destroy()
-            except Exception: pass
-            self._col_menu = None
-        try:
-            root = self.winfo_toplevel()
-            root.unbind("<Button-1>")
-            root.unbind("<Button-3>")
-        except Exception: pass
-
-    def _toggle_col_visibility(self, col_name: str):
-        if col_name in self.hidden_columns:
-            self.hidden_columns.discard(col_name)
-        else:
-            self.hidden_columns.add(col_name)
-            to_discard = {k for k in self.selected_cells if self.df.columns[k[1]] == col_name}
-            self.selected_cells -= to_discard
-        self.redraw()
-        if self.on_selection_change: self.on_selection_change()
-
-    def _show_all_hidden(self):
-        self.hidden_columns.clear()
-        self.redraw()
-        if self.on_selection_change: self.on_selection_change()
-
-    def _update_unhide_bar(self):
-        if self.hidden_columns:
-            names = ", ".join(sorted(self.hidden_columns))
-            self.unhide_lbl.configure(text=f"Ocultas: {names}")
-            self.unhide_bar.pack(fill="x", before=self.canvas)
-        else:
-            self.unhide_bar.pack_forget()
-
-    def select_row(self, ri: int):
-        if self.df is None: return
-        cols = list(self.df.columns)
-        for ci in range(len(self.col_widths)):
-            if cols[ci] not in self.hidden_columns:
-                self.selected_cells.add((ri, ci))
-        self.redraw()
-        if self.on_selection_change: self.on_selection_change()
-
-    def clear_selection(self):
-        self.selected_cells.clear()
-        self.redraw()
-        if self.on_selection_change: self.on_selection_change()
-
-    def scroll_to_row(self, ri: int):
-        if self.df is None: return
-        canvas_h = self.canvas.winfo_height()
-        if canvas_h <= 1: canvas_h = 400
-        total_h = self.HDR_H + len(self.df) * self.ROW_H
-        y_row   = self.HDR_H + ri * self.ROW_H
-        if total_h <= canvas_h:
-            self.canvas.yview_moveto(0)
-        else:
-            target = (y_row - canvas_h // 3) / total_h
-            self.canvas.yview_moveto(max(0, min(target, 1.0)))
-        self._schedule_redraw()
-
-    def _get_val(self, val):
-        if pd.isna(val): return ""
-        s = str(val).strip()
-        if s.lower() in ("nan", "none"): return ""
-        return s
-
-    def get_selected_metadata(self, img_col_idx):
-        if self.df is None: return {}
-        cols   = list(self.df.columns)
-        result = {}
-        omit_empty = True
-        if self.app_ref:
-            omit_var = getattr(self.app_ref, 'omit_empty_var', None)
-            omit_empty = omit_var.get() if omit_var else True
-
-        temp_result = {}
-        for (ri, ci) in self.selected_cells:
-            if ci == img_col_idx: continue
-            if cols[ci] in self.hidden_columns: continue
-            val = self._get_val(self.df.iloc[ri, ci])
-            if omit_empty and not val: continue
-            temp_result.setdefault(ri, {})[cols[ci]] = val
-
-        if self.app_ref:
-            locked = getattr(self.app_ref, 'locked_columns', None)
-            if locked:
-                for ri in temp_result.keys():
-                    for col in locked:
-                        if col in cols and col not in self.hidden_columns:
-                            ci  = cols.index(col)
-                            val = self._get_val(self.df.iloc[ri, ci])
-                            if omit_empty and not val: continue
-                            temp_result[ri][col] = val
-
-        for ri, row_data in temp_result.items():
-            result[ri] = {col: row_data[col] for col in cols
-                          if col in row_data and col not in self.hidden_columns}
-        return result
-
-    def get_row_metadata(self, ri, img_col_idx):
-        if self.df is None: return {}
-        cols       = list(self.df.columns)
-        omit_empty = True
-        if self.app_ref:
-            omit_var = getattr(self.app_ref, 'omit_empty_var', None)
-            omit_empty = omit_var.get() if omit_var else True
-        temp_meta  = {}
-
-        for ci in range(len(cols)):
-            if ci == img_col_idx: continue
-            if cols[ci] in self.hidden_columns: continue
-            if (ri, ci) in self.selected_cells:
-                val = self._get_val(self.df.iloc[ri, ci])
-                if not omit_empty or val: temp_meta[cols[ci]] = val
-
-        if self.app_ref:
-            locked = getattr(self.app_ref, 'locked_columns', None)
-            if locked:
-                for col in locked:
-                    if col in cols and col not in self.hidden_columns:
-                        ci  = cols.index(col)
-                        val = self._get_val(self.df.iloc[ri, ci])
-                        if not omit_empty or val: temp_meta[col] = val
-
-        return {col: temp_meta[col] for col in cols if col in temp_meta}
-
 
 # ══════════════════════════════════════════════════════════════════
 #  EXPLORADOR DE IMÁGENES
@@ -706,6 +304,7 @@ class MetaTagApp(tk.Tk):
         self.current_row    = None
         self.progress_var   = tk.DoubleVar()
         self.status_var     = tk.StringVar(value="Carga un archivo Excel o CSV para comenzar.")
+        self.progress_queue = queue.Queue()
         self._img_cache     = {}
         self.locked_columns = set()
         self.omit_empty_var          = tk.BooleanVar(value=True)
@@ -1265,7 +864,8 @@ class MetaTagApp(tk.Tk):
         self.filter_entry.pack(side="left", fill="x", expand=True)
 
         self.grid = ExcelGrid(parent, on_selection_change=self._on_sel_change,
-                              on_row_click=self._on_row_click, app_ref=self)
+                              on_row_click=self._on_row_click, app_ref=self,
+                              theme_colors=C, fonts=FONTS)
         self.grid.pack(fill="both", expand=True, padx=12, pady=(0, 4))
 
         tk.Frame(parent, bg=C["border_light"], height=1).pack(fill="x", padx=12, pady=(2, 4))
@@ -2476,7 +2076,8 @@ class MetaTagApp(tk.Tk):
                     self.status_var.set(f"⏹ Lote cancelado: {ok_count}/{total}")
                 else:
                     try: progress_file.unlink()
-                    except Exception: pass
+                    except Exception as e:
+                        logging.error(f"Error eliminando archivo de progreso: {e}", exc_info=True)
                     summary = (f"✅ {ok_count} de {total} imágenes procesadas correctamente.\n"
                                f"📁 Guardadas en: {self.output_folder}")
                     if errors:
@@ -2863,9 +2464,10 @@ class MetaTagApp(tk.Tk):
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self._log(f"\n📁 Salida Lote: {self.output_folder}\n", "info")
         self.progress_var.set(0)
-        self.status_var.set("Procesando Lote…")
+        self.status_var.set("Iniciando procesamiento en segundo plano...")
         self._save_config()
         threading.Thread(target=self._process_all, args=(folder, meta_by_row), daemon=True).start()
+        self.after(100, self._process_queue)
 
     def _find_img_name_in_row(self, ri: int) -> str:
         row = self.grid.df.iloc[ri]
@@ -2887,46 +2489,72 @@ class MetaTagApp(tk.Tk):
         for i, ri in enumerate(rows_to_process):
             img_name = self._find_img_name_in_row(ri)
             meta     = meta_by_row[ri]
-            self.after(0, lambda i=i, t=total: self.status_var.set(f"Procesando {i+1}/{t}…"))
+            self.progress_queue.put(("status", f"Procesando {i+1}/{total}..."))
 
             if not img_name:
-                self._update_progress((i + 1) / total * 100); continue
+                self.progress_queue.put(("progress", (i + 1) / total * 100))
+                continue
 
             img_path = self._find_image(img_name, folder)
             if not img_path:
-                self._log(f"  ✗ No encontrada: {img_name}\n", "err")
-                err += 1; self._update_progress((i + 1) / total * 100); continue
+                self.progress_queue.put(("log", (f"  ✗ No encontrada: {img_name}\n", "err")))
+                err += 1
+                self.progress_queue.put(("progress", (i + 1) / total * 100))
+                continue
 
             out_path = self.output_folder / Path(img_path).name
             try:
                 divergencias = self._check_metadata_divergence(img_path, meta)
                 if divergencias:
-                    self._log(
+                    self.progress_queue.put(("log", (
                         f"  ⚠ {Path(img_path).name}: metadatos previos NO coinciden "
                         f"con el Excel, se sobreescribirán:\n"
-                        f"     {' | '.join(divergencias)}\n", "warn")
+                        f"     {' | '.join(divergencias)}\n", "warn")))
 
                 shutil.copy2(img_path, out_path)
                 self._write_meta(str(out_path), meta, organizado)
-                self._log(
+                self.progress_queue.put(("log", (
                     f"  ✔ {Path(img_path).name}\n"
-                    f"     → {' | '.join(f'{k}: {v}' for k,v in meta.items())}\n", "ok")
+                    f"     → {' | '.join(f'{k}: {v}' for k,v in meta.items())}\n", "ok")))
                 ok += 1
             except Exception as e:
-                self._log(f"  ✗ {img_name}: {e}\n", "err")
+                self.progress_queue.put(("log", (f"  ✗ {img_name}: {e}\n", "err")))
                 err += 1
-            self._update_progress((i + 1) / total * 100)
+            self.progress_queue.put(("progress", (i + 1) / total * 100))
 
         empty_cnt  = max(0, sum(1 for (r, c) in self.grid.selected_cells
                                 if c != self._img_col_idx())
                          - sum(len(m) for m in meta_by_row.values()))
         empty_note = f" · {empty_cnt} omitidas" if empty_cnt > 0 and self.omit_empty_var.get() else ""
-        self._log(f"\n── Completado: {ok} escritas · {err} errores{empty_note} ──\n", "head")
-        self.after(0, lambda: (
-            self.config(cursor=""),
-            self._write_btn.configure(text="▶  Escribir Metadatos", state="normal"),
-            self.status_var.set(f"✔ {ok} guardadas · {err} errores{empty_note}")
-        ))
+        self.progress_queue.put(("log", (f"\n── Completado: {ok} escritas · {err} errores{empty_note} ──\n", "head")))
+        self.progress_queue.put(("done", f"✔ {ok} guardadas · {err} errores{empty_note}"))
+
+    def _process_queue(self):
+        try:
+            while True:
+                msg_type, value = self.progress_queue.get_nowait()
+                if msg_type == "progress":
+                    self.progress_var.set(value)
+                elif msg_type == "status":
+                    self.status_var.set(value)
+                elif msg_type == "log":
+                    msg, tag = value
+                    self._log_safe(msg, tag)
+                elif msg_type == "done":
+                    self.status_var.set(value)
+                    self.config(cursor="")
+                    self._write_btn.configure(text="▶  Escribir Metadatos", state="normal")
+                    messagebox.showinfo("Proceso completado", value)
+                    return
+                elif msg_type == "error":
+                    self.status_var.set(f"Error: {value}")
+                    self.config(cursor="")
+                    self._write_btn.configure(text="▶  Escribir Metadatos", state="normal")
+                    messagebox.showerror("Error", value)
+                    return
+        except queue.Empty:
+            pass
+        self.after(100, self._process_queue)
 
     def _inject_manual(self):
         if self.current_row is None or self.grid.df is None:
@@ -3421,10 +3049,12 @@ class MetaTagApp(tk.Tk):
                 if total_w > 0:
                     left_w = self.left.winfo_width()
                     cfg["left_ratio"] = round(left_w / total_w, 3)
-            except Exception: pass
+            except Exception as e:
+                logging.error(f"Error guardando比例 de paneles: {e}", exc_info=True)
             self._config_path().write_text(
                 json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception: pass
+        except Exception as e:
+            logging.error(f"Error guardando configuración: {e}", exc_info=True)
 
     def _load_config_pre_build(self):
         try:
@@ -3466,9 +3096,11 @@ class MetaTagApp(tk.Tk):
                             panes = self.paned_window.panes()
                             if panes:
                                 self.paned_window.paneconfigure(panes[0], width=left_w)
-                    except Exception: pass
+                    except Exception as e:
+                        logging.error(f"Error aplicando比例 de paneles: {e}", exc_info=True)
                 self.after(500, _apply_sashes)
-        except Exception: pass
+        except Exception as e:
+            logging.error(f"Error cargando configuración: {e}", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -14,7 +14,14 @@ import math
 import datetime
 import threading
 import subprocess
+import logging
 from pathlib import Path
+
+logging.basicConfig(
+    filename='metatag_debug.log',
+    level=logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # ══════════════════════════════════════════════════════════════════
 #  VERIFICACIÓN DE DEPENDENCIAS
@@ -2075,6 +2082,36 @@ class VisorApp(tk.Tk):
         finally:
             self.config(cursor="")
 
+    def _prepare_image_for_pdf(self, image_path):
+        """Redimensiona la imagen para que quepa en un A4 sin pesar tanto."""
+        try:
+            img = Image.open(image_path)
+            img = ImageOps.exif_transpose(img)
+            
+            max_width_cm = 17.0
+            max_width_px = int(max_width_cm * 71.43)
+            
+            if img.width > max_width_px:
+                ratio = max_width_px / img.width
+                new_size = (max_width_px, int(img.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+                
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+                
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format="JPEG", quality=85)
+            img_buffer.seek(0)
+            
+            pdf_image = RLImage(img_buffer)
+            pdf_image.drawWidth = min(13.5*cm, pdf_image.drawWidth)
+            pdf_image.drawHeight = min(10*cm, pdf_image.drawHeight)
+            return pdf_image
+            
+        except Exception as e:
+            logging.error(f"Error preparando imagen para PDF: {e}", exc_info=True)
+            return None
+
     def _generate_pdf_document(self, output_path: str):
         """Construye el PDF página por página con estilos y tablas complejas."""
         document = SimpleDocTemplate(
@@ -2131,26 +2168,8 @@ class VisorApp(tk.Tk):
 
         # 2. Inserción Segura de Imagen Fotográfica
         if PIL_OK and self.current_path:
-            try:
-                img_to_print = ImageOps.exif_transpose(Image.open(self.current_path))
-                if img_to_print.mode not in ("RGB", "L"):
-                    img_to_print = img_to_print.convert("RGB")
-                    
-                # Redimensionar para no exceder ancho de página
-                max_w_px = int(13.5 * cm * 37.8)
-                max_h_px = int(10 * cm * 37.8)
-                img_to_print.thumbnail((max_w_px, max_h_px), Image.LANCZOS)
-                
-                # Volcar a buffer RAM (evita problemas de locking en disco)
-                buffer = io.BytesIO()
-                img_to_print.save(buffer, format="JPEG", quality=92)
-                buffer.seek(0)
-                
-                pdf_image = RLImage(buffer)
-                pdf_image.drawWidth  = min(13.5*cm, pdf_image.drawWidth)
-                pdf_image.drawHeight = min(10*cm,  pdf_image.drawHeight)
-                
-                # Enmarcar la foto en una tabla estética de una celda
+            pdf_image = self._prepare_image_for_pdf(self.current_path)
+            if pdf_image:
                 img_table = Table([[pdf_image]], colWidths=[16*cm])
                 img_table.setStyle(TableStyle([
                     ("ALIGN",         (0,0), (-1,-1), "CENTER"),
@@ -2162,9 +2181,6 @@ class VisorApp(tk.Tk):
                 ]))
                 flowables.append(img_table)
                 flowables.append(Spacer(1, 0.5*cm))
-                
-            except Exception as e:
-                print(f"Alerta: No se pudo inyectar imagen en PDF: {e}")
 
         # 3. Metadatos del Archivo de Identificación
         flowables.append(Paragraph(f"<b>Identificador de Archivo:</b> {Path(self.current_path).name}", style_subtitle))
