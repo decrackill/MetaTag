@@ -1827,9 +1827,10 @@ class VisorApp(tk.Tk):
                 path = imgs[idx]
                 p["name_lbl"].configure(text=Path(path).name)
 
-                # ── Respuesta visual INMEDIATA: limpiar panel ──────
-                p["img_lbl"].configure(image="", text="⏳ Cargando…")
-                p["info_lbl"].configure(text="")
+                # ── Mantener imagen anterior visible mientras carga ─
+                # Solo actualizar el nombre — la imagen anterior se
+                # queda en pantalla hasta que llegue la nueva.
+                # No limpiar p["img_lbl"] aquí.
 
                 # ── Hilo por panel ─────────────────────────────────
                 def _load_panel(path=path, p=p, gen=gen,
@@ -1857,7 +1858,7 @@ class VisorApp(tk.Tk):
                             p["img_lbl"].configure(image=tk_draft, text="")
                             p["img_lbl"]._img_ref = tk_draft
                             p["info_lbl"].configure(
-                                text=f"{kb:.1f} KB  |  {w}×{h} px  |  {fmt}")
+                                text=f"{kb:.1f} KB  |  {w}×{h} px  |  {fmt}  · cargando...")
 
                         win.after(0, _apply_draft)
 
@@ -1866,10 +1867,12 @@ class VisorApp(tk.Tk):
                         final.thumbnail((tw, th), Image.LANCZOS)
                         tk_final = ImageTk.PhotoImage(final)
 
-                        def _apply_final(tk_final=tk_final):
+                        def _apply_final(tk_final=tk_final, kb=kb, w=w, h=h, fmt=fmt):
                             if gen != show_gen[0]: return
                             p["img_lbl"].configure(image=tk_final, text="")
                             p["img_lbl"]._img_ref = tk_final
+                            p["info_lbl"].configure(
+                                text=f"{kb:.1f} KB  |  {w}×{h} px  |  {fmt}")
 
                         win.after(0, _apply_final)
 
