@@ -1805,13 +1805,18 @@ class VisorApp(tk.Tk):
                   font=F_BOLD, relief="flat", bd=0, padx=16, pady=8, cursor="hand2",
                   command=go_next).pack(side="left", padx=4, pady=6)
 
-        # ── Función para mostrar la imagen actual ──
+        # ── Generación para cancelar hilos obsoletos ──────────────
+        show_gen = [0]
+
         def show_current():
             update_counter()
+            show_gen[0] += 1
+            gen = show_gen[0]
+
             for p in panels:
-                imgs = p["imgs"]
-                idx_key = p["idx_key"]
-                idx = state[idx_key]
+                imgs    = p["imgs"]
+                idx     = state[p["idx_key"]]
+
                 if idx >= len(imgs):
                     p["img_lbl"].configure(image="", text="[Sin imagen]")
                     p["name_lbl"].configure(text="")
@@ -1822,52 +1827,93 @@ class VisorApp(tk.Tk):
                 path = imgs[idx]
                 p["name_lbl"].configure(text=Path(path).name)
 
-                try:
-                    size_kb = os.path.getsize(path) / 1024
-                    img = Image.open(path)
-                    img = ImageOps.exif_transpose(img)
-                    w, h = img.size
-                    fmt = img.format or "—"
-                    p["info_lbl"].configure(
-                        text=f"{size_kb:.1f} KB  |  {w}×{h} px  |  {fmt}")
+                # ── Respuesta visual INMEDIATA: limpiar panel ──────
+                p["img_lbl"].configure(image="", text="⏳ Cargando…")
+                p["info_lbl"].configure(text="")
 
-                    # Thumbnail para la tabla
-                    thumb = img.copy()
-                    thumb_w = max(320, int(sw * 0.42) - 32)
-                    thumb_h = max(200, int(sh * 0.38) - 16)
-                    thumb.thumbnail((thumb_w, thumb_h), Image.LANCZOS)
-                    tk_img = ImageTk.PhotoImage(thumb)
-                    p["img_lbl"].configure(image=tk_img, text="")
-                    p["img_lbl"]._img_ref = tk_img
-                except Exception as e:
-                    p["img_lbl"].configure(image="", text=f"Error: {e}")
-                    p["info_lbl"].configure(text="")
+                # ── Hilo por panel ─────────────────────────────────
+                def _load_panel(path=path, p=p, gen=gen,
+                                tw=max(320, int(sw * 0.42) - 32),
+                                th=max(200, int(sh * 0.38) - 16)):
+                    try:
+                        raw = Image.open(path)
+                        raw.load()                          # descomprime en hilo
+                        img = ImageOps.exif_transpose(raw)
+                        img = img.copy()
 
-                # Llenar tabla de metadatos
-                p["tree"].delete(*p["tree"].get_children())
-                try:
-                    old_path = self.current_path
-                    old_meta = self.all_metadata[:]
-                    self.current_path = path
-                    self._extract_all_metadata(path)
-                    meta = self.all_metadata[:]
-                    self.current_path = old_path
-                    self.all_metadata = old_meta
+                        if gen != show_gen[0]: return       # cancelado
 
-                    is_odd = True
-                    for tag_type, key, val in meta:
-                        if tag_type == "header":
-                            p["tree"].insert("", "end", values=(val, ""), tags=("hdr",))
-                        else:
-                            bg_tag = "odd" if is_odd else "even"
-                            p["tree"].insert("", "end", values=(key, val), tags=(bg_tag,))
-                            is_odd = not is_odd
-                except Exception:
-                    pass
+                        w, h  = img.size
+                        fmt   = raw.format or "—"
+                        kb    = os.path.getsize(path) / 1024
 
-                # Al cambiar imagen, la tabla de metadatos vuelve al principio
-                if p["tree"].get_children():
-                    p["tree"].see(p["tree"].get_children()[0])
+                        # Thumbnail con NEAREST primero (instantáneo)
+                        draft = img.copy()
+                        draft.thumbnail((tw, th), Image.NEAREST)
+                        tk_draft = ImageTk.PhotoImage(draft)
+
+                        def _apply_draft(tk_draft=tk_draft, kb=kb, w=w, h=h, fmt=fmt):
+                            if gen != show_gen[0]: return
+                            p["img_lbl"].configure(image=tk_draft, text="")
+                            p["img_lbl"]._img_ref = tk_draft
+                            p["info_lbl"].configure(
+                                text=f"{kb:.1f} KB  |  {w}×{h} px  |  {fmt}")
+
+                        win.after(0, _apply_draft)
+
+                        # LANCZOS en el mismo hilo (más lento pero no bloquea UI)
+                        final = img.copy()
+                        final.thumbnail((tw, th), Image.LANCZOS)
+                        tk_final = ImageTk.PhotoImage(final)
+
+                        def _apply_final(tk_final=tk_final):
+                            if gen != show_gen[0]: return
+                            p["img_lbl"].configure(image=tk_final, text="")
+                            p["img_lbl"]._img_ref = tk_final
+
+                        win.after(0, _apply_final)
+
+                        # ── Metadatos en el mismo hilo ─────────────
+                        meta_local = []
+                        try:
+                            info_dict = raw.info
+                            meta_local.append(("header","json","🏺  DATOS ARQUEOLÓGICOS (JSON)"))
+                            meta_local.extend(self._extract_json_local(raw, info_dict))
+                            meta_local.append(("header","exif","📸  CONFIGURACIÓN CÁMARA (EXIF)"))
+                            meta_local.extend(self._extract_exif_local(info_dict))
+                            meta_local.append(("header","gps","🌍  UBICACIÓN (GPS)"))
+                            meta_local.extend(self._extract_gps_local(info_dict))
+                            meta_local.append(("header","file","📄  INFO ARCHIVO"))
+                            meta_local.extend([
+                                ("file_val","Nombre",Path(path).name),
+                                ("file_val","Peso",f"{kb:.1f} KB"),
+                            ])
+                        except Exception:
+                            pass
+
+                        def _apply_meta(meta=meta_local):
+                            if gen != show_gen[0]: return
+                            p["tree"].delete(*p["tree"].get_children())
+                            is_odd = True
+                            for tag_type, key, val in meta:
+                                if tag_type == "header":
+                                    p["tree"].insert("","end",values=(val,""),tags=("hdr",))
+                                else:
+                                    bg_tag = "odd" if is_odd else "even"
+                                    p["tree"].insert("","end",values=(key,val),tags=(bg_tag,))
+                                    is_odd = not is_odd
+                            kids = p["tree"].get_children()
+                            if kids: p["tree"].see(kids[0])
+
+                        win.after(0, _apply_meta)
+
+                    except Exception as e:
+                        def _err(e=e):
+                            if gen != show_gen[0]: return
+                            p["img_lbl"].configure(image="", text=f"Error: {e}")
+                        win.after(0, _err)
+
+                threading.Thread(target=_load_panel, daemon=True).start()
 
         show_current()
 
