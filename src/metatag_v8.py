@@ -49,6 +49,7 @@ import logging
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT / "data"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=str(_DATA_DIR / 'metatag_debug.log'),

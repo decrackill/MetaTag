@@ -11,6 +11,12 @@ echo     MetaTag %VERSION% - Escritor de Metadatos Arqueologicos
 echo  ============================================================
 echo.
 
+:: ── Crear carpeta data si no existe ──
+if not exist "%~dp0data" (
+    mkdir "%~dp0data"
+    echo  [OK] Carpeta data creada.
+)
+
 :: ── Buscar Python: py launcher, python, pythonw ──
 set PYTHON_CMD=
 py --version >nul 2>&1

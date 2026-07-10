@@ -10,6 +10,12 @@ echo "    MetaTag v8.9 - Instalador y Lanzador Linux"
 echo " ============================================================"
 echo ""
 
+# Crear carpeta data si no existe
+if [ ! -d "$SCRIPT_DIR/data" ]; then
+    mkdir -p "$SCRIPT_DIR/data"
+    echo "  [OK] Carpeta data creada."
+fi
+
 # Verificar Python
 if ! command -v python3 &> /dev/null; then
     echo "  [CRITICO] Python3 no esta instalado."

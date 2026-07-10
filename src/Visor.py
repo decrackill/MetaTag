@@ -140,6 +140,7 @@ else:
     _BASE_DIR = Path(__file__).resolve().parent.parent
 
 _DATA_DIR = _BASE_DIR / "data"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = _DATA_DIR / "visor_config.json"
 
 # Cargar tema inicial desde la configuración
