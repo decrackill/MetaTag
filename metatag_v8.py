@@ -2169,31 +2169,55 @@ class MetaTagApp(tk.Tk):
         """
         Diálogo Sí / No con detección real de X (cancelar).
         Devuelve: True = Sí, False = No, None = cerró con X.
-        Necesario en Linux donde messagebox.askyesno devuelve False con X.
         """
         result = [None]
 
         dlg = tk.Toplevel(self)
-        dlg.title(title)
-        dlg.configure(bg=C["panel"])
+        dlg.title("")                      # sin texto en la barra — el título va adentro
+        dlg.configure(bg=C["bg"])
         dlg.resizable(False, False)
         dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
 
+        # Centrar sobre ventana principal
         self.update_idletasks()
         px = self.winfo_x() + self.winfo_width()  // 2
         py = self.winfo_y() + self.winfo_height() // 2
-        dlg.geometry(f"420x210+{px - 210}+{py - 105}")
+        dlg.geometry(f"440x240+{px - 220}+{py - 120}")
 
-        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        # ── Franja superior de color ──────────────────────────────
+        header = tk.Frame(dlg, bg=C["header_bg"], height=48)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(header, text=f"  {title}",
+                 bg=C["header_bg"], fg=C["header_fg"],
+                 font=FONTS["H2"]).pack(side="left", padx=16, pady=12)
 
-        tk.Label(dlg, text=title, bg=C["panel"], fg=C["accent"],
-                 font=FONTS["H2"]).pack(pady=(18, 6), padx=20)
-        tk.Label(dlg, text=message, bg=C["panel"], fg=C["text2"],
-                 font=FONTS["BODY"], justify="left",
-                 wraplength=380).pack(pady=(0, 18), padx=20)
+        # ── Cuerpo del mensaje ────────────────────────────────────
+        body = tk.Frame(dlg, bg=C["bg"])
+        body.pack(fill="both", expand=True, padx=24, pady=(18, 8))
 
-        btn_row = tk.Frame(dlg, bg=C["panel"])
-        btn_row.pack(pady=(0, 16))
+        # Separar el mensaje en líneas para formatear bullets
+        for line in message.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                tk.Frame(body, bg=C["bg"], height=4).pack(fill="x")
+                continue
+            is_bullet = line.startswith("•")
+            tk.Label(body,
+                     text=line,
+                     bg=C["bg"],
+                     fg=C["text3"] if is_bullet else C["text2"],
+                     font=FONTS["TINY"] if is_bullet else FONTS["BODY"],
+                     anchor="w", justify="left",
+                     wraplength=390).pack(fill="x", pady=(0, 2))
+
+        # ── Separador ─────────────────────────────────────────────
+        tk.Frame(dlg, bg=C["border"], height=1).pack(fill="x")
+
+        # ── Fila de botones ───────────────────────────────────────
+        btn_frame = tk.Frame(dlg, bg=C["panel"], pady=14)
+        btn_frame.pack(fill="x")
 
         def _yes():
             result[0] = True
@@ -2203,14 +2227,32 @@ class MetaTagApp(tk.Tk):
             result[0] = False
             dlg.destroy()
 
-        tk.Button(btn_row, text="Sí", width=10,
-                  bg=C["accent"], fg=C["header_fg"],
-                  font=FONTS["LABEL_B"], relief="flat",
-                  cursor="hand2", command=_yes).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="No", width=10,
-                  bg=C["btn_ghost_bg"], fg=C["text"],
-                  font=FONTS["LABEL"], relief="flat",
-                  cursor="hand2", command=_no).pack(side="left")
+        # Botón "No" a la derecha, "Sí" al lado
+        no_btn = tk.Button(btn_frame, text="  No  ",
+                           bg=C["btn_ghost_bg"], fg=C["text"],
+                           font=FONTS["LABEL"], relief="flat", bd=0,
+                           cursor="hand2", padx=14, pady=7,
+                           highlightthickness=1,
+                           highlightbackground=C["border"],
+                           command=_no)
+        no_btn.pack(side="right", padx=(4, 20))
+
+        yes_btn = tk.Button(btn_frame, text="  Sí  ",
+                            bg=C["accent"], fg=C["header_fg"],
+                            font=FONTS["LABEL_B"], relief="flat", bd=0,
+                            cursor="hand2", padx=14, pady=7,
+                            activebackground=C["accent_hover"],
+                            activeforeground=C["header_fg"],
+                            command=_yes)
+        yes_btn.pack(side="right", padx=(0, 4))
+
+        # Hover suave en "No"
+        no_btn.bind("<Enter>", lambda e: no_btn.configure(bg=C["border"]))
+        no_btn.bind("<Leave>", lambda e: no_btn.configure(bg=C["btn_ghost_bg"]))
+
+        dlg.focus_set()
+        dlg.bind("<Return>", lambda e: _yes())
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
 
         self.wait_window(dlg)
         return result[0]
