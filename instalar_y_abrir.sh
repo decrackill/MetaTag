@@ -51,13 +51,9 @@ echo ""
 echo "  Todo listo. Abriendo MetaTag..."
 echo ""
 
-# Ejecutar MetaTag en primer plano (la terminal se cierra cuando cierres la app)
-"$PY" "$SCRIPT_DIR/metatag_v8.py"
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -ne 0 ]; then
-    echo ""
-    echo "  [ERROR] MetaTag terminó con error (código $EXIT_CODE)."
-    echo ""
-fi
-read -p "  Presiona Enter para cerrar..."
+# Ejecutar MetaTag脱离 de la terminal y cerrarla
+LOG_FILE="$SCRIPT_DIR/metatag_debug.log"
+setsid "$PY" "$SCRIPT_DIR/metatag_v8.py" > "$LOG_FILE" 2>&1 &
+disown
+sleep 0.3
+exit 0
