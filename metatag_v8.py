@@ -40,6 +40,11 @@ except ImportError:
 
 from metatag_graficas import show_stats as _show_stats_external
 from metatag_widgets import ExcelGrid
+from metatag_writer import (
+    META_GROUPS, META_GROUP_ORDER,
+    formatear_metadatos, read_existing_metadata, check_metadata_divergence,
+    write_meta, write_jpeg, write_png, write_tiff,
+)
 import logging
 
 logging.basicConfig(
@@ -2724,71 +2729,16 @@ class MetaTagApp(tk.Tk):
     #  ESCRITURA DE METADATOS
     # ─────────────────────────────────────────────────────────────
     def _formatear_metadatos(self, meta: dict, organizado: bool = True) -> str:
-        if not organizado:
-            return "\n".join(f"{k}: {v}" for k, v in meta.items())
-        partes, restantes = dict(meta), []
-        for grupo in META_GROUP_ORDER:
-            items = {k: v for k, v in meta.items() if k in META_GROUPS[grupo]}
-            if not items: continue
-            restantes.append(f"[{grupo}]")
-            for k, v in items.items(): restantes.append(f"  {k}: {v}")
-            for k in items: partes.pop(k, None)
-        if partes:
-            restantes.append("[Otros]")
-            for k, v in partes.items(): restantes.append(f"  {k}: {v}")
-        return "\n".join(restantes)
+        return formatear_metadatos(meta, organizado)
 
     def _write_meta(self, path: str, meta: dict, organizado: bool = False):
-        """Escribe el diccionario `meta` en los metadatos del archivo en `path`."""
-        if not PIL_OK: raise RuntimeError("Pillow / piexif no instalados.")
-        ext = Path(path).suffix.lower()
-        if ext in (".jpg", ".jpeg"):    self._write_jpeg(path, meta, organizado)
-        elif ext == ".png":             self._write_png(path,  meta, organizado)
-        elif ext in (".tif", ".tiff"):  self._write_tiff(path, meta, organizado)
-        else:
-            try:    self._write_jpeg(path, meta, organizado)
-            except Exception: raise RuntimeError(f"Formato no soportado: {ext}")
+        write_meta(path, meta, organizado)
 
     def _read_existing_metadata(self, path: str) -> dict:
-        """
-        Lee el JSON de metadatos ya escrito por MetaTag dentro de una imagen
-        (si existe). Devuelve {} si no hay datos previos o no se puede leer.
-        """
-        if not PIL_OK:
-            return {}
-        try:
-            ext = Path(path).suffix.lower()
-            with Image.open(path) as img:
-                info = img.info
-                if ext in (".jpg", ".jpeg") and "exif" in info:
-                    ed = piexif.load(info["exif"])
-                    uc = ed.get("Exif", {}).get(piexif.ExifIFD.UserComment)
-                    if uc:
-                        return json.loads(piexif.helper.UserComment.load(uc))
-                elif ext == ".png":
-                    c = getattr(img, "text", {}).get("Comment", "")
-                    if c:
-                        return json.loads(c)
-        except Exception:
-            pass
-        return {}
+        return read_existing_metadata(path)
 
-    def _check_metadata_divergence(self, path, expected_meta):  # -> list
-        """
-        Compara los metadatos ya escritos en la imagen contra los valores
-        que el Excel dice que DEBERÍAN estar ahí (expected_meta).
-        Devuelve la lista de campos que divergen, para loguearlos antes
-        de sobreescribir. El Excel siempre se trata como fuente de verdad.
-        """
-        existing = self._read_existing_metadata(path)
-        if not existing:
-            return []
-        diffs = []
-        for k, v_new in expected_meta.items():
-            v_old = str(existing.get(k, "")).strip()
-            if v_old and v_old != str(v_new).strip():
-                diffs.append(f"{k}: '{v_old}' → '{v_new}'")
-        return diffs
+    def _check_metadata_divergence(self, path, expected_meta):
+        return check_metadata_divergence(path, expected_meta)
 
     def _verify_source_images(self):
         """
@@ -2989,39 +2939,13 @@ class MetaTagApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _write_jpeg(self, path: str, meta: dict, organizado: bool = True):
-        with Image.open(path) as _img_src:
-            img = _img_src.copy()
-        texto_organizado = self._formatear_metadatos(meta, organizado)
-        as_json          = json.dumps(meta, ensure_ascii=False)
-        keywords         = ";".join(v for v in meta.values() if v.strip())
-        try:    exif = piexif.load(img.info.get("exif", b""))
-        except Exception: exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
-        exif["0th"][piexif.ImageIFD.ImageDescription] = texto_organizado.encode("utf-8")
-        exif["Exif"][piexif.ExifIFD.UserComment] = piexif.helper.UserComment.dump(
-            as_json, encoding="unicode")
-        exif["0th"][40092] = (texto_organizado + "\x00").encode("utf-16-le")
-        exif["0th"][40094] = (keywords         + "\x00").encode("utf-16-le")
-        img.save(path, "jpeg", exif=piexif.dump(exif), quality=95)
+        write_jpeg(path, meta, organizado)
 
     def _write_png(self, path: str, meta: dict, organizado: bool = True):
-        from PIL import PngImagePlugin
-        with Image.open(path) as _img_src:
-            img = _img_src.copy()
-        info = PngImagePlugin.PngInfo()
-        texto_organizado = self._formatear_metadatos(meta, organizado)
-        for k, v in meta.items(): info.add_text(str(k), str(v))
-        info.add_text("Description", texto_organizado)
-        info.add_text("Comment",     json.dumps(meta, ensure_ascii=False))
-        img.save(path, "PNG", pnginfo=info)
+        write_png(path, meta, organizado)
 
     def _write_tiff(self, path: str, meta: dict, organizado: bool = True):
-        with Image.open(path) as _img_src:
-            img = _img_src.copy()
-        texto_organizado = self._formatear_metadatos(meta, organizado)
-        try:    exif = piexif.load(img.info.get("exif", b""))
-        except Exception: exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
-        exif["0th"][piexif.ImageIFD.ImageDescription] = texto_organizado.encode("utf-8")
-        img.save(path, exif=piexif.dump(exif))
+        write_tiff(path, meta, organizado)
 
     # ─────────────────────────────────────────────────────────────
     #  LOG Y PROGRESO
