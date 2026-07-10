@@ -137,9 +137,10 @@ THEMES = {
 if getattr(sys, "frozen", False):
     _BASE_DIR = Path(sys.executable).parent
 else:
-    _BASE_DIR = Path(__file__).parent
+    _BASE_DIR = Path(__file__).resolve().parent.parent
 
-CONFIG_FILE = _BASE_DIR / "visor_config.json"
+_DATA_DIR = _BASE_DIR / "data"
+CONFIG_FILE = _DATA_DIR / "visor_config.json"
 
 # Cargar tema inicial desde la configuración
 try:

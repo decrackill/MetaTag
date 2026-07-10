@@ -47,8 +47,11 @@ from metatag_writer import (
 )
 import logging
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DATA_DIR = _PROJECT_ROOT / "data"
+
 logging.basicConfig(
-    filename='metatag_debug.log',
+    filename=str(_DATA_DIR / 'metatag_debug.log'),
     level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -317,7 +320,7 @@ class MetaTagApp(tk.Tk):
         self.meta_mode_organized.trace_add("write", lambda *_: self._update_meta_preview())
 
         if getattr(sys, "frozen", False): base = Path(sys.executable).parent
-        else: base = Path(__file__).parent
+        else: base = Path(__file__).resolve().parent.parent
         self.output_base   = base
         self.output_folder = base / "Metadatos_Escritos"
 
@@ -2988,7 +2991,7 @@ class MetaTagApp(tk.Tk):
             messagebox.showinfo("Carpeta de salida", str(self.output_folder))
 
     def _config_path(self) -> Path:
-        return self.output_base / "metatag_config.json"
+        return _DATA_DIR / "metatag_config.json"
 
     def _save_config(self):
         try:

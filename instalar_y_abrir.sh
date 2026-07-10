@@ -52,8 +52,8 @@ echo "  Todo listo. Abriendo MetaTag..."
 echo ""
 
 # Ejecutar MetaTag脱离 de la terminal y cerrarla
-LOG_FILE="$SCRIPT_DIR/metatag_debug.log"
-setsid "$PY" "$SCRIPT_DIR/metatag_v8.py" > "$LOG_FILE" 2>&1 &
+LOG_FILE="$SCRIPT_DIR/data/metatag_debug.log"
+setsid "$PY" "$SCRIPT_DIR/src/metatag_v8.py" > "$LOG_FILE" 2>&1 &
 disown
 sleep 0.3
 exit 0

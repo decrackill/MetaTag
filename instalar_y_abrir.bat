@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 title MetaTag v8.9 - Lanzador Profesional
 
-set PROGRAMA=metatag_v8.py
+set PROGRAMA=src\metatag_v8.py
 set VERSION=v8.9
 
 echo.
