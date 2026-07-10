@@ -11,6 +11,21 @@ echo     MetaTag %VERSION% - Escritor de Metadatos Arqueologicos
 echo  ============================================================
 echo.
 
+:: ── Auto-organizar: si no existe src/, mover .py a src/ ──
+if not exist "%~dp0src" (
+    if exist "%~dp0metatag_v8.py" (
+        mkdir "%~dp0src"
+        echo  [INFO] Organizando archivos en carpeta src/...
+        move "%~dp0metatag_v8.py"      "%~dp0src\"
+        move "%~dp0metatag_graficas.py" "%~dp0src\"
+        move "%~dp0metatag_widgets.py"  "%~dp0src\"
+        move "%~dp0metatag_writer.py"   "%~dp0src\"
+        move "%~dp0Visor.py"            "%~dp0src\"
+        move "%~dp0editor_casillas_backup.py" "%~dp0src\" 2>nul
+        echo  [OK] Archivos movidos a src/.
+    )
+)
+
 :: ── Crear carpeta data si no existe ──
 if not exist "%~dp0data" (
     mkdir "%~dp0data"

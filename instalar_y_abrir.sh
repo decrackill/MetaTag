@@ -10,6 +10,21 @@ echo "    MetaTag v8.9 - Instalador y Lanzador Linux"
 echo " ============================================================"
 echo ""
 
+# Auto-organizar: si no existe src/, mover .py a src/
+if [ ! -d "$SCRIPT_DIR/src" ]; then
+    if [ -f "$SCRIPT_DIR/metatag_v8.py" ]; then
+        mkdir -p "$SCRIPT_DIR/src"
+        echo "  [INFO] Organizando archivos en carpeta src/..."
+        mv "$SCRIPT_DIR"/metatag_v8.py       "$SCRIPT_DIR/src/"
+        mv "$SCRIPT_DIR"/metatag_graficas.py  "$SCRIPT_DIR/src/"
+        mv "$SCRIPT_DIR"/metatag_widgets.py   "$SCRIPT_DIR/src/"
+        mv "$SCRIPT_DIR"/metatag_writer.py    "$SCRIPT_DIR/src/"
+        mv "$SCRIPT_DIR"/Visor.py             "$SCRIPT_DIR/src/"
+        mv "$SCRIPT_DIR"/editor_casillas_backup.py "$SCRIPT_DIR/src/" 2>/dev/null
+        echo "  [OK] Archivos movidos a src/."
+    fi
+fi
+
 # Crear carpeta data si no existe
 if [ ! -d "$SCRIPT_DIR/data" ]; then
     mkdir -p "$SCRIPT_DIR/data"
