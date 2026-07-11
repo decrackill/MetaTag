@@ -1,14 +1,16 @@
 """
 Image Sync — Renombrador de fotos desde Excel
-Misma paleta de temas que MetaTag. Explorador de archivos nativo del SO.
+Misna paleta de temas que MetaTag. Explorador de archivos nativo del SO.
 """
 
 import csv
 import json
 import logging
 import os
+import platform
 import re
 import shutil
+import subprocess
 import threading
 import traceback
 from collections import OrderedDict
@@ -74,6 +76,7 @@ FONTS = {
     "BODY": ("Segoe UI", 10),
     "TINY": ("Segoe UI", 8),
     "MONO": ("Consolas", 9),
+    "BIG_NUM": ("Georgia", 16, "bold"),
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -201,9 +204,18 @@ class RenameModel:
         self._names = names
         return len(self._names)
 
-    def build_preview(self) -> list[tuple[str, str, Path]]:
-        return [(photo.name, name + photo.suffix, photo)
-                for photo, name in zip(self._photos, self._names)]
+    def build_preview(self, keep_ext: bool = True) -> list[tuple[str, str, Path]]:
+        result = []
+        for photo, name in zip(self._photos, self._names):
+            if keep_ext:
+                new_name = name + photo.suffix
+            else:
+                if "." in name:
+                    new_name = name
+                else:
+                    new_name = name + photo.suffix
+            result.append((photo.name, new_name, photo))
+        return result
 
     def rename_all(self, on_progress, on_done, cancel_ev=None, copy_mode=False):
         total = min(len(self._photos), len(self._names))
@@ -304,9 +316,9 @@ class ImageSyncApp(tk.Tk):
             C = dict(THEMES[CURRENT_THEME])
 
         self.configure(bg=C["bg"])
-        self.minsize(820, 620)
+        self.minsize(900, 680)
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        w, h = min(1050, int(sw * 0.68)), min(780, int(sh * 0.82))
+        w, h = min(1100, int(sw * 0.70)), min(850, int(sh * 0.85))
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
         self._parent_window = parent_window
@@ -317,6 +329,12 @@ class ImageSyncApp(tk.Tk):
         self._thumb_win: tk.Toplevel | None = None
         self._thumb_lbl: tk.Label | None = None
         self._loading_columns = False
+        self._simulated = False
+
+        self._opt_keep_ext = tk.BooleanVar(value=True)
+        self._opt_sort_alpha = tk.BooleanVar(value=False)
+        self._opt_backup_log = tk.BooleanVar(value=True)
+        self._opt_open_folder = tk.BooleanVar(value=False)
 
         self._apply_theme()
         self._build_ui()
@@ -335,6 +353,7 @@ class ImageSyncApp(tk.Tk):
             self.destroy()
         self.protocol("WM_DELETE_WINDOW", _on_close)
 
+        self._set_step(0)
         if folder_arg:
             self._entry_folder.delete(0, "end")
             self._entry_folder.insert(0, folder_arg)
@@ -348,10 +367,12 @@ class ImageSyncApp(tk.Tk):
         self.configure(bg=C["bg"])
         self.title(f"Image Sync — {CURRENT_THEME}")
 
+    # ════════════════════════════════════════════════════════════
+    #  BUILD UI
+    # ════════════════════════════════════════════════════════════
     def _build_ui(self):
         style = ttk.Style(self)
         style.theme_use("clam")
-
         style.configure(".", background=C["bg"], foreground=C["text"])
         style.configure("TFrame", background=C["bg"])
         style.configure("TLabel", background=C["bg"], foreground=C["text"], font=FONTS["LABEL"])
@@ -362,19 +383,13 @@ class ImageSyncApp(tk.Tk):
         style.configure("TButton", background=C["panel"], foreground=C["text"],
                          font=FONTS["LABEL_B"], borderwidth=1, relief="flat", padding=(10, 5))
         style.map("TButton",
-                  background=[("active", C["accent_light"]), ("disabled", C["card"]),
-                              ("pressed", C["accent"])],
-                  foreground=[("active", C["accent_hover"]), ("disabled", C["text3"]),
-                              ("pressed", C["bg"])],
-                  relief=[("pressed", "sunken")])
+                  background=[("active", C["accent_light"]), ("disabled", C["card"])],
+                  foreground=[("active", C["accent_hover"]), ("disabled", C["text3"])])
         style.configure("Accent.TButton", background=C["accent"], foreground=C["bg"],
                          font=FONTS["LABEL_B"], borderwidth=0, relief="flat", padding=(12, 5))
         style.map("Accent.TButton",
-                  background=[("active", C["accent_hover"]), ("disabled", C["card"]),
-                              ("pressed", C["accent_light"])],
-                  foreground=[("active", C["bg"]), ("disabled", C["text3"]),
-                              ("pressed", C["bg"])],
-                  relief=[("pressed", "sunken")])
+                  background=[("active", C["accent_hover"]), ("disabled", C["card"])],
+                  foreground=[("active", C["bg"]), ("disabled", C["text3"])])
         style.configure("Header.TFrame", background=C["header_bg"])
         style.configure("Header.TLabel", background=C["header_bg"], foreground=C["header_fg"],
                          font=FONTS["TITLE"])
@@ -398,207 +413,445 @@ class ImageSyncApp(tk.Tk):
         style.configure("TOptionMenu", background=C["panel"], foreground=C["text"],
                          font=FONTS["LABEL"])
 
-        # ── Header ──
-        hdr = ttk.Frame(self, style="Header.TFrame")
+        self._build_step_bar()
+        self._build_header()
+        self._build_summary_panel(self)
+        self._build_folder_section(self)
+        self._build_excel_section(self)
+        self._build_options_panel(self)
+        self._build_preview_section(self)
+        self._build_action_section(self)
+        self._build_log_section(self)
+        self._build_footer()
+
+        self.tree.tag_configure("ok", foreground=C["ok"])
+        self.tree.tag_configure("warn", foreground=C["warn"])
+        self.tree.tag_configure("err", foreground=C["err"])
+        self.tree.tag_configure("even", background=C["row_even"])
+        self.tree.tag_configure("odd", background=C["row_odd"])
+
+    def _build_step_bar(self):
+        bar = tk.Canvas(self, bg=C["header_bg"], height=36, highlightthickness=0)
+        bar.pack(fill="x")
+        self._step_canvas = bar
+        self._step_labels = []
+        steps = ["① Emparejar", "② Validar", "③ Vista previa", "④ Renombrar", "⑤ Resultado"]
+        self.after(100, lambda: self._draw_steps(steps))
+
+    def _draw_steps(self, steps):
+        bar = self._step_canvas
+        bar.delete("all")
+        w = bar.winfo_width()
+        n = len(steps)
+        spacing = w // (n + 1)
+        self._step_positions = []
+        self._step_items = []
+        for i, txt in enumerate(steps):
+            x = spacing * (i + 1)
+            y = 18
+            self._step_positions.append((x, y))
+            oid = bar.create_oval(x - 12, y - 12, x + 12, y + 12,
+                                   fill=C["card"], outline=C["border"], width=1, tags=f"step{i}")
+            tid = bar.create_text(x, y, text=str(i + 1), fill=C["text3"],
+                                   font=FONTS["LABEL_B"], tags=f"step{i}_num")
+            lid = bar.create_text(x, y + 20, text=txt, fill=C["text3"],
+                                   font=FONTS["TINY"], tags=f"step{i}_txt")
+            self._step_items.append((oid, tid, lid))
+            if i < n - 1:
+                bar.create_line(x + 14, y, spacing * (i + 2) - 14, y,
+                                 fill=C["border"], width=1, tags="line")
+        self._current_step = 0
+
+    def _set_step(self, n):
+        if not hasattr(self, "_step_canvas") or not hasattr(self, "_step_items"):
+            return
+        self._current_step = n
+        bar = self._step_canvas
+        for i, (oid, tid, lid) in enumerate(self._step_items):
+            if i < n:
+                bar.itemconfigure(oid, fill=C["accent_light"], outline=C["accent"])
+                bar.itemconfigure(tid, fill=C["bg"])
+                bar.itemconfigure(lid, fill=C["accent"])
+            elif i == n:
+                bar.itemconfigure(oid, fill=C["accent"], outline=C["accent_hover"])
+                bar.itemconfigure(tid, fill=C["bg"])
+                bar.itemconfigure(lid, fill=C["accent_hover"])
+            else:
+                bar.itemconfigure(oid, fill=C["card"], outline=C["border"])
+                bar.itemconfigure(tid, fill=C["text3"])
+                bar.itemconfigure(lid, fill=C["text3"])
+
+    def _build_header(self):
+        hdr = tk.Frame(self, bg=C["header_bg"], height=48)
         hdr.pack(fill="x")
-        ttk.Label(hdr, text="  ✏  Image Sync", style="Header.TLabel").pack(side="left", padx=6, pady=10)
-        ttk.Label(hdr, text="Renombrador de fotos desde Excel", style="Header2.TLabel").pack(side="left", padx=4)
-        self._lbl_theme = ttk.Label(hdr, text=f"  🎨 {CURRENT_THEME}", style="Header2.TLabel")
-        self._lbl_theme.pack(side="right", padx=12)
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="  ✏  Image Sync", bg=C["header_bg"], fg=C["header_fg"],
+                  font=FONTS["TITLE"]).pack(side="left", padx=8, pady=10)
+        tk.Label(hdr, text="Renombrador de fotos desde Excel", bg=C["header_bg"],
+                  fg=C["text2"], font=FONTS["LABEL"]).pack(side="left", padx=4)
+        tk.Label(hdr, text=f"🎨 {CURRENT_THEME}  ", bg=C["header_bg"],
+                  fg=C["text2"], font=FONTS["LABEL"]).pack(side="right", padx=8)
 
-        # ── Body ──
-        body = ttk.Frame(self)
-        body.pack(fill="both", expand=True, padx=14, pady=10)
+    def _build_summary_panel(self, parent):
+        frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
+                          highlightbackground=C["border"])
+        frame.pack(fill="x", padx=14, pady=(8, 4))
 
-        self._build_folder_section(body)
-        self._build_excel_section(body)
-        self._build_preview_section(body)
-        self._build_action_section(body)
+        metrics = [
+            ("Fotos", "0", "n_fotos"),
+            ("Nombres", "0", "n_nombres"),
+            ("Match", "0", "n_match"),
+            ("Conflictos", "0", "n_conflicts"),
+        ]
+        self._summary_labels = {}
+        for i, (label, val, key) in enumerate(metrics):
+            col = tk.Frame(frame, bg=C["surface"])
+            col.pack(side="left", expand=True, fill="both", padx=12, pady=6)
+            tk.Label(col, text=label, bg=C["surface"], fg=C["text3"],
+                      font=FONTS["TINY"]).pack(anchor="w")
+            lbl = tk.Label(col, text=val, bg=C["surface"], fg=C["text"],
+                            font=FONTS["BIG_NUM"])
+            lbl.pack(anchor="w")
+            self._summary_labels[key] = lbl
 
-        # ── Footer ──
-        ftr = ttk.Frame(self)
-        ftr.pack(fill="x", side="bottom")
-        ttk.Label(ftr, text="  Hover sobre fila → miniatura  •  Ctrl+Z = Deshacer",
-                  foreground=C["text3"]).pack(pady=4)
-        self.bind_all("<Control-z>", lambda _: self._on_undo())
+        self._summary_status = tk.Label(frame, text="❌ Faltan datos",
+                                          bg=C["surface"], fg=C["err"],
+                                          font=FONTS["LABEL_B"])
+        self._summary_status.pack(side="right", padx=16)
+
+    def _update_summary(self):
+        n_fotos = len(self._model.photos)
+        n_nombres = len(self._model.names)
+        correspondencias = min(n_fotos, n_nombres)
+        all_new = [name + photo.suffix for photo, name in zip(self._model.photos, self._model.names)]
+        from collections import Counter
+        dup_count = sum(1 for v in Counter(all_new).values() if v > 1)
+        empty_count = sum(1 for name in self._model.names if not name.strip())
+        conflictos = dup_count + empty_count
+
+        self._summary_labels["n_fotos"].configure(text=str(n_fotos))
+        self._summary_labels["n_nombres"].configure(text=str(n_nombres))
+        self._summary_labels["n_match"].configure(text=str(correspondencias))
+        self._summary_labels["n_conflicts"].configure(
+            text=str(conflictos),
+            fg=C["err"] if conflictos > 0 else C["text"])
+
+        if n_fotos == 0 or n_nombres == 0:
+            self._summary_status.configure(text="❌ Faltan datos", fg=C["err"])
+        elif conflictos > 0:
+            self._summary_status.configure(text=f"⚠ {conflictos} conflicto(s)", fg=C["warn"])
+        else:
+            self._summary_status.configure(text="✓ Listo para renombrar", fg=C["ok"])
 
     def _build_folder_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="  1 · Carpeta de fotos  ", padding=10)
-        frame.pack(fill="x", pady=(0, 8))
+        frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
+                          highlightbackground=C["border"])
+        frame.pack(fill="x", padx=14, pady=(0, 4))
 
-        row = ttk.Frame(frame)
-        row.pack(fill="x")
-        self._entry_folder = tk.Entry(row, bg=C["surface"], fg=C["text"],
+        header = tk.Frame(frame, bg=C["surface"])
+        header.pack(fill="x", padx=10, pady=(8, 0))
+        tk.Label(header, text="1 · Carpeta de fotos", bg=C["surface"], fg=C["accent"],
+                  font=FONTS["LABEL_B"]).pack(side="left")
+
+        row = tk.Frame(frame, bg=C["surface"])
+        row.pack(fill="x", padx=10, pady=(4, 4))
+        self._entry_folder = tk.Entry(row, bg=C["panel"], fg=C["text"],
                                        insertbackground=C["text"], font=FONTS["BODY"],
                                        relief="flat", bd=2, highlightthickness=1,
                                        highlightbackground=C["border"],
                                        highlightcolor=C["accent"])
         self._entry_folder.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(row, text="📂 Explorar", command=self._browse_folder).pack(side="left", padx=(0, 4))
-        ttk.Button(row, text="Cargar fotos", style="Accent.TButton",
-                   command=self._on_load_photos).pack(side="left")
 
-        row2 = ttk.Frame(frame)
-        row2.pack(fill="x", pady=(8, 0))
-        ttk.Label(row2, text="Ordenar por:").pack(side="left")
+        def _mk_small_btn(parent, text, cmd):
+            return tk.Button(parent, text=text, command=cmd,
+                              bg=C["panel"], fg=C["text"], activebackground=C["accent_light"],
+                              activeforeground=C["text"], font=FONTS["LABEL_B"],
+                              relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+                              highlightthickness=1, highlightbackground=C["border"],
+                              highlightcolor=C["accent"])
+
+        _mk_small_btn(row, "📂 Explorar", self._browse_folder).pack(side="left", padx=(0, 4))
+        _mk_small_btn(row, "Cargar fotos", self._on_load_photos).pack(side="left")
+
+        row2 = tk.Frame(frame, bg=C["surface"])
+        row2.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Label(row2, text="Ordenar por:", bg=C["surface"], fg=C["text3"],
+                  font=FONTS["TINY"]).pack(side="left")
         self._sort_var = tk.StringVar(value="Orden numérico")
-        sort_menu = ttk.OptionMenu(row2, self._sort_var, "Orden numérico", *SORT_OPTIONS.keys())
-        sort_menu.pack(side="left", padx=(6, 0))
-
-        self._lbl_folder_status = ttk.Label(row2, text="", foreground=C["text2"])
+        self._sort_menu = ttk.OptionMenu(row2, self._sort_var, "Orden numérico", *SORT_OPTIONS.keys())
+        self._sort_menu.pack(side="left", padx=(6, 0))
+        self._lbl_folder_status = tk.Label(row2, text="", bg=C["surface"], fg=C["text3"],
+                                            font=FONTS["TINY"])
         self._lbl_folder_status.pack(side="right")
 
     def _build_excel_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="  2 · Archivo Excel  ", padding=10)
-        frame.pack(fill="x", pady=(0, 8))
+        frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
+                          highlightbackground=C["border"])
+        frame.pack(fill="x", padx=14, pady=(0, 4))
 
-        row = ttk.Frame(frame)
-        row.pack(fill="x")
-        self._entry_excel = tk.Entry(row, bg=C["surface"], fg=C["text"],
+        header = tk.Frame(frame, bg=C["surface"])
+        header.pack(fill="x", padx=10, pady=(8, 0))
+        tk.Label(header, text="2 · Archivo Excel", bg=C["surface"], fg=C["accent"],
+                  font=FONTS["LABEL_B"]).pack(side="left")
+
+        row = tk.Frame(frame, bg=C["surface"])
+        row.pack(fill="x", padx=10, pady=(4, 4))
+        self._entry_excel = tk.Entry(row, bg=C["panel"], fg=C["text"],
                                       insertbackground=C["text"], font=FONTS["BODY"],
                                       relief="flat", bd=2, highlightthickness=1,
                                       highlightbackground=C["border"],
                                       highlightcolor=C["accent"])
         self._entry_excel.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(row, text="📂 Explorar", command=self._browse_excel).pack(side="left", padx=(0, 4))
-        ttk.Button(row, text="Cargar Excel", style="Accent.TButton",
-                   command=self._on_load_excel).pack(side="left")
 
-        row2 = ttk.Frame(frame)
-        row2.pack(fill="x", pady=(8, 0))
-        ttk.Label(row2, text="Hoja:").pack(side="left")
+        def _mk_small_btn(parent, text, cmd):
+            return tk.Button(parent, text=text, command=cmd,
+                              bg=C["panel"], fg=C["text"], activebackground=C["accent_light"],
+                              activeforeground=C["text"], font=FONTS["LABEL_B"],
+                              relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+                              highlightthickness=1, highlightbackground=C["border"],
+                              highlightcolor=C["accent"])
+
+        _mk_small_btn(row, "📂 Explorar", self._browse_excel).pack(side="left", padx=(0, 4))
+        _mk_small_btn(row, "Cargar Excel", self._on_load_excel).pack(side="left")
+
+        row2 = tk.Frame(frame, bg=C["surface"])
+        row2.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Label(row2, text="Hoja:", bg=C["surface"], fg=C["text3"],
+                  font=FONTS["TINY"]).pack(side="left")
         self._sheet_var = tk.StringVar()
         self._sheet_menu = ttk.OptionMenu(row2, self._sheet_var, "—")
-        self._sheet_menu.pack(side="left", padx=(6, 12))
+        self._sheet_menu.pack(side="left", padx=(4, 12))
         self._sheet_menu.configure(state="disabled")
-
-        ttk.Label(row2, text="Columna:").pack(side="left")
+        tk.Label(row2, text="Columna:", bg=C["surface"], fg=C["text3"],
+                  font=FONTS["TINY"]).pack(side="left")
         self._col_var = tk.StringVar()
         self._col_menu = ttk.OptionMenu(row2, self._col_var, "—")
-        self._col_menu.pack(side="left", padx=(6, 0))
+        self._col_menu.pack(side="left", padx=(4, 0))
         self._col_menu.configure(state="disabled")
-
-        self._lbl_excel_status = ttk.Label(row2, text="", foreground=C["text2"])
+        self._lbl_excel_status = tk.Label(row2, text="", bg=C["surface"], fg=C["text3"],
+                                           font=FONTS["TINY"])
         self._lbl_excel_status.pack(side="right")
 
-    def _build_preview_section(self, parent):
-        frame = ttk.LabelFrame(parent, text="  3 · Vista previa  ", padding=10)
-        frame.pack(fill="both", expand=True, pady=(0, 8))
+    def _build_options_panel(self, parent):
+        self._options_visible = tk.BooleanVar(value=False)
+        container = tk.Frame(parent, bg=C["bg"])
+        container.pack(fill="x", padx=14, pady=(0, 4))
 
-        toolbar = ttk.Frame(frame)
-        toolbar.pack(fill="x", pady=(0, 6))
-        ttk.Label(toolbar, text="Buscar:").pack(side="left")
+        def _toggle():
+            if self._options_visible.get():
+                content.pack(fill="x", padx=14, pady=(0, 4))
+                btn.configure(text="▾ Opciones")
+            else:
+                content.pack_forget()
+                btn.configure(text="▸ Opciones")
+
+        btn = tk.Button(container, text="▸ Opciones", bg=C["bg"], fg=C["text3"],
+                         activebackground=C["bg"], activeforeground=C["text"],
+                         font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
+                         command=lambda: [self._options_visible.set(not self._options_visible.get()), _toggle()])
+        btn.pack(anchor="w")
+
+        content = tk.Frame(container, bg=C["surface"], highlightthickness=1,
+                            highlightbackground=C["border"])
+
+        opts = [
+            (self._opt_keep_ext, "Mantener extensión original"),
+            (self._opt_sort_alpha, "Ordenar alfabéticamente antes de emparejar"),
+            (self._opt_backup_log, "Crear log de seguridad al renombrar"),
+            (self._opt_open_folder, "Abrir carpeta al finalizar"),
+        ]
+        for var, text in opts:
+            tk.Checkbutton(content, text=text, variable=var,
+                            bg=C["surface"], fg=C["text2"], activebackground=C["surface"],
+                            activeforeground=C["text"], selectcolor=C["panel"],
+                            font=FONTS["TINY"], bd=0, highlightthickness=0,
+                            relief="flat").pack(anchor="w", padx=12, pady=2)
+
+    def _build_preview_section(self, parent):
+        frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
+                          highlightbackground=C["border"])
+        frame.pack(fill="both", expand=True, padx=14, pady=(0, 4))
+
+        header = tk.Frame(frame, bg=C["surface"])
+        header.pack(fill="x", padx=10, pady=(8, 0))
+        tk.Label(header, text="3 · Vista previa", bg=C["surface"], fg=C["accent"],
+                  font=FONTS["LABEL_B"]).pack(side="left")
+
+        search_frame = tk.Frame(frame, bg=C["surface"])
+        search_frame.pack(fill="x", padx=10, pady=(6, 4))
+        tk.Label(search_frame, text="🔍", bg=C["surface"], fg=C["text3"],
+                  font=FONTS["BODY"]).pack(side="left")
         self._filter_var = tk.StringVar()
         self._filter_var.trace_add("write", lambda *_: self._apply_filter())
-        search = tk.Entry(toolbar, textvariable=self._filter_var, bg=C["surface"],
-                          fg=C["text"], insertbackground=C["text"], font=FONTS["BODY"],
-                          relief="flat", bd=2, width=28, highlightthickness=1,
-                          highlightbackground=C["border"], highlightcolor=C["accent"])
-        search.pack(side="left", padx=(6, 0))
+        search = tk.Entry(search_frame, textvariable=self._filter_var,
+                          bg=C["panel"], fg=C["text"], insertbackground=C["text"],
+                          font=FONTS["BODY"], relief="flat", bd=2, width=30,
+                          highlightthickness=1, highlightbackground=C["border"],
+                          highlightcolor=C["accent"])
+        search.pack(side="left", padx=(4, 8))
+        search.insert(0, "")
+        search.configure(fg=C["text3"])
+        def _on_focus_in(e):
+            if search.get() == "":
+                search.delete(0, "end")
+                search.configure(fg=C["text"])
+        def _on_focus_out(e):
+            if search.get() == "":
+                search.insert(0, "")
+                search.configure(fg=C["text3"])
+        search.bind("<FocusIn>", _on_focus_in)
+        search.bind("<FocusOut>", _on_focus_out)
 
-        self._lbl_count = ttk.Label(toolbar, text="", foreground=C["text2"])
+        self._lbl_count = tk.Label(search_frame, text="0 archivos", bg=C["surface"],
+                                    fg=C["text3"], font=FONTS["TINY"])
         self._lbl_count.pack(side="right")
 
-        tree_frame = ttk.Frame(frame)
-        tree_frame.pack(fill="both", expand=True)
+        tree_frame = tk.Frame(frame, bg=C["surface"])
+        tree_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
-        cols = ("num", "original", "nuevo")
-        self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
-        self._tree.heading("num", text="#", anchor="e")
-        self._tree.heading("original", text="Original", anchor="w")
-        self._tree.heading("nuevo", text="Nuevo nombre", anchor="w")
-        self._tree.column("num", width=44, anchor="e")
-        self._tree.column("original", width=320, anchor="w")
-        self._tree.column("nuevo", width=320, anchor="w")
+        cols = ("num", "estado", "original", "nuevo")
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=12)
+        self.tree.heading("num", text="#", anchor="e")
+        self.tree.heading("estado", text="Estado", anchor="center")
+        self.tree.heading("original", text="Original", anchor="w")
+        self.tree.heading("nuevo", text="Nuevo nombre", anchor="w")
+        self.tree.column("num", width=40, anchor="e", stretch=False)
+        self.tree.column("estado", width=60, anchor="center", stretch=False)
+        self.tree.column("original", width=280, anchor="w")
+        self.tree.column("nuevo", width=280, anchor="w")
 
-        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self._tree.yview)
-        self._tree.configure(yscrollcommand=scroll.set)
-        self._tree.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        self._tree.bind("<Enter>", self._on_enter_tree)
-        self._tree.bind("<Leave>", self._on_leave_tree)
-        self._tree.bind("<Motion>", self._on_hover_thumb)
-        self._tree.bind("<MouseWheel>", self._on_scroll_thumb)
-        self._tree.bind("<Button-4>", self._on_scroll_thumb)
-        self._tree.bind("<Button-5>", self._on_scroll_thumb)
+        self.tree.bind("<Enter>", self._on_enter_tree)
+        self.tree.bind("<Leave>", self._on_leave_tree)
+        self.tree.bind("<Motion>", self._on_hover_thumb)
+        self.tree.bind("<MouseWheel>", self._on_scroll_thumb)
+        self.tree.bind("<Button-4>", self._on_scroll_thumb)
+        self.tree.bind("<Button-5>", self._on_scroll_thumb)
 
     def _build_action_section(self, parent):
-        frame = ttk.Frame(parent)
-        frame.pack(fill="x")
+        frame = tk.Frame(parent, bg=C["bg"])
+        frame.pack(fill="x", padx=14, pady=(0, 4))
 
-        self._progress = ttk.Progressbar(frame, mode="determinate")
-        self._progress.pack(fill="x", pady=(0, 8))
+        self._progress_canvas = tk.Canvas(frame, bg=C["panel"], height=10,
+                                           highlightthickness=0, bd=0)
+        self._progress_canvas.pack(fill="x", pady=(0, 4))
+        self._progress_canvas.create_rectangle(0, 0, 0, 10, fill=C["accent"], outline="",
+                                                tags="bar")
 
-        bottom = ttk.Frame(frame)
-        bottom.pack(fill="x")
+        self._lbl_status = tk.Label(frame, text="Listo para comenzar", bg=C["bg"],
+                                     fg=C["text3"], font=FONTS["TINY"], anchor="w")
+        self._lbl_status.pack(fill="x")
 
-        self._lbl_status = ttk.Label(bottom, text="Listo para comenzar",
-                                      foreground=C["text2"])
-        self._lbl_status.pack(side="left")
-
-        btn_row = ttk.Frame(bottom)
-        btn_row.pack(side="right")
+        btn_row = tk.Frame(frame, bg=C["bg"])
+        btn_row.pack(fill="x", pady=(4, 0))
 
         self._copy_var = tk.BooleanVar()
-        tk.Checkbutton(
-            btn_row, text="Modo copiar",
-            variable=self._copy_var,
-            bg=C["bg"], fg=C["text2"],
-            activebackground=C["bg"], activeforeground=C["text"],
-            selectcolor=C["panel"],
-            font=FONTS["TINY"], bd=0, highlightthickness=0,
-            relief="flat"
-        ).pack(side="left", padx=(0, 10))
+        tk.Checkbutton(btn_row, text="Modo copiar", variable=self._copy_var,
+                        bg=C["bg"], fg=C["text2"], activebackground=C["bg"],
+                        activeforeground=C["text"], selectcolor=C["panel"],
+                        font=FONTS["TINY"], bd=0, highlightthickness=0,
+                        relief="flat").pack(side="left", padx=(0, 10))
 
         def _mk_btn(parent, text, cmd, accent=False, state="normal"):
             bg  = C["accent"]       if accent else C["panel"]
             fg  = C["bg"]           if accent else C["text"]
             abg = C["accent_hover"] if accent else C["accent_light"]
-            afg = C["bg"]           if accent else C["accent_hover"]
-            btn = tk.Button(
-                parent, text=text, command=cmd,
-                bg=bg, fg=fg,
-                activebackground=abg, activeforeground=afg,
-                disabledforeground=C["text3"],
-                font=FONTS["LABEL_B"],
-                relief="flat", bd=0,
-                padx=10, pady=4,
-                cursor="hand2",
-                highlightthickness=1,
-                highlightbackground=C["border"],
-                highlightcolor=C["accent"]
-            )
+            btn = tk.Button(parent, text=text, command=cmd,
+                             bg=bg, fg=fg, activebackground=abg, activeforeground=C["bg"],
+                             disabledforeground=C["text3"], font=FONTS["LABEL_B"],
+                             relief="flat", bd=0, padx=10, pady=4, cursor="hand2",
+                             highlightthickness=1, highlightbackground=C["border"],
+                             highlightcolor=C["accent"])
             if state == "disabled":
                 btn.configure(state="disabled", bg=C["card"])
             return btn
 
-        self._btn_log = _mk_btn(btn_row, "Log", self._on_export_log, state="disabled")
+        self._btn_log = _mk_btn(btn_row, "💾 Log", self._on_export_log, state="disabled")
         self._btn_log.pack(side="left", padx=(0, 4))
-        self._btn_csv = _mk_btn(btn_row, "CSV", self._on_export_csv, state="disabled")
+        self._btn_csv = _mk_btn(btn_row, "📤 CSV", self._on_export_csv, state="disabled")
         self._btn_csv.pack(side="left", padx=(0, 4))
         self._btn_cancel = _mk_btn(btn_row, "✖ Cancelar", self._on_cancel, state="disabled")
         self._btn_cancel.pack(side="left", padx=(0, 4))
         self._btn_undo = _mk_btn(btn_row, "↩ Deshacer", self._on_undo, state="disabled")
         self._btn_undo.pack(side="left", padx=(0, 4))
-        self._btn_rename = _mk_btn(btn_row, "▶  Renombrar todo", self._on_rename,
+        self._btn_simulate = _mk_btn(btn_row, "👁 Simular", self._on_simulate)
+        self._btn_simulate.pack(side="left", padx=(0, 4))
+        self._btn_rename = _mk_btn(btn_row, "▶ Renombrar", self._on_rename,
                                     accent=True, state="disabled")
         self._btn_rename.pack(side="left")
 
+    def _build_log_section(self, parent):
+        frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
+                          highlightbackground=C["border"])
+        frame.pack(fill="x", padx=14, pady=(0, 4))
+
+        header = tk.Frame(frame, bg=C["surface"])
+        header.pack(fill="x", padx=8, pady=(4, 0))
+        tk.Label(header, text="Registro", bg=C["surface"], fg=C["text3"],
+                  font=FONTS["TINY"]).pack(side="left")
+
+        log_frame = tk.Frame(frame, bg=C["surface"])
+        log_frame.pack(fill="x", padx=8, pady=(2, 6))
+
+        self._log_widget = tk.Text(log_frame, bg=C["panel"], fg=C["text2"],
+                                    font=FONTS["MONO"], height=4, state="disabled",
+                                    relief="flat", bd=0, wrap="word",
+                                    insertbackground=C["text2"],
+                                    highlightthickness=1,
+                                    highlightbackground=C["border"])
+        log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self._log_widget.yview)
+        self._log_widget.configure(yscrollcommand=log_scroll.set)
+        self._log_widget.pack(side="left", fill="both", expand=True)
+        log_scroll.pack(side="right", fill="y")
+
+        self._log_widget.tag_configure("ok", foreground=C["ok"])
+        self._log_widget.tag_configure("warn", foreground=C["warn"])
+        self._log_widget.tag_configure("err", foreground=C["err"])
+        self._log_widget.tag_configure("info", foreground=C["accent"])
+
+    def _build_footer(self):
+        ftr = tk.Frame(self, bg=C["header_bg"], height=24)
+        ftr.pack(fill="x", side="bottom")
+        ftr.pack_propagate(False)
+        tk.Label(ftr, text="  Hover → miniatura  •  Ctrl+Z = Deshacer",
+                  bg=C["header_bg"], fg=C["text3"], font=FONTS["TINY"]).pack(expand=True)
+        self.bind_all("<Control-z>", lambda _: self._on_undo())
+
+    # ════════════════════════════════════════════════════════════
+    #  HELPERS UI
+    # ════════════════════════════════════════════════════════════
     def _set_btn_state(self, btn: tk.Button, enabled: bool, accent: bool = False):
         if enabled:
             bg = C["accent"] if accent else C["panel"]
             fg = C["bg"]     if accent else C["text"]
             abg = C["accent_hover"] if accent else C["accent_light"]
-            afg = C["bg"]
             btn.configure(state="normal", bg=bg, fg=fg,
-                          activebackground=abg, activeforeground=afg)
+                          activebackground=abg, activeforeground=C["bg"])
         else:
             btn.configure(state="disabled", bg=C["card"], fg=C["text3"])
 
-    # ── exploradores de archivos nativos ────────────────────────────────
+    def _log(self, msg: str, tag: str = ""):
+        self._log_widget.configure(state="normal")
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._log_widget.insert("end", f"[{ts}] {msg}\n", tag)
+        self._log_widget.see("end")
+        self._log_widget.configure(state="disabled")
+
+    def _set_progress(self, frac, msg):
+        w = self._progress_canvas.winfo_width()
+        self._progress_canvas.delete("bar")
+        self._progress_canvas.create_rectangle(0, 0, int(w * frac), 10,
+                                                fill=C["accent"], outline="", tags="bar")
+        self._lbl_status.configure(text=msg)
+
+    # ════════════════════════════════════════════════════════════
+    #  EXPLORADORES DE ARCHIVOS NATIVOS
+    # ════════════════════════════════════════════════════════════
     def _browse_folder(self):
-        import subprocess, platform
         path = None
         system = platform.system()
         if system == "Linux":
@@ -618,17 +871,14 @@ class ImageSyncApp(tk.Tk):
                     if result.returncode == 0:
                         path = result.stdout.strip()
                 except FileNotFoundError:
-                    path = filedialog.askdirectory(
-                        title="Selecciona la carpeta de fotos", mustexist=True)
+                    path = filedialog.askdirectory(title="Selecciona la carpeta", mustexist=True)
         else:
-            path = filedialog.askdirectory(
-                title="Selecciona la carpeta de fotos", mustexist=True)
+            path = filedialog.askdirectory(title="Selecciona la carpeta", mustexist=True)
         if path:
             self._entry_folder.delete(0, "end")
             self._entry_folder.insert(0, path)
 
     def _browse_excel(self):
-        import subprocess, platform
         path = None
         system = platform.system()
         if system == "Linux":
@@ -652,17 +902,19 @@ class ImageSyncApp(tk.Tk):
                         path = result.stdout.strip()
                 except FileNotFoundError:
                     path = filedialog.askopenfilename(
-                        title="Selecciona el archivo Excel",
+                        title="Selecciona Excel",
                         filetypes=[("Excel", "*.xlsx"), ("Todos", "*.*")])
         else:
             path = filedialog.askopenfilename(
-                title="Selecciona el archivo Excel",
+                title="Selecciona Excel",
                 filetypes=[("Excel", "*.xlsx"), ("Todos", "*.*")])
         if path:
             self._entry_excel.delete(0, "end")
             self._entry_excel.insert(0, path)
 
-    # ── handlers ───────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════
+    #  HANDLERS
+    # ════════════════════════════════════════════════════════════
     def _on_load_photos(self):
         raw = self._entry_folder.get().strip()
         if not raw:
@@ -670,7 +922,7 @@ class ImageSyncApp(tk.Tk):
             return
         path = Path(raw)
         if not path.is_dir():
-            self._lbl_folder_status.configure(text="Ruta no existe", foreground=C["err"])
+            self._lbl_folder_status.configure(text="Ruta no existe", fg=C["err"])
             return
         self._model.folder_path = path
         self._model.sort_mode = SORT_OPTIONS.get(self._sort_var.get(), "natural")
@@ -678,14 +930,16 @@ class ImageSyncApp(tk.Tk):
         try:
             n = self._model.load_photos()
         except Exception as exc:
-            self._lbl_folder_status.configure(text=str(exc), foreground=C["err"])
+            self._lbl_folder_status.configure(text=str(exc), fg=C["err"])
             return
         if n == 0:
-            self._lbl_folder_status.configure(text="No se encontraron imágenes", foreground=C["warn"])
+            self._lbl_folder_status.configure(text="No se encontraron imágenes", fg=C["warn"])
+            self._log(f"⚠ No se encontraron imágenes en {path.name}", "warn")
         else:
             self._lbl_folder_status.configure(
-                text=f"{n} imagen{'es' if n != 1 else ''}  •  {self._sort_var.get()}",
-                foreground=C["ok"])
+                text=f"{n} imagen{'es' if n != 1 else ''}  •  {self._sort_var.get()}", fg=C["ok"])
+            self._log(f"📁 {n} imágenes cargadas desde {path.name}", "info")
+        self._set_step(1)
         self._refresh_preview()
 
     def _on_load_excel(self):
@@ -695,14 +949,14 @@ class ImageSyncApp(tk.Tk):
             return
         path = Path(raw)
         if not path.is_file() or path.suffix.lower() != ".xlsx":
-            self._lbl_excel_status.configure(text="Debe ser .xlsx", foreground=C["err"])
+            self._lbl_excel_status.configure(text="Debe ser .xlsx", fg=C["err"])
             return
         self._model.excel_path = path
         _save_state({"last_excel": str(path)})
         try:
             sheets = self._model.load_sheets()
         except Exception as exc:
-            self._lbl_excel_status.configure(text=str(exc), foreground=C["err"])
+            self._lbl_excel_status.configure(text=str(exc), fg=C["err"])
             return
         self._model.sheet_name = sheets[0]
         self._sheet_menu["menu"].delete(0, "end")
@@ -716,14 +970,13 @@ class ImageSyncApp(tk.Tk):
         try:
             cols = self._model.load_columns()
         except Exception as exc:
-            self._lbl_excel_status.configure(text=str(exc), foreground=C["err"])
+            self._lbl_excel_status.configure(text=str(exc), fg=C["err"])
             return
         self._loading_columns = True
         if len(cols) == 1:
             self._model.column_name = cols[0]
             self._col_menu.configure(state="disabled")
-            self._lbl_excel_status.configure(
-                text=f"Columna «{cols[0]}» auto-seleccionada.", foreground=C["ok"])
+            self._lbl_excel_status.configure(text=f"Columna «{cols[0]}» auto-seleccionada.", fg=C["ok"])
             self._loading_columns = False
             self._load_names_and_preview()
         else:
@@ -734,8 +987,7 @@ class ImageSyncApp(tk.Tk):
             self._col_var.set(cols[0])
             self._model.column_name = cols[0]
             self._loading_columns = False
-            self._lbl_excel_status.configure(
-                text=f"{len(cols)} columnas — elige cuál.", foreground=C["ok"])
+            self._lbl_excel_status.configure(text=f"{len(cols)} columnas — elige cuál.", fg=C["ok"])
             self._load_names_and_preview()
 
     def _on_sheet_change(self):
@@ -756,31 +1008,49 @@ class ImageSyncApp(tk.Tk):
         try:
             n = self._model.load_names()
         except Exception as exc:
-            self._lbl_excel_status.configure(text=str(exc), foreground=C["err"])
+            self._lbl_excel_status.configure(text=str(exc), fg=C["err"])
             return
         self._lbl_excel_status.configure(
-            text=f"{n} nombre{'s' if n != 1 else ''} en «{self._model.column_name}».",
-            foreground=C["ok"])
+            text=f"{n} nombre{'s' if n != 1 else ''} en «{self._model.column_name}».", fg=C["ok"])
+        self._log(f"📊 Excel: {n} nombres en columna «{self._model.column_name}»", "info")
         if self._model.skipped_rows:
             rows = ", ".join(str(r) for r in self._model.skipped_rows[:10])
-            messagebox.showwarning("Image Sync",
-                f"Fila(s) {rows} sin texto legible.\nPuede ser celda vacía o fórmula sin valor.")
+            self._log(f"⚠ Filas {rows} sin texto legible", "warn")
+        self._set_step(2)
         self._refresh_preview()
 
     def _refresh_preview(self):
-        self._last_pairs = self._model.build_preview()
+        self._last_pairs = self._model.build_preview(keep_ext=self._opt_keep_ext.get())
         self._populate_tree(self._last_pairs)
         has_data = bool(self._last_pairs)
-        self._set_btn_state(self._btn_rename, has_data, accent=True)
         self._set_btn_state(self._btn_log, has_data)
         self._set_btn_state(self._btn_csv, has_data)
-        self._lbl_count.configure(text=f"{len(self._last_pairs)} archivos" if has_data else "")
+        self._update_summary()
+
+    def _compute_status(self, idx, orig, new, all_new_names, photos):
+        if not new or new == ".":
+            return ("❌", "err")
+        from collections import Counter
+        dupes = [n for n, c in Counter(all_new_names).items() if c > 1]
+        if new in dupes:
+            return ("⚠ Dup", "warn")
+        if idx < len(photos):
+            photo = photos[idx]
+            dest = photo.parent / new
+            if dest.exists() and dest != photo:
+                return ("🔁", "warn")
+        return ("✅", "ok")
 
     def _populate_tree(self, pairs):
-        self._tree.delete(*self._tree.get_children())
-        self._thumb_refs.clear()
+        self.tree.delete(*self.tree.get_children())
+        all_new = [new for _, new, _ in pairs]
+        photos = [p for _, _, p in pairs]
         for i, (orig, new, _) in enumerate(pairs):
-            self._tree.insert("", "end", iid=str(i), values=(i + 1, orig, new))
+            icon, tag = self._compute_status(i, orig, new, all_new, photos)
+            parity = "even" if i % 2 == 0 else "odd"
+            self.tree.insert("", "end", iid=str(i),
+                              values=(i + 1, icon, orig, new),
+                              tags=(tag, parity))
 
     def _apply_filter(self):
         q = self._filter_var.get().lower()
@@ -789,21 +1059,23 @@ class ImageSyncApp(tk.Tk):
             match = not q or q in orig.lower() or q in new.lower()
             if match:
                 try:
-                    self._tree.reattach(str(i), "", "end")
+                    self.tree.reattach(str(i), "", "end")
                 except Exception:
                     pass
                 visible += 1
             else:
                 try:
-                    self._tree.detach(str(i))
+                    self.tree.detach(str(i))
                 except Exception:
                     pass
         if q:
-            self._lbl_count.configure(text=f"{visible} de {len(self._last_pairs)}")
+            self._lbl_count.configure(text=f"{visible} de {len(self._last_pairs)} resultados")
         else:
             self._lbl_count.configure(text=f"{len(self._last_pairs)} archivos")
 
-    # ── miniaturas hover ────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════
+    #  MINIATURAS HOVER
+    # ════════════════════════════════════════════════════════════
     def _on_enter_tree(self, _=None):
         if self._thumb_win:
             try:
@@ -832,24 +1104,25 @@ class ImageSyncApp(tk.Tk):
     def _on_hover_thumb(self, event):
         if not self._thumb_win:
             return
-        region = self._tree.identify_region(event.x, event.y)
+        region = self.tree.identify_region(event.x, event.y)
         if region != "cell":
             self._thumb_win.withdraw()
             return
-        item = self._tree.identify_row(event.y)
-        col = self._tree.identify_column(event.x)
-        if not item or col not in ("#2", "#3"):
+        item = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        if not item or col not in ("#3", "#4"):
             self._thumb_win.withdraw()
             return
-        col1_w = self._tree.column("#1", "width")
-        col2_w = self._tree.column("#2", "width")
-        col3_w = self._tree.column("#3", "width")
-        max_x = col1_w + col2_w + col3_w
+        col1_w = self.tree.column("#1", "width")
+        col2_w = self.tree.column("#2", "width")
+        col3_w = self.tree.column("#3", "width")
+        col4_w = self.tree.column("#4", "width")
+        max_x = col1_w + col2_w + col3_w + col4_w
         if event.x > max_x:
             self._thumb_win.withdraw()
             return
         try:
-            cell_values = self._tree.item(item, "values")
+            cell_values = self.tree.item(item, "values")
             if not cell_values:
                 self._thumb_win.withdraw()
                 return
@@ -887,55 +1160,156 @@ class ImageSyncApp(tk.Tk):
         self.after(80, lambda: self._on_hover_thumb(event))
 
     def _on_minimize(self, event):
-        if event.widget is self:
-            if self._thumb_win:
-                try:
-                    self._thumb_win.withdraw()
-                except Exception:
-                    pass
+        if event.widget is self and self._thumb_win:
+            try:
+                self._thumb_win.withdraw()
+            except Exception:
+                pass
 
     def _on_restore(self, event):
         pass
 
-    # ── renombrar ──────────────────────────────────────────────────────
-    def _on_rename(self):
+    # ════════════════════════════════════════════════════════════
+    #  SIMULAR / RENOMBRAR / DESHACER
+    # ════════════════════════════════════════════════════════════
+    def _on_simulate(self):
         if not (self._model.photos and self._model.names):
             messagebox.showwarning("Image Sync", "Carga las fotos y el Excel primero.")
+            return
+        self._refresh_preview()
+        self._update_summary()
+        n = min(len(self._model.photos), len(self._model.names))
+        self._log(f"[SIMULACIÓN] {n} archivos serán renombrados. Sin cambios en disco.", "info")
+        self._lbl_status.configure(text=f"Simulación completada · {n} archivos", fg=C["accent"])
+        self._simulated = True
+        self._set_btn_state(self._btn_rename, True, accent=True)
+        self._set_step(3)
+
+    def _on_rename(self):
+        if not self._simulated:
+            messagebox.showwarning("Image Sync", "Primero ejecuta la simulación.")
+            return
+        if not (self._model.photos and self._model.names):
             return
         n_ph = len(self._model.photos)
         n_nm = len(self._model.names)
         will = min(n_ph, n_nm)
-        msg = f"Se renombrarán {will} foto{'s' if will != 1 else ''}."
-        if n_nm < n_ph:
-            msg += f"\n⚠ {n_ph - n_nm} foto(s) sin nombre — solo primeras {will}."
-        if not messagebox.askyesno("Confirmar renombramiento", msg):
+        all_new = [name + photo.suffix for photo, name in zip(self._model.photos, self._model.names)]
+        from collections import Counter
+        conflictos = sum(1 for v in Counter(all_new).values() if v > 1)
+        if not self._confirm_rename_dialog(will, conflictos):
             return
         self._cancel_ev = threading.Event()
         self._btn_rename.configure(text="Renombrando…")
         self._set_btn_state(self._btn_rename, False)
         self._set_btn_state(self._btn_cancel, True)
-        self._progress["value"] = 0
+        self._set_btn_state(self._btn_simulate, False)
+        self._set_progress(0, "Iniciando…")
+        self._set_step(4)
         threading.Thread(target=self._do_rename, daemon=True).start()
+
+    def _confirm_rename_dialog(self, n, conflictos):
+        dlg = tk.Toplevel(self)
+        dlg.title("Confirmar renombramiento")
+        dlg.configure(bg=C["bg"])
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        hdr = tk.Frame(dlg, bg=C["header_bg"], height=48)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="  ✏  Confirmar renombramiento", bg=C["header_bg"],
+                  fg=C["header_fg"], font=FONTS["TITLE"]).pack(side="left", padx=12, pady=10)
+
+        body = tk.Frame(dlg, bg=C["bg"])
+        body.pack(fill="both", expand=True, padx=24, pady=16)
+
+        tk.Label(body, text=f"Se renombrarán {n} fotografías.",
+                  bg=C["bg"], fg=C["text"], font=FONTS["H2"]).pack(anchor="w")
+        tk.Label(body, text="Esta acción modificará permanentemente los nombres de los archivos.",
+                  bg=C["bg"], fg=C["text3"], font=FONTS["LABEL"]).pack(anchor="w", pady=(4, 8))
+
+        if conflictos > 0:
+            tk.Label(body, text=f"⚠ {conflictos} conflicto(s) detectado(s) — revisa la tabla.",
+                      bg=C["bg"], fg=C["warn"], font=FONTS["LABEL_B"]).pack(anchor="w", pady=(0, 8))
+
+        btn_row = tk.Frame(body, bg=C["bg"])
+        btn_row.pack(fill="x", pady=(12, 0))
+
+        result = {"ok": False}
+
+        def _cancel():
+            result["ok"] = False
+            dlg.destroy()
+
+        def _confirm():
+            result["ok"] = True
+            dlg.destroy()
+
+        tk.Button(btn_row, text="Cancelar", command=_cancel,
+                   bg=C["panel"], fg=C["text"], activebackground=C["accent_light"],
+                   activeforeground=C["text"], font=FONTS["LABEL_B"],
+                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2").pack(side="right", padx=(8, 0))
+        tk.Button(btn_row, text="▶ Renombrar", command=_confirm,
+                   bg=C["accent"], fg=C["bg"], activebackground=C["accent_hover"],
+                   activeforeground=C["bg"], font=FONTS["LABEL_B"],
+                   relief="flat", bd=0, padx=16, pady=6, cursor="hand2").pack(side="right")
+
+        dlg.update_idletasks()
+        w, h = 440, 220
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+        dlg.wait_window()
+        return result["ok"]
 
     def _do_rename(self):
         def progress(cur, tot, name):
             self.after(0, lambda: self._set_progress(cur / tot, f"{cur}/{tot} — {name}"))
+            if cur % 10 == 0:
+                self.after(0, lambda n=name: self._log(f"✔ {n}", "ok"))
         def done(ok, errors):
             self.after(0, lambda: self._finish_rename(ok, errors))
         self._model.rename_all(progress, done, cancel_ev=self._cancel_ev,
                                copy_mode=self._copy_var.get())
 
     def _finish_rename(self, ok, errors):
-        self._progress["value"] = 100
-        self._lbl_status.configure(text=f"Completado · {ok} renombradas.", foreground=C["ok"])
-        self._btn_rename.configure(text="▶  Renombrar todo")
-        self._set_btn_state(self._btn_rename, True, accent=True)
+        self._set_progress(1.0, f"Completado · {ok} renombradas.")
+        self._btn_rename.configure(text="▶ Renombrar")
+        self._set_btn_state(self._btn_rename, False)
         self._set_btn_state(self._btn_cancel, False)
+        self._set_btn_state(self._btn_simulate, True)
         self._set_btn_state(self._btn_undo, self._model.has_undo)
+        self._simulated = False
+        self._set_step(5)
+
         if errors:
-            messagebox.showwarning("Image Sync", f"⚠ {ok} OK · {len(errors)} con error.")
+            for e in errors:
+                self._log(f"✖ {e}", "err")
+            self._log(f"⚠ {ok} OK · {len(errors)} con error", "warn")
         else:
-            messagebox.showinfo("Image Sync", f"✓ {ok} foto{'s' if ok != 1 else ''} renombradas.")
+            self._log(f"✓ {ok} foto{'s' if ok != 1 else ''} renombradas", "ok")
+
+        if self._opt_backup_log.get() and self._model.folder_path:
+            try:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                log_path = self._model.folder_path / f"image_sync_log_{ts}.txt"
+                self._model.export_log(self._last_pairs, log_path)
+                self._log(f"💾 Log guardado: {log_path.name}", "info")
+            except Exception:
+                pass
+
+        if self._opt_open_folder.get() and self._model.folder_path and not errors:
+            try:
+                system = platform.system()
+                if system == "Linux":
+                    subprocess.Popen(["xdg-open", str(self._model.folder_path)])
+                elif system == "Windows":
+                    os.startfile(str(self._model.folder_path))
+            except Exception:
+                pass
+
         if self._model.folder_path:
             try:
                 self._model.load_photos()
@@ -950,7 +1324,7 @@ class ImageSyncApp(tk.Tk):
         if not messagebox.askyesno("Deshacer", "¿Revertir el último lote?"):
             return
         self._set_btn_state(self._btn_undo, False)
-        self._progress["value"] = 0
+        self._set_progress(0, "Deshaciendo…")
         threading.Thread(target=self._do_undo, daemon=True).start()
 
     def _do_undo(self):
@@ -961,9 +1335,9 @@ class ImageSyncApp(tk.Tk):
         self._model.undo_last(progress, done)
 
     def _finish_undo(self, ok, errors):
-        self._progress["value"] = 0
-        self._lbl_status.configure(text=f"Deshacer · {ok} revertidas.", foreground=C["ok"])
+        self._set_progress(0, f"Deshacer · {ok} revertidas.")
         self._set_btn_state(self._btn_undo, self._model.has_undo)
+        self._log(f"↩ Deshecho: {ok} archivos revertidos", "info")
         if self._model.folder_path:
             try:
                 self._model.load_photos()
@@ -971,15 +1345,13 @@ class ImageSyncApp(tk.Tk):
                 pass
             self._refresh_preview()
         if errors:
-            messagebox.showwarning("Image Sync", f"↩ {ok} OK · {len(errors)} con error.")
-        else:
-            messagebox.showinfo("Image Sync", f"↩ {ok} revertida{'s' if ok != 1 else ''}.")
+            self._log(f"⚠ {len(errors)} error(es) al deshacer", "err")
 
     def _on_cancel(self):
         if self._cancel_ev:
             self._cancel_ev.set()
             self._set_btn_state(self._btn_cancel, False)
-            self._lbl_status.configure(text="Cancelando…", foreground=C["warn"])
+            self._lbl_status.configure(text="Cancelando…", fg=C["warn"])
 
     def _on_export_log(self):
         if not self._last_pairs:
@@ -992,9 +1364,9 @@ class ImageSyncApp(tk.Tk):
         if dest:
             try:
                 self._model.export_log(self._last_pairs, Path(dest))
-                messagebox.showinfo("Image Sync", f"Log guardado: {Path(dest).name}")
+                self._log(f"💾 Log guardado: {Path(dest).name}", "ok")
             except Exception as exc:
-                messagebox.showerror("Image Sync", f"Error: {exc}")
+                self._log(f"✖ Error: {exc}", "err")
 
     def _on_export_csv(self):
         if not self._last_pairs:
@@ -1007,13 +1379,9 @@ class ImageSyncApp(tk.Tk):
         if dest:
             try:
                 self._model.export_preview_csv(self._last_pairs, Path(dest))
-                messagebox.showinfo("Image Sync", f"CSV guardado: {Path(dest).name}")
+                self._log(f"📤 CSV guardado: {Path(dest).name}", "ok")
             except Exception as exc:
-                messagebox.showerror("Image Sync", f"Error: {exc}")
-
-    def _set_progress(self, frac, msg):
-        self._progress["value"] = frac * 100
-        self._lbl_status.configure(text=msg)
+                self._log(f"✖ Error: {exc}", "err")
 
     def _restore_state(self):
         state = _load_state()
