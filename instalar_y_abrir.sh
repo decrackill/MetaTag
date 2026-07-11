@@ -21,6 +21,7 @@ if [ ! -d "$SCRIPT_DIR/src" ]; then
         mv "$SCRIPT_DIR"/metatag_writer.py    "$SCRIPT_DIR/src/"
         mv "$SCRIPT_DIR"/Visor.py             "$SCRIPT_DIR/src/"
         mv "$SCRIPT_DIR"/editor_casillas_backup.py "$SCRIPT_DIR/src/" 2>/dev/null
+        mv "$SCRIPT_DIR"/renombrar_fotos_gui.py "$SCRIPT_DIR/src/image_sync.py" 2>/dev/null
         echo "  [OK] Archivos movidos a src/."
     fi
 fi
@@ -50,7 +51,7 @@ if [ ! -f "$PY" ]; then
 fi
 
 # Instalar dependencias
-LIBRERIAS="pillow piexif reportlab pandas openpyxl numpy matplotlib"
+LIBRERIAS="pillow piexif reportlab pandas openpyxl numpy matplotlib customtkinter"
 
 echo "  Verificando librerias necesarias..."
 for LIB in $LIBRERIAS; do

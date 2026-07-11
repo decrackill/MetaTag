@@ -931,6 +931,31 @@ class MetaTagApp(tk.Tk):
                                     activebackground=C["accent"], activeforeground="#FFFFFF",
                                     command=launch_visor)
         self._btn_visor.pack(side="right", padx=(4, 0))
+
+        def launch_imgsync():
+            imgsync_path = None
+            for f in Path(__file__).resolve().parent.rglob("image_sync.py"):
+                imgsync_path = str(f)
+                break
+            if not imgsync_path:
+                messagebox.showerror("No encontrado",
+                    f"No se encontró image_sync.py en:\n{Path(__file__).resolve().parent}")
+                return
+            cmd = [sys.executable, imgsync_path, "--theme", CURRENT_THEME]
+            folder = self.img_folder_var.get()
+            if folder and Path(folder).is_dir():
+                cmd.extend(["--folder", folder])
+            excel = self.csv_path_var.get().strip()
+            if excel and Path(excel).is_file():
+                cmd.extend(["--excel", excel])
+            subprocess.Popen(cmd)
+
+        self._btn_imgsync = tk.Button(vhdr, text="✏️ ImgSync", bg=C["surface"],
+                                      fg=C["accent"], font=FONTS["LABEL_B"], relief="flat",
+                                      bd=0, cursor="hand2", padx=10, pady=2,
+                                      activebackground=C["accent"], activeforeground="#FFFFFF",
+                                      command=launch_imgsync)
+        self._btn_imgsync.pack(side="right", padx=(4, 0))
         self._btn_open = tk.Button(vhdr, text="📂", bg=C["btn_ghost_bg"], fg=C["text2"],
                                    font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
                                    padx=6, pady=2, command=self._browse_single_image)

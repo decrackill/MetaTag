@@ -86,6 +86,7 @@ def check_metadata_divergence(path, expected_meta):
 
 def write_jpeg(path: str, meta: dict, organizado: bool = True):
     with Image.open(path) as _img_src:
+        _img_src.load()
         img = _img_src.copy()
     texto_organizado = formatear_metadatos(meta, organizado)
     as_json          = json.dumps(meta, ensure_ascii=False)
@@ -105,6 +106,7 @@ def write_jpeg(path: str, meta: dict, organizado: bool = True):
 def write_png(path: str, meta: dict, organizado: bool = True):
     from PIL import PngImagePlugin
     with Image.open(path) as _img_src:
+        _img_src.load()
         img = _img_src.copy()
     info = PngImagePlugin.PngInfo()
     texto_organizado = formatear_metadatos(meta, organizado)
@@ -117,6 +119,7 @@ def write_png(path: str, meta: dict, organizado: bool = True):
 
 def write_tiff(path: str, meta: dict, organizado: bool = True):
     with Image.open(path) as _img_src:
+        _img_src.load()
         img = _img_src.copy()
     texto_organizado = formatear_metadatos(meta, organizado)
     try:

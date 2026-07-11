@@ -22,6 +22,7 @@ if not exist "%~dp0src" (
         move "%~dp0metatag_writer.py"   "%~dp0src\"
         move "%~dp0Visor.py"            "%~dp0src\"
         move "%~dp0editor_casillas_backup.py" "%~dp0src\" 2>nul
+        move "%~dp0renombrar_fotos_gui.py"    "%~dp0src\image_sync.py" 2>nul
         echo  [OK] Archivos movidos a src/.
     )
 )
@@ -62,7 +63,7 @@ if not exist "%~dp0%PROGRAMA%" (
 )
 
 echo  Verificando librerias necesarias...
-set LIBRERIAS=pandas openpyxl pillow piexif matplotlib numpy reportlab
+set LIBRERIAS=pandas openpyxl pillow piexif matplotlib numpy reportlab customtkinter
 
 for %%L in (%LIBRERIAS%) do (
     %PYTHON_CMD% -c "import %%L" >nul 2>&1
