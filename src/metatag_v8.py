@@ -21,6 +21,7 @@ if sys.platform == "win32":
         logging.error(f"Error configurando DPI en Windows: {e}", exc_info=True)
 
 from pathlib import Path
+from datetime import datetime
 
 try:
     from PIL import Image, ImageTk, ImageOps
@@ -1646,6 +1647,22 @@ class MetaTagApp(tk.Tk):
         self.browser._orphan_files = {f.name for f in huerfanas}
         self.browser._orphan_reasons = orphan_reasons
         self.browser._filter()
+
+        order_file = Path(folder) / ".imgsync_order.json"
+        try:
+            order_data = {
+                "ordered": [str(f) for f in ordered_files],
+                "excel":   str(self.csv_path_var.get()),
+                "column":  str(self.img_col_var.get()),
+                "generated": datetime.now().isoformat(),
+            }
+            order_file.write_text(
+                json.dumps(order_data, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            self._log(f"  ✓ Orden guardado en {order_file.name} para Image Sync\n", "ok")
+        except Exception as exc:
+            self._log(f"  ⚠ No se pudo guardar orden: {exc}\n", "warn")
 
         msg = (f"{len(ordered_files)} imágenes  "
                f"({self._sync_excel_count} del Excel"

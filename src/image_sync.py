@@ -353,7 +353,6 @@ class ImageSyncApp(tk.Tk):
             self.destroy()
         self.protocol("WM_DELETE_WINDOW", _on_close)
 
-        self._set_step(0)
         if folder_arg:
             self._entry_folder.delete(0, "end")
             self._entry_folder.insert(0, folder_arg)
@@ -431,66 +430,90 @@ class ImageSyncApp(tk.Tk):
         self.tree.tag_configure("odd", background=C["row_odd"])
 
     def _build_step_bar(self):
-        bar = tk.Canvas(self, bg=C["header_bg"], height=36, highlightthickness=0)
-        bar.pack(fill="x")
-        self._step_canvas = bar
-        self._step_labels = []
-        steps = ["① Emparejar", "② Validar", "③ Vista previa", "④ Renombrar", "⑤ Resultado"]
-        self.after(100, lambda: self._draw_steps(steps))
+        pass
 
     def _draw_steps(self, steps):
-        bar = self._step_canvas
-        bar.delete("all")
-        w = bar.winfo_width()
-        n = len(steps)
-        spacing = w // (n + 1)
-        self._step_positions = []
-        self._step_items = []
-        for i, txt in enumerate(steps):
-            x = spacing * (i + 1)
-            y = 18
-            self._step_positions.append((x, y))
-            oid = bar.create_oval(x - 12, y - 12, x + 12, y + 12,
-                                   fill=C["card"], outline=C["border"], width=1, tags=f"step{i}")
-            tid = bar.create_text(x, y, text=str(i + 1), fill=C["text3"],
-                                   font=FONTS["LABEL_B"], tags=f"step{i}_num")
-            lid = bar.create_text(x, y + 20, text=txt, fill=C["text3"],
-                                   font=FONTS["TINY"], tags=f"step{i}_txt")
-            self._step_items.append((oid, tid, lid))
-            if i < n - 1:
-                bar.create_line(x + 14, y, spacing * (i + 2) - 14, y,
-                                 fill=C["border"], width=1, tags="line")
-        self._current_step = 0
+        pass
 
     def _set_step(self, n):
-        if not hasattr(self, "_step_canvas") or not hasattr(self, "_step_items"):
+        if not hasattr(self, "_step_pill_frames"):
             return
         self._current_step = n
-        bar = self._step_canvas
-        for i, (oid, tid, lid) in enumerate(self._step_items):
-            if i < n:
-                bar.itemconfigure(oid, fill=C["accent_light"], outline=C["accent"])
-                bar.itemconfigure(tid, fill=C["bg"])
-                bar.itemconfigure(lid, fill=C["accent"])
-            elif i == n:
-                bar.itemconfigure(oid, fill=C["accent"], outline=C["accent_hover"])
-                bar.itemconfigure(tid, fill=C["bg"])
-                bar.itemconfigure(lid, fill=C["accent_hover"])
+        for i, (pill, num_lbl, txt_lbl) in enumerate(self._step_pill_frames):
+            step_num = i + 1
+            if step_num < n:
+                pill.configure(highlightbackground=C["accent_light"])
+                num_lbl.configure(bg=C["accent_light"], fg=C["bg"])
+                txt_lbl.configure(bg=C["card"], fg=C["accent"])
+            elif step_num == n:
+                pill.configure(highlightbackground=C["accent"])
+                num_lbl.configure(bg=C["accent"], fg=C["bg"])
+                txt_lbl.configure(bg=C["card"], fg=C["accent_hover"])
             else:
-                bar.itemconfigure(oid, fill=C["card"], outline=C["border"])
-                bar.itemconfigure(tid, fill=C["text3"])
-                bar.itemconfigure(lid, fill=C["text3"])
+                pill.configure(highlightbackground=C["border"])
+                num_lbl.configure(bg=C["border"], fg=C["text3"])
+                txt_lbl.configure(bg=C["card"], fg=C["text3"])
 
     def _build_header(self):
-        hdr = tk.Frame(self, bg=C["header_bg"], height=48)
+        hdr = tk.Frame(self, bg=C["header_bg"])
         hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-        tk.Label(hdr, text="  ✏  Image Sync", bg=C["header_bg"], fg=C["header_fg"],
-                  font=FONTS["TITLE"]).pack(side="left", padx=8, pady=10)
-        tk.Label(hdr, text="Renombrador de fotos desde Excel", bg=C["header_bg"],
-                  fg=C["text2"], font=FONTS["LABEL"]).pack(side="left", padx=4)
-        tk.Label(hdr, text=f"🎨 {CURRENT_THEME}  ", bg=C["header_bg"],
-                  fg=C["text2"], font=FONTS["LABEL"]).pack(side="right", padx=8)
+
+        top_row = tk.Frame(hdr, bg=C["header_bg"])
+        top_row.pack(fill="x")
+
+        tk.Label(top_row, text="  ✏  Image Sync",
+                 bg=C["header_bg"], fg=C["header_fg"],
+                 font=FONTS["TITLE"]).pack(side="left", padx=8, pady=(10, 2))
+
+        tk.Label(top_row, text="Renombrador de fotos desde Excel",
+                 bg=C["header_bg"], fg=C["text2"],
+                 font=FONTS["LABEL"]).pack(side="left", padx=4, pady=(10, 2))
+
+        tk.Label(top_row, text=f"  {CURRENT_THEME}  ",
+                 bg=C["header_bg"], fg=C["text2"],
+                 font=FONTS["TINY"]).pack(side="right", padx=8, pady=(10, 2))
+
+        tk.Frame(hdr, bg=C["border_light"], height=1).pack(fill="x")
+
+        steps_row = tk.Frame(hdr, bg=C["header_bg"])
+        steps_row.pack(fill="x", padx=12, pady=(4, 8))
+
+        STEPS = [
+            ("1", "Emparejar"),
+            ("2", "Validar"),
+            ("3", "Vista previa"),
+            ("4", "Renombrar"),
+            ("5", "Resultado"),
+        ]
+
+        self._step_pill_frames = []
+
+        for i, (num, label) in enumerate(STEPS):
+            pill = tk.Frame(steps_row, bg=C["card"],
+                            highlightthickness=1,
+                            highlightbackground=C["border"])
+            pill.pack(side="left")
+
+            num_lbl = tk.Label(pill, text=f" {num} ",
+                               bg=C["border"], fg=C["text3"],
+                               font=FONTS["LABEL_B"],
+                               padx=4, pady=2)
+            num_lbl.pack(side="left")
+
+            txt_lbl = tk.Label(pill, text=f" {label} ",
+                               bg=C["card"], fg=C["text3"],
+                               font=FONTS["TINY"],
+                               padx=4, pady=2)
+            txt_lbl.pack(side="left")
+
+            self._step_pill_frames.append((pill, num_lbl, txt_lbl))
+
+            if i < len(STEPS) - 1:
+                tk.Label(steps_row, text=" ─── ",
+                         bg=C["header_bg"], fg=C["border"],
+                         font=FONTS["TINY"]).pack(side="left")
+
+        self._step_items = []
 
     def _build_summary_panel(self, parent):
         frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
@@ -529,6 +552,9 @@ class ImageSyncApp(tk.Tk):
         empty_count = sum(1 for name in self._model.names if not name.strip())
         conflictos = dup_count + empty_count
 
+        order_file = self._model.folder_path / ".imgsync_order.json" if self._model.folder_path else None
+        has_order = order_file and order_file.exists()
+
         self._summary_labels["n_fotos"].configure(text=str(n_fotos))
         self._summary_labels["n_nombres"].configure(text=str(n_nombres))
         self._summary_labels["n_match"].configure(text=str(correspondencias))
@@ -539,9 +565,15 @@ class ImageSyncApp(tk.Tk):
         if n_fotos == 0 or n_nombres == 0:
             self._summary_status.configure(text="❌ Faltan datos", fg=C["err"])
         elif conflictos > 0:
-            self._summary_status.configure(text=f"⚠ {conflictos} conflicto(s)", fg=C["warn"])
+            status = f"⚠ {conflictos} conflicto(s)"
+            if has_order:
+                status += "  [Orden MetaTag]"
+            self._summary_status.configure(text=status, fg=C["warn"])
         else:
-            self._summary_status.configure(text="✓ Listo para renombrar", fg=C["ok"])
+            status = "✓ Listo para renombrar"
+            if has_order:
+                status += "  [Orden MetaTag]"
+            self._summary_status.configure(text=status, fg=C["ok"])
 
     def _build_folder_section(self, parent):
         frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
@@ -916,6 +948,10 @@ class ImageSyncApp(tk.Tk):
     #  HANDLERS
     # ════════════════════════════════════════════════════════════
     def _on_load_photos(self):
+        self._simulated = False
+        self._set_btn_state(self._btn_rename, False, accent=True)
+        if hasattr(self, "_btn_simulate"):
+            self._btn_simulate.configure(text="Simular")
         raw = self._entry_folder.get().strip()
         if not raw:
             messagebox.showwarning("Image Sync", "Selecciona primero una carpeta.")
@@ -939,10 +975,40 @@ class ImageSyncApp(tk.Tk):
             self._lbl_folder_status.configure(
                 text=f"{n} imagen{'es' if n != 1 else ''}  •  {self._sort_var.get()}", fg=C["ok"])
             self._log(f"📁 {n} imágenes cargadas desde {path.name}", "info")
+        order_file = path / ".imgsync_order.json"
+        if order_file.exists():
+            try:
+                order_data = json.loads(order_file.read_text(encoding="utf-8"))
+                ordered_paths = [Path(p) for p in order_data.get("ordered", [])]
+                valid_ordered = [
+                    p for p in ordered_paths
+                    if p.exists() and p.suffix.lower() in VALID_IMG_EXT
+                ]
+                if len(valid_ordered) == n:
+                    self._model._photos = valid_ordered
+                    self._lbl_folder_status.configure(
+                        text=f"{n} imágenes  •  Orden de MetaTag aplicado",
+                        foreground=C["ok"])
+                    self._log(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] "
+                        f"Orden de MetaTag cargado desde {order_file.name}\n", "info")
+                elif len(valid_ordered) > 0:
+                    ordered_set = set(valid_ordered)
+                    missing = [p for p in self._model._photos if p not in ordered_set]
+                    self._model._photos = valid_ordered + missing
+                    self._lbl_folder_status.configure(
+                        text=f"{n} imágenes  •  Orden parcial de MetaTag ({len(missing)} sin orden)",
+                        foreground=C["warn"])
+            except Exception as exc:
+                log.warning("No se pudo leer orden de MetaTag: %s", exc)
         self._set_step(1)
         self._refresh_preview()
 
     def _on_load_excel(self):
+        self._simulated = False
+        self._set_btn_state(self._btn_rename, False, accent=True)
+        if hasattr(self, "_btn_simulate"):
+            self._btn_simulate.configure(text="Simular")
         raw = self._entry_excel.get().strip()
         if not raw:
             messagebox.showwarning("Image Sync", "Selecciona primero un archivo Excel.")
@@ -1184,6 +1250,8 @@ class ImageSyncApp(tk.Tk):
         self._simulated = True
         self._set_btn_state(self._btn_rename, True, accent=True)
         self._set_step(3)
+        self._btn_simulate.configure(text="✓ Simulado")
+        self._btn_rename.configure(text="▶ Renombrar")
 
     def _on_rename(self):
         if not self._simulated:
@@ -1282,6 +1350,8 @@ class ImageSyncApp(tk.Tk):
         self._set_btn_state(self._btn_simulate, True)
         self._set_btn_state(self._btn_undo, self._model.has_undo)
         self._simulated = False
+        self._btn_simulate.configure(text="Simular")
+        self._btn_rename.configure(text="▶ Renombrar")
         self._set_step(5)
 
         if errors:
