@@ -948,7 +948,16 @@ class MetaTagApp(tk.Tk):
             excel = self.csv_path_var.get().strip()
             if excel and Path(excel).is_file():
                 cmd.extend(["--excel", excel])
-            subprocess.Popen(cmd)
+            self.withdraw()
+            proc = subprocess.Popen(cmd)
+            def _check_imgsync():
+                if proc.poll() is not None:
+                    self.deiconify()
+                    self.lift()
+                    self.focus_force()
+                else:
+                    self.after(500, _check_imgsync)
+            self.after(500, _check_imgsync)
 
         self._btn_imgsync = tk.Button(vhdr, text="✏️ ImgSync", bg=C["surface"],
                                       fg=C["accent"], font=FONTS["LABEL_B"], relief="flat",

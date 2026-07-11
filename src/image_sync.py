@@ -296,7 +296,7 @@ class RenameModel:
 # ══════════════════════════════════════════════════════════════════
 class ImageSyncApp(tk.Tk):
     def __init__(self, folder_arg: str | None = None, theme_arg: str | None = None,
-                 excel_arg: str | None = None):
+                 excel_arg: str | None = None, parent_window=None):
         super().__init__()
         global C, CURRENT_THEME
         if theme_arg and theme_arg in THEMES:
@@ -309,21 +309,32 @@ class ImageSyncApp(tk.Tk):
         w, h = min(1050, int(sw * 0.68)), min(780, int(sh * 0.82))
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
+        self._parent_window = parent_window
         self._model = RenameModel()
         self._cancel_ev: threading.Event | None = None
         self._last_pairs: list[tuple[str, str, Path]] = []
         self._thumb_refs: list[ImageTk.PhotoImage] = []
         self._thumb_win: tk.Toplevel | None = None
         self._thumb_lbl: tk.Label | None = None
+        self._loading_columns = False
 
         self._apply_theme()
         self._build_ui()
         self._restore_state()
-        self._loading_columns = False
         self._sheet_var.trace_add("write", lambda *_: self._on_sheet_change())
         self._col_var.trace_add("write", lambda *_: self._on_col_change())
         self.bind("<Unmap>", self._on_minimize)
         self.bind("<Map>", self._on_restore)
+
+        def _on_close():
+            if self._parent_window:
+                try:
+                    self._parent_window.deiconify()
+                except Exception:
+                    pass
+            self.destroy()
+        self.protocol("WM_DELETE_WINDOW", _on_close)
+
         if folder_arg:
             self._entry_folder.delete(0, "end")
             self._entry_folder.insert(0, folder_arg)
@@ -522,31 +533,68 @@ class ImageSyncApp(tk.Tk):
         bottom = ttk.Frame(frame)
         bottom.pack(fill="x")
 
-        self._lbl_status = ttk.Label(bottom, text="Listo para comenzar", foreground=C["text2"])
+        self._lbl_status = ttk.Label(bottom, text="Listo para comenzar",
+                                      foreground=C["text2"])
         self._lbl_status.pack(side="left")
 
         btn_row = ttk.Frame(bottom)
         btn_row.pack(side="right")
 
         self._copy_var = tk.BooleanVar()
-        ttk.Checkbutton(btn_row, text="Modo copiar", variable=self._copy_var).pack(
-            side="left", padx=(0, 10))
+        tk.Checkbutton(
+            btn_row, text="Modo copiar",
+            variable=self._copy_var,
+            bg=C["bg"], fg=C["text2"],
+            activebackground=C["bg"], activeforeground=C["text"],
+            selectcolor=C["panel"],
+            font=FONTS["TINY"], bd=0, highlightthickness=0,
+            relief="flat"
+        ).pack(side="left", padx=(0, 10))
 
-        self._btn_log = ttk.Button(btn_row, text="💾 Log", command=self._on_export_log,
-                                    state="disabled")
+        def _mk_btn(parent, text, cmd, accent=False, state="normal"):
+            bg  = C["accent"]       if accent else C["panel"]
+            fg  = C["bg"]           if accent else C["text"]
+            abg = C["accent_hover"] if accent else C["accent_light"]
+            afg = C["bg"]           if accent else C["accent_hover"]
+            btn = tk.Button(
+                parent, text=text, command=cmd,
+                bg=bg, fg=fg,
+                activebackground=abg, activeforeground=afg,
+                disabledforeground=C["text3"],
+                font=FONTS["LABEL_B"],
+                relief="flat", bd=0,
+                padx=10, pady=4,
+                cursor="hand2",
+                highlightthickness=1,
+                highlightbackground=C["border"],
+                highlightcolor=C["accent"]
+            )
+            if state == "disabled":
+                btn.configure(state="disabled", bg=C["card"])
+            return btn
+
+        self._btn_log = _mk_btn(btn_row, "Log", self._on_export_log, state="disabled")
         self._btn_log.pack(side="left", padx=(0, 4))
-        self._btn_csv = ttk.Button(btn_row, text="📤 CSV", command=self._on_export_csv,
-                                    state="disabled")
+        self._btn_csv = _mk_btn(btn_row, "CSV", self._on_export_csv, state="disabled")
         self._btn_csv.pack(side="left", padx=(0, 4))
-        self._btn_cancel = ttk.Button(btn_row, text="✖ Cancelar", command=self._on_cancel,
-                                       state="disabled")
+        self._btn_cancel = _mk_btn(btn_row, "✖ Cancelar", self._on_cancel, state="disabled")
         self._btn_cancel.pack(side="left", padx=(0, 4))
-        self._btn_undo = ttk.Button(btn_row, text="↩ Deshacer", command=self._on_undo,
-                                     state="disabled")
+        self._btn_undo = _mk_btn(btn_row, "↩ Deshacer", self._on_undo, state="disabled")
         self._btn_undo.pack(side="left", padx=(0, 4))
-        self._btn_rename = ttk.Button(btn_row, text="▶  Renombrar todo", style="Accent.TButton",
-                                       command=self._on_rename, state="disabled")
+        self._btn_rename = _mk_btn(btn_row, "▶  Renombrar todo", self._on_rename,
+                                    accent=True, state="disabled")
         self._btn_rename.pack(side="left")
+
+    def _set_btn_state(self, btn: tk.Button, enabled: bool, accent: bool = False):
+        if enabled:
+            bg = C["accent"] if accent else C["panel"]
+            fg = C["bg"]     if accent else C["text"]
+            abg = C["accent_hover"] if accent else C["accent_light"]
+            afg = C["bg"]
+            btn.configure(state="normal", bg=bg, fg=fg,
+                          activebackground=abg, activeforeground=afg)
+        else:
+            btn.configure(state="disabled", bg=C["card"], fg=C["text3"])
 
     # ── exploradores de archivos nativos ────────────────────────────────
     def _browse_folder(self):
@@ -723,9 +771,9 @@ class ImageSyncApp(tk.Tk):
         self._last_pairs = self._model.build_preview()
         self._populate_tree(self._last_pairs)
         has_data = bool(self._last_pairs)
-        self._btn_rename.configure(state="normal" if has_data else "disabled")
-        self._btn_log.configure(state="normal" if has_data else "disabled")
-        self._btn_csv.configure(state="normal" if has_data else "disabled")
+        self._set_btn_state(self._btn_rename, has_data, accent=True)
+        self._set_btn_state(self._btn_log, has_data)
+        self._set_btn_state(self._btn_csv, has_data)
         self._lbl_count.configure(text=f"{len(self._last_pairs)} archivos" if has_data else "")
 
     def _populate_tree(self, pairs):
@@ -793,6 +841,26 @@ class ImageSyncApp(tk.Tk):
         if not item or col not in ("#2", "#3"):
             self._thumb_win.withdraw()
             return
+        col1_w = self._tree.column("#1", "width")
+        col2_w = self._tree.column("#2", "width")
+        col3_w = self._tree.column("#3", "width")
+        max_x = col1_w + col2_w + col3_w
+        if event.x > max_x:
+            self._thumb_win.withdraw()
+            return
+        try:
+            cell_values = self._tree.item(item, "values")
+            if not cell_values:
+                self._thumb_win.withdraw()
+                return
+            col_idx = int(col.replace("#", "")) - 1
+            cell_text = str(cell_values[col_idx]).strip() if col_idx < len(cell_values) else ""
+            if not cell_text:
+                self._thumb_win.withdraw()
+                return
+        except Exception:
+            self._thumb_win.withdraw()
+            return
         idx = int(item)
         if idx >= len(self._last_pairs):
             self._thumb_win.withdraw()
@@ -843,8 +911,9 @@ class ImageSyncApp(tk.Tk):
         if not messagebox.askyesno("Confirmar renombramiento", msg):
             return
         self._cancel_ev = threading.Event()
-        self._btn_rename.configure(state="disabled", text="Renombrando…")
-        self._btn_cancel.configure(state="normal")
+        self._btn_rename.configure(text="Renombrando…")
+        self._set_btn_state(self._btn_rename, False)
+        self._set_btn_state(self._btn_cancel, True)
         self._progress["value"] = 0
         threading.Thread(target=self._do_rename, daemon=True).start()
 
@@ -859,9 +928,10 @@ class ImageSyncApp(tk.Tk):
     def _finish_rename(self, ok, errors):
         self._progress["value"] = 100
         self._lbl_status.configure(text=f"Completado · {ok} renombradas.", foreground=C["ok"])
-        self._btn_rename.configure(state="normal", text="▶  Renombrar todo")
-        self._btn_cancel.configure(state="disabled")
-        self._btn_undo.configure(state="normal" if self._model.has_undo else "disabled")
+        self._btn_rename.configure(text="▶  Renombrar todo")
+        self._set_btn_state(self._btn_rename, True, accent=True)
+        self._set_btn_state(self._btn_cancel, False)
+        self._set_btn_state(self._btn_undo, self._model.has_undo)
         if errors:
             messagebox.showwarning("Image Sync", f"⚠ {ok} OK · {len(errors)} con error.")
         else:
@@ -879,7 +949,7 @@ class ImageSyncApp(tk.Tk):
             return
         if not messagebox.askyesno("Deshacer", "¿Revertir el último lote?"):
             return
-        self._btn_undo.configure(state="disabled")
+        self._set_btn_state(self._btn_undo, False)
         self._progress["value"] = 0
         threading.Thread(target=self._do_undo, daemon=True).start()
 
@@ -893,7 +963,7 @@ class ImageSyncApp(tk.Tk):
     def _finish_undo(self, ok, errors):
         self._progress["value"] = 0
         self._lbl_status.configure(text=f"Deshacer · {ok} revertidas.", foreground=C["ok"])
-        self._btn_undo.configure(state="normal" if self._model.has_undo else "disabled")
+        self._set_btn_state(self._btn_undo, self._model.has_undo)
         if self._model.folder_path:
             try:
                 self._model.load_photos()
@@ -908,7 +978,7 @@ class ImageSyncApp(tk.Tk):
     def _on_cancel(self):
         if self._cancel_ev:
             self._cancel_ev.set()
-            self._btn_cancel.configure(state="disabled")
+            self._set_btn_state(self._btn_cancel, False)
             self._lbl_status.configure(text="Cancelando…", foreground=C["warn"])
 
     def _on_export_log(self):
