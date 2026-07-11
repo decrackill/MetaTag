@@ -23,6 +23,9 @@ from tkinter import ttk
 import pandas as pd
 from PIL import Image, ImageTk
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger(__name__)
 
@@ -575,6 +578,53 @@ class ImageSyncApp(tk.Tk):
                 status += "  [Orden MetaTag]"
             self._summary_status.configure(text=status, fg=C["ok"])
 
+    def _mk_themed_menu(self, parent, var: tk.StringVar,
+                        values: list, width: int = 14,
+                        command=None):
+        mb = tk.Menubutton(
+            parent,
+            textvariable=var,
+            bg=C["panel"], fg=C["text"],
+            activebackground=C["accent_light"],
+            activeforeground=C["accent_hover"],
+            font=FONTS["LABEL"],
+            relief="flat", bd=0,
+            padx=8, pady=3,
+            width=width,
+            anchor="w",
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=C["border"],
+            highlightcolor=C["accent"],
+            indicatoron=True,
+        )
+
+        menu = tk.Menu(
+            mb,
+            tearoff=0,
+            bg=C["panel"],
+            fg=C["text"],
+            activebackground=C["accent"],
+            activeforeground=C["bg"],
+            font=FONTS["LABEL"],
+            bd=0,
+            relief="flat",
+        )
+        mb["menu"] = menu
+
+        for v in values:
+            def _cmd(val=v, cb=command):
+                var.set(val)
+                if cb:
+                    cb(val)
+            menu.add_command(label=v, command=_cmd)
+
+        mb.bind("<Enter>", lambda e: mb.configure(highlightbackground=C["accent"])
+                if str(mb.cget("state")) == "normal" else None)
+        mb.bind("<Leave>", lambda e: mb.configure(highlightbackground=C["border"]))
+
+        return mb, menu
+
     def _build_folder_section(self, parent):
         frame = tk.Frame(parent, bg=C["surface"], highlightthickness=1,
                           highlightbackground=C["border"])
@@ -610,8 +660,12 @@ class ImageSyncApp(tk.Tk):
         tk.Label(row2, text="Ordenar por:", bg=C["surface"], fg=C["text3"],
                   font=FONTS["TINY"]).pack(side="left")
         self._sort_var = tk.StringVar(value="Orden numérico")
-        self._sort_menu = ttk.OptionMenu(row2, self._sort_var, "Orden numérico", *SORT_OPTIONS.keys())
-        self._sort_menu.pack(side="left", padx=(6, 0))
+        self._sort_mb, self._sort_menu = self._mk_themed_menu(
+            row2, self._sort_var,
+            values=list(SORT_OPTIONS.keys()),
+            width=22,
+        )
+        self._sort_mb.pack(side="left", padx=(6, 0))
         self._lbl_folder_status = tk.Label(row2, text="", bg=C["surface"], fg=C["text3"],
                                             font=FONTS["TINY"])
         self._lbl_folder_status.pack(side="right")
@@ -650,16 +704,24 @@ class ImageSyncApp(tk.Tk):
         row2.pack(fill="x", padx=10, pady=(0, 6))
         tk.Label(row2, text="Hoja:", bg=C["surface"], fg=C["text3"],
                   font=FONTS["TINY"]).pack(side="left")
-        self._sheet_var = tk.StringVar()
-        self._sheet_menu = ttk.OptionMenu(row2, self._sheet_var, "—")
-        self._sheet_menu.pack(side="left", padx=(4, 12))
-        self._sheet_menu.configure(state="disabled")
+        self._sheet_var = tk.StringVar(value="—")
+        self._sheet_mb, self._sheet_menu = self._mk_themed_menu(
+            row2, self._sheet_var, values=["—"], width=12,
+            command=lambda v: self._on_sheet_change_direct(v)
+        )
+        self._sheet_mb.pack(side="left", padx=(4, 12))
+        self._sheet_mb.configure(state="disabled")
+
         tk.Label(row2, text="Columna:", bg=C["surface"], fg=C["text3"],
                   font=FONTS["TINY"]).pack(side="left")
-        self._col_var = tk.StringVar()
-        self._col_menu = ttk.OptionMenu(row2, self._col_var, "—")
-        self._col_menu.pack(side="left", padx=(4, 0))
-        self._col_menu.configure(state="disabled")
+
+        self._col_var = tk.StringVar(value="—")
+        self._col_mb, self._col_menu = self._mk_themed_menu(
+            row2, self._col_var, values=["—"], width=18,
+            command=lambda v: self._on_col_change_direct(v)
+        )
+        self._col_mb.pack(side="left", padx=(4, 0))
+        self._col_mb.configure(state="disabled")
         self._lbl_excel_status = tk.Label(row2, text="", bg=C["surface"], fg=C["text3"],
                                            font=FONTS["TINY"])
         self._lbl_excel_status.pack(side="right")
@@ -988,7 +1050,7 @@ class ImageSyncApp(tk.Tk):
                     self._model._photos = valid_ordered
                     self._lbl_folder_status.configure(
                         text=f"{n} imágenes  •  Orden de MetaTag aplicado",
-                        foreground=C["ok"])
+                        fg=C["ok"])
                     self._log(
                         f"[{datetime.now().strftime('%H:%M:%S')}] "
                         f"Orden de MetaTag cargado desde {order_file.name}\n", "info")
@@ -998,7 +1060,7 @@ class ImageSyncApp(tk.Tk):
                     self._model._photos = valid_ordered + missing
                     self._lbl_folder_status.configure(
                         text=f"{n} imágenes  •  Orden parcial de MetaTag ({len(missing)} sin orden)",
-                        foreground=C["warn"])
+                        fg=C["warn"])
             except Exception as exc:
                 log.warning("No se pudo leer orden de MetaTag: %s", exc)
         self._set_step(1)
@@ -1025,10 +1087,13 @@ class ImageSyncApp(tk.Tk):
             self._lbl_excel_status.configure(text=str(exc), fg=C["err"])
             return
         self._model.sheet_name = sheets[0]
-        self._sheet_menu["menu"].delete(0, "end")
+        self._sheet_menu.delete(0, "end")
         for s in sheets:
-            self._sheet_menu["menu"].add_command(label=s, command=lambda v=s: self._sheet_var.set(v))
-        self._sheet_menu.configure(state="normal")
+            self._sheet_menu.add_command(
+                label=s,
+                command=lambda v=s: [self._sheet_var.set(v), self._on_sheet_change_direct(v)]
+            )
+        self._sheet_mb.configure(state="normal")
         self._sheet_var.set(sheets[0])
         self._load_columns()
 
@@ -1041,15 +1106,18 @@ class ImageSyncApp(tk.Tk):
         self._loading_columns = True
         if len(cols) == 1:
             self._model.column_name = cols[0]
-            self._col_menu.configure(state="disabled")
+            self._col_mb.configure(state="disabled")
             self._lbl_excel_status.configure(text=f"Columna «{cols[0]}» auto-seleccionada.", fg=C["ok"])
             self._loading_columns = False
             self._load_names_and_preview()
         else:
-            self._col_menu["menu"].delete(0, "end")
+            self._col_menu.delete(0, "end")
             for c in cols:
-                self._col_menu["menu"].add_command(label=c, command=lambda v=c: self._col_var.set(v))
-            self._col_menu.configure(state="normal")
+                self._col_menu.add_command(
+                    label=c,
+                    command=lambda v=c: [self._col_var.set(v), self._on_col_change_direct(v)]
+                )
+            self._col_mb.configure(state="normal")
             self._col_var.set(cols[0])
             self._model.column_name = cols[0]
             self._loading_columns = False
@@ -1066,6 +1134,18 @@ class ImageSyncApp(tk.Tk):
         if self._loading_columns:
             return
         col = self._col_var.get()
+        if col and col != "—":
+            self._model.column_name = col
+            self._load_names_and_preview()
+
+    def _on_sheet_change_direct(self, sheet: str):
+        if sheet and sheet != "—":
+            self._model.sheet_name = sheet
+            self._load_columns()
+
+    def _on_col_change_direct(self, col: str):
+        if self._loading_columns:
+            return
         if col and col != "—":
             self._model.column_name = col
             self._load_names_and_preview()
