@@ -11,6 +11,7 @@ import os
 import io
 import json
 import math
+from html import escape
 import datetime
 import threading
 import subprocess
@@ -2014,7 +2015,8 @@ class VisorApp(tk.Tk):
         prog.resizable(False, False)
         prog.attributes("-topmost", True)
         pw, ph = 420, 160
-        prog.geometry(f"{pw}x{ph}+{(sw - pw)//2 if (sw:=self.winfo_screenwidth()) else 400}+{(sh - ph)//2 if (sh:=self.winfo_screenheight()) else 300}")
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        prog.geometry(f"{pw}x{ph}+{(sw - pw)//2}+{(sh - ph)//2}")
         prog.grab_set()
 
         tk.Label(prog, text="Generando PDF de comparación...", bg=C["bg"],
@@ -2078,7 +2080,7 @@ class VisorApp(tk.Tk):
                 # Portada
                 flowables.append(Paragraph("ANÁLISIS COMPARATIVO DE METADATOS", s_title))
                 flowables.append(Paragraph(
-                    f"{name_a}  vs  {name_b}  —  {datetime.datetime.now():%d/%m/%Y %H:%M}", s_sub))
+                    f"{escape(str(name_a))}  vs  {escape(str(name_b))}  —  {datetime.datetime.now():%d/%m/%Y %H:%M}", s_sub))
                 flowables.append(HRFlowable(width="100%", thickness=2, color=CLR_GOLD, spaceAfter=10))
 
                 # Resumen general
@@ -2135,7 +2137,7 @@ class VisorApp(tk.Tk):
 
                     flowables.append(HRFlowable(width="100%", thickness=1, color=CLR_LINE, spaceBefore=8))
                     flowables.append(Paragraph(
-                        f"Par {i+1}/{total}:  {Path(path_a).name}  vs  {Path(path_b).name}", s_section))
+                        f"Par {i+1}/{total}:  {escape(Path(path_a).name)}  vs  {escape(Path(path_b).name)}", s_section))
 
                     # Imágenes lado a lado
                     try:
@@ -2152,7 +2154,7 @@ class VisorApp(tk.Tk):
                             rl_img.drawWidth = min(8*cm, rl_img.drawWidth)
                             rl_img.drawHeight = min(5*cm, rl_img.drawHeight)
                             imgs_row.append([
-                                Paragraph(f"<b>{p[1]}: {Path(p[0]).name}</b>", s_name),
+                                Paragraph(f"<b>{p[1]}: {escape(Path(p[0]).name)}</b>", s_name),
                                 rl_img
                             ])
                         img_table = Table(
@@ -2210,9 +2212,9 @@ class VisorApp(tk.Tk):
                             ca = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#7EB8C9")
                             cb = "#7EC894" if va == vb else ("#E05050" if va != "—" and vb != "—" else "#BB86FC")
                             tbl_data.append([
-                                Paragraph(k, s_key),
-                                Paragraph(f'<font color="{ca}">{va}</font>', s_val),
-                                Paragraph(f'<font color="{cb}">{vb}</font>', s_val),
+                                Paragraph(escape(str(k)), s_key),
+                                Paragraph(f'<font color="{ca}">{escape(str(va))}</font>', s_val),
+                                Paragraph(f'<font color="{cb}">{escape(str(vb))}</font>', s_val),
                             ])
                         meta_table = Table(tbl_data, colWidths=[5*cm, 6*cm, 6*cm])
                         meta_table.setStyle(TableStyle([

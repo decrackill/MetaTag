@@ -20,6 +20,7 @@ META_GROUPS = {
     "Notas":       ["Observaciones", "Excluido"],
 }
 META_GROUP_ORDER = ["Ubicacion", "Descripcion", "Tecnica", "Notas"]
+_TIFF_JSON_PREFIX = "METATAG_JSON:"
 
 
 def formatear_metadatos(meta: dict, organizado: bool = True) -> str:
@@ -62,6 +63,12 @@ def read_existing_metadata(path: str) -> dict:
                 c = getattr(img, "text", {}).get("Comment", "")
                 if c:
                     return json.loads(c)
+            elif ext in (".tif", ".tiff"):
+                description = img.tag_v2.get(270, "")
+                if isinstance(description, bytes):
+                    description = description.decode("utf-8", errors="replace")
+                if isinstance(description, str) and description.startswith(_TIFF_JSON_PREFIX):
+                    return json.loads(description[len(_TIFF_JSON_PREFIX):])
     except Exception:
         pass
     return {}
@@ -86,7 +93,10 @@ def check_metadata_divergence(path, expected_meta):
 
 def write_jpeg(path: str, meta: dict, organizado: bool = True):
     with Image.open(path) as _img_src:
+        if getattr(_img_src, "n_frames", 1) != 1:
+            raise RuntimeError("JPEG animado o multipágina no soportado.")
         _img_src.load()
+        source_info = dict(_img_src.info)
         img = _img_src.copy()
     texto_organizado = formatear_metadatos(meta, organizado)
     as_json          = json.dumps(meta, ensure_ascii=False)
@@ -100,34 +110,57 @@ def write_jpeg(path: str, meta: dict, organizado: bool = True):
         as_json, encoding="unicode")
     exif["0th"][40092] = (texto_organizado + "\x00").encode("utf-16-le")
     exif["0th"][40094] = (keywords         + "\x00").encode("utf-16-le")
-    img.save(path, "jpeg", exif=piexif.dump(exif), quality=95)
+    save_args = {"exif": piexif.dump(exif), "quality": 95}
+    for key in ("icc_profile", "dpi"):
+        if source_info.get(key) is not None:
+            save_args[key] = source_info[key]
+    img.save(path, "jpeg", **save_args)
 
 
 def write_png(path: str, meta: dict, organizado: bool = True):
     from PIL import PngImagePlugin
     with Image.open(path) as _img_src:
+        if getattr(_img_src, "n_frames", 1) != 1:
+            raise RuntimeError("PNG animado no soportado para evitar perder fotogramas.")
         _img_src.load()
+        source_info = dict(_img_src.info)
+        source_text = dict(getattr(_img_src, "text", {}))
         img = _img_src.copy()
     info = PngImagePlugin.PngInfo()
+    for k, v in source_text.items():
+        if k not in {"Description", "Comment", *meta.keys()}:
+            info.add_text(str(k), str(v))
     texto_organizado = formatear_metadatos(meta, organizado)
     for k, v in meta.items():
         info.add_text(str(k), str(v))
     info.add_text("Description", texto_organizado)
     info.add_text("Comment",     json.dumps(meta, ensure_ascii=False))
-    img.save(path, "PNG", pnginfo=info)
+    save_args = {"pnginfo": info}
+    for key in ("icc_profile", "dpi", "exif"):
+        if source_info.get(key) is not None:
+            save_args[key] = source_info[key]
+    img.save(path, "PNG", **save_args)
 
 
 def write_tiff(path: str, meta: dict, organizado: bool = True):
+    from PIL import TiffImagePlugin
     with Image.open(path) as _img_src:
+        if getattr(_img_src, "n_frames", 1) != 1:
+            raise RuntimeError("TIFF multipágina no soportado para evitar perder páginas.")
         _img_src.load()
+        source_info = dict(_img_src.info)
+        tiffinfo = TiffImagePlugin.ImageFileDirectory_v2()
+        for tag, value in _img_src.tag_v2.items():
+            tiffinfo[tag] = value
         img = _img_src.copy()
-    texto_organizado = formatear_metadatos(meta, organizado)
-    try:
-        exif = piexif.load(img.info.get("exif", b""))
-    except Exception:
-        exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
-    exif["0th"][piexif.ImageIFD.ImageDescription] = texto_organizado.encode("utf-8")
-    img.save(path, exif=piexif.dump(exif))
+    # TIFF no conserva de forma fiable el EXIF UserComment con Pillow. Guardamos
+    # el JSON en ImageDescription con un prefijo inequívoco y legible al reabrir.
+    tiffinfo[270] = _TIFF_JSON_PREFIX + json.dumps(meta, ensure_ascii=False)
+    save_args = {"format": "TIFF", "tiffinfo": tiffinfo}
+    for key in ("icc_profile", "dpi", "compression"):
+        if source_info.get(key) is not None:
+            save_args[key] = source_info[key]
+    img.save(path, **save_args)
 
 
 def write_meta(path: str, meta: dict, organizado: bool = False):
@@ -142,7 +175,4 @@ def write_meta(path: str, meta: dict, organizado: bool = False):
     elif ext in (".tif", ".tiff"):
         write_tiff(path, meta, organizado)
     else:
-        try:
-            write_jpeg(path, meta, organizado)
-        except Exception:
-            raise RuntimeError(f"Formato no soportado: {ext}")
+        raise RuntimeError(f"Formato no soportado para escritura de metadatos: {ext}")

@@ -66,7 +66,9 @@ echo  Verificando librerias necesarias...
 set LIBRERIAS=pandas openpyxl pillow piexif matplotlib numpy reportlab customtkinter
 
 for %%L in (%LIBRERIAS%) do (
-    %PYTHON_CMD% -c "import %%L" >nul 2>&1
+    set IMPORT_NAME=%%L
+    if /I "%%L"=="pillow" set IMPORT_NAME=PIL
+    %PYTHON_CMD% -c "import !IMPORT_NAME!" >nul 2>&1
     if !errorlevel! neq 0 (
         echo  [INFO] Instalando %%L...
         %PYTHON_CMD% -m pip install %%L --quiet

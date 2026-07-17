@@ -55,7 +55,9 @@ LIBRERIAS="pillow piexif reportlab pandas openpyxl numpy matplotlib customtkinte
 
 echo "  Verificando librerias necesarias..."
 for LIB in $LIBRERIAS; do
-    $PY -c "import $LIB" 2>/dev/null
+    IMPORT_NAME="$LIB"
+    if [ "$LIB" = "pillow" ]; then IMPORT_NAME="PIL"; fi
+    $PY -c "import $IMPORT_NAME" 2>/dev/null
     if [ $? -ne 0 ]; then
         echo "  [INFO] Instalando $LIB..."
         $PIP install "$LIB" --quiet

@@ -85,7 +85,9 @@ FONTS = {
 # ══════════════════════════════════════════════════════════════════
 #  PERSISTENCIA
 # ══════════════════════════════════════════════════════════════════
-_STATE_FILE = Path(__file__).parent / ".image_sync_state.json"
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_STATE_FILE = _DATA_DIR / "image_sync_state.json"
 
 def _load_state() -> dict:
     try:
@@ -210,17 +212,25 @@ class RenameModel:
     def build_preview(self, keep_ext: bool = True) -> list[tuple[str, str, Path]]:
         result = []
         for photo, name in zip(self._photos, self._names):
-            if keep_ext:
-                new_name = name + photo.suffix
-            else:
-                if "." in name:
-                    new_name = name
-                else:
-                    new_name = name + photo.suffix
+            try:
+                new_name = self._destination_name(name, photo.suffix, keep_ext)
+            except ValueError:
+                new_name = f"⚠ INVÁLIDO: {name}"
             result.append((photo.name, new_name, photo))
         return result
 
-    def rename_all(self, on_progress, on_done, cancel_ev=None, copy_mode=False):
+    @staticmethod
+    def _destination_name(name: str, suffix: str, keep_ext: bool) -> str:
+        """Convierte un valor de Excel en un nombre de archivo seguro."""
+        name = str(name).strip()
+        if not name or name in {".", ".."}:
+            raise ValueError("nombre vacío o reservado")
+        if Path(name).name != name or any(c in name for c in '<>:"/\\|?*\x00'):
+            raise ValueError("el nombre contiene una ruta o caracteres no permitidos")
+        return name + suffix if keep_ext or "." not in name else name
+
+    def rename_all(self, on_progress, on_done, cancel_ev=None, copy_mode=False,
+                   keep_ext=True):
         total = min(len(self._photos), len(self._names))
         success = 0
         errors: list[str] = []
@@ -229,18 +239,38 @@ class RenameModel:
 
         if copy_mode and self._photos:
             dest_folder = self._photos[0].parent / "Renombradas"
+
+        planned = []
+        invalid = []
+        for photo, name in zip(self._photos, self._names):
+            try:
+                new_name = self._destination_name(name, photo.suffix, keep_ext)
+                dest = (dest_folder / new_name) if copy_mode and dest_folder else (photo.parent / new_name)
+                planned.append((photo, new_name, dest))
+            except ValueError as exc:
+                invalid.append(f"{photo.name}: {exc}")
+        if invalid:
+            on_done(0, invalid)
+            return
+
+        names_folded = [str(dest).casefold() for _, _, dest in planned]
+        duplicates = {name for name in names_folded if names_folded.count(name) > 1}
+        conflicts = [new_name for photo, new_name, dest in planned
+                     if str(dest).casefold() in duplicates or (dest.exists() and dest != photo)]
+        if conflicts:
+            on_done(0, [f"Conflicto de destino: {name}" for name in sorted(set(conflicts))])
+            return
+        if copy_mode and dest_folder:
             try:
                 dest_folder.mkdir(exist_ok=True)
             except OSError as exc:
                 on_done(0, [f"No se pudo crear carpeta de copias: {exc}"])
                 return
 
-        for i, (photo, name) in enumerate(zip(self._photos, self._names)):
+        for i, (photo, new_name, dest) in enumerate(planned):
             if cancel_ev and cancel_ev.is_set():
                 errors.append("Cancelado por el usuario.")
                 break
-            new_name = name + photo.suffix
-            dest = (dest_folder / new_name) if copy_mode and dest_folder else (photo.parent / new_name)
             try:
                 if copy_mode:
                     shutil.copy2(photo, dest)
@@ -270,6 +300,9 @@ class RenameModel:
                     if copy_mode:
                         current.unlink()
                     else:
+                        if original.exists():
+                            errors.append(f"No se revierte {current.name}: ya existe {original.name}")
+                            continue
                         current.rename(original)
                     success += 1
                 else:
@@ -549,7 +582,8 @@ class ImageSyncApp(tk.Tk):
         n_fotos = len(self._model.photos)
         n_nombres = len(self._model.names)
         correspondencias = min(n_fotos, n_nombres)
-        all_new = [name + photo.suffix for photo, name in zip(self._model.photos, self._model.names)]
+        all_new = self._model.build_preview(self._opt_keep_ext.get())
+        all_new = [new for _, new, _ in all_new]
         from collections import Counter
         dup_count = sum(1 for v in Counter(all_new).values() if v > 1)
         empty_count = sum(1 for name in self._model.names if not name.strip())
@@ -1342,7 +1376,7 @@ class ImageSyncApp(tk.Tk):
         n_ph = len(self._model.photos)
         n_nm = len(self._model.names)
         will = min(n_ph, n_nm)
-        all_new = [name + photo.suffix for photo, name in zip(self._model.photos, self._model.names)]
+        all_new = [new for _, new, _ in self._model.build_preview(self._opt_keep_ext.get())]
         from collections import Counter
         conflictos = sum(1 for v in Counter(all_new).values() if v > 1)
         if not self._confirm_rename_dialog(will, conflictos):
@@ -1354,7 +1388,9 @@ class ImageSyncApp(tk.Tk):
         self._set_btn_state(self._btn_simulate, False)
         self._set_progress(0, "Iniciando…")
         self._set_step(4)
-        threading.Thread(target=self._do_rename, daemon=True).start()
+        copy_mode = self._copy_var.get()
+        keep_ext = self._opt_keep_ext.get()
+        threading.Thread(target=self._do_rename, args=(copy_mode, keep_ext), daemon=True).start()
 
     def _confirm_rename_dialog(self, n, conflictos):
         dlg = tk.Toplevel(self)
@@ -1412,7 +1448,7 @@ class ImageSyncApp(tk.Tk):
         dlg.wait_window()
         return result["ok"]
 
-    def _do_rename(self):
+    def _do_rename(self, copy_mode, keep_ext):
         def progress(cur, tot, name):
             self.after(0, lambda: self._set_progress(cur / tot, f"{cur}/{tot} — {name}"))
             if cur % 10 == 0:
@@ -1420,7 +1456,7 @@ class ImageSyncApp(tk.Tk):
         def done(ok, errors):
             self.after(0, lambda: self._finish_rename(ok, errors))
         self._model.rename_all(progress, done, cancel_ev=self._cancel_ev,
-                               copy_mode=self._copy_var.get())
+                               copy_mode=copy_mode, keep_ext=keep_ext)
 
     def _finish_rename(self, ok, errors):
         self._set_progress(1.0, f"Completado · {ok} renombradas.")

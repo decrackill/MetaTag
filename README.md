@@ -1,4 +1,4 @@
-# MetaTag v7 — Escritor de Metadatos Arqueológicos
+# MetaTag v8.9 — Escritor de Metadatos Arqueológicos
 
 Herramienta de escritorio para escribir metadatos arqueológicos directamente en los archivos de imagen (JPG, PNG, TIFF), a partir de una tabla Excel o CSV.
 
@@ -14,7 +14,7 @@ Herramienta de escritorio para escribir metadatos arqueológicos directamente en
 
 ## Cómo usar
 
-1. Coloca los archivos `metatag_v7.py` e `instalar_y_abrir.bat` en la misma carpeta.
+1. Conserva la estructura del proyecto, incluidos `src/` e `instalar_y_abrir.bat`.
 2. Haz doble clic en **`instalar_y_abrir.bat`**.
 3. El programa instalará las dependencias automáticamente y abrirá la interfaz.
 
@@ -24,9 +24,11 @@ Herramienta de escritorio para escribir metadatos arqueológicos directamente en
 
 | Archivo | Descripción |
 |---|---|
-| `metatag_v7.py` | Programa principal |
+| `src/metatag_v8.py` | Programa principal |
 | `instalar_y_abrir.bat` | Lanzador / instalador de dependencias |
-| `INSTRUCCIONES.docx` | Manual completo de uso con capturas |
+| `src/Visor.py` | Visor y exportación de reportes |
+| `src/image_sync.py` | Renombrador de fotos desde Excel |
+| `requirements.txt` | Dependencias reproducibles |
 | `README.md` | Este archivo |
 
 ---
@@ -49,22 +51,22 @@ Las imágenes con metadatos escritos se guardan en:
 
 ---
 
-## Novedades v4 (respecto a v3)
+## Funciones principales
 
 - **Búsqueda de imágenes mejorada:** ahora encuentra archivos aunque tengan diferencias en mayúsculas/minúsculas, extensión (`.jpg` vs `.JPG`) o caracteres especiales como `#` al inicio del nombre.
 - **Match automático imagen ↔ fila:** al seleccionar una imagen en el explorador lateral, la fila correspondiente en la tabla se resalta automáticamente.
-- **Selector de temas:** 4 temas visuales — Arqueológico, Oscuro, Verde Bosque, Azul Marino.
+- **Selector de temas:** temas Arqueológico, Noche Total y Carbón.
 
 ---
 
 ## Soporte de formatos de imagen
 
-JPG · JPEG · PNG · TIF · TIFF · BMP · GIF · WEBP · HEIC · HEIF · AVIF · ICO · PPM · PGM
+JPG · JPEG · PNG · TIF · TIFF
 
 ---
 
 ## Notas
 
 - El programa **no modifica** el archivo Excel/CSV original.
-- Las imágenes originales **no se modifican**; se crea una copia con los metadatos en la carpeta de salida.
+- Las imágenes originales **no se modifican**; se crea una copia con los metadatos en la carpeta de salida. La limpieza de metadatos también crea copias limpias allí.
 - Si una imagen no se encuentra, aparece un error `✗ No encontrada` en el registro. Verifica que el nombre en el Excel coincida con el nombre real del archivo.

@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 import os, json, re, threading, queue, shutil, sys, subprocess
+import logging
 from typing import Union, Optional
 
 if sys.platform == "win32":
@@ -46,7 +47,6 @@ from metatag_writer import (
     formatear_metadatos, read_existing_metadata, check_metadata_divergence,
     write_meta, write_jpeg, write_png, write_tiff,
 )
-import logging
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT / "data"
@@ -102,7 +102,9 @@ def set_font_scale(scale):
 
 set_font_scale(1.0)
 
-IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
+# Solo formatos cuya escritura conserva un archivo del mismo tipo. Aceptar BMP o
+# WEBP aquí antes producía un JPEG con extensión engañosa.
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 META_GROUPS = {
     "Ubicacion":   ["Sitio", "Corte", "Cuadrante", "Unidad", "Nivel", "Profundidad Cm"],
     "Descripcion": ["Vista", "Parte", "Perfil", "Labio"],
@@ -1251,7 +1253,7 @@ class MetaTagApp(tk.Tk):
     def _browse_single_image(self):
         p = _native_file_open(
             title="Seleccionar imagen",
-            filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp"),
+            filetypes=[("Imágenes compatibles", "*.jpg *.jpeg *.png *.tif *.tiff"),
                        ("Todos", "*.*")])
         if p: self._load_image(p)
 
@@ -1917,12 +1919,25 @@ class MetaTagApp(tk.Tk):
         self.wait_window(dlg)
         return result[0]
 
+    def _output_path_for(self, img_path, source_folder):
+        """Mantiene la estructura relativa para que nombres repetidos no colisionen."""
+        source_root = Path(source_folder).resolve()
+        path = Path(img_path).resolve()
+        try:
+            relative = path.relative_to(source_root)
+        except ValueError:
+            relative = Path(path.name)
+        output = self.output_folder / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        return output
+
     def _batch_worker(self, img_files, batch_df, meta_cols, sort_mode,
-                      total, start_idx, omit_empty, organizado,
-                      update_ui, cancelled, progress_file, prog_win):
+                      total, start_idx, omit_empty, organizado, source_folder,
+                      excel_id, initial_ok, initial_errors,
+                      event_queue, cancelled, progress_file):
         """Hilo de escritura de metadatos en lote."""
-        ok_count = 0
-        errors = []
+        ok_count = initial_ok
+        errors = list(initial_errors)
 
         for i in range(start_idx, total):
             if cancelled.is_set():
@@ -1946,15 +1961,15 @@ class MetaTagApp(tk.Tk):
 
             if not meta:
                 if (i + 1) % 5 == 0 or (i + 1) == total:
-                    self.after(0, update_ui, i + 1, img_path.name)
+                    event_queue.put(("update", (i + 1, img_path.name)))
                 continue
 
-            out_path = self.output_folder / img_path.name
+            out_path = self._output_path_for(img_path, source_folder)
             try:
                 divergencias = self._check_metadata_divergence(str(img_path), meta)
                 if divergencias and (i + 1) % 5 == 0:
-                    self._log(
-                        f"  ⚠ {img_path.name}: divergencia detectada y corregida\n", "warn")
+                    event_queue.put(("log", (
+                        f"  ⚠ {img_path.name}: divergencia detectada y corregida\n", "warn")))
                 shutil.copy2(str(img_path), str(out_path))
                 self._write_meta(str(out_path), meta, organizado)
                 ok_count += 1
@@ -1962,12 +1977,12 @@ class MetaTagApp(tk.Tk):
                 errors.append(f"[{img_path.name}]: {e}")
 
             if (i + 1) % 5 == 0 or (i + 1) == total:
-                self.after(0, update_ui, i + 1, img_path.name)
+                event_queue.put(("update", (i + 1, img_path.name)))
 
             if (i + 1) % 10 == 0:
                 progress_data = {
                     "total": total, "done": i + 1, "ok": ok_count,
-                    "errors": errors, "excel": str(self.csv_path_var.get()),
+                    "errors": errors, "excel": excel_id,
                     "sort": sort_mode, "meta_cols": meta_cols,
                 }
                 progress_file.write_text(
@@ -1976,7 +1991,7 @@ class MetaTagApp(tk.Tk):
 
         progress_data = {
             "total": total, "done": total, "ok": ok_count,
-            "errors": errors, "excel": str(self.csv_path_var.get()),
+            "errors": errors, "excel": excel_id,
             "sort": sort_mode, "meta_cols": meta_cols,
         }
         progress_file.write_text(
@@ -2004,11 +2019,13 @@ class MetaTagApp(tk.Tk):
             return
         if use_loaded:
             batch_df = self.df.copy()
+            batch_excel_id = str(self.csv_path_var.get())
         else:
             excel_path = _native_file_open(
                 title="Seleccionar Excel con metadatos",
                 filetypes=[("Excel", "*.xlsx *.xlsm *.xls"), ("CSV", "*.csv"), ("Todos", "*.*")])
             if not excel_path: return
+            batch_excel_id = str(excel_path)
             try:
                 ext      = Path(excel_path).suffix.lower()
                 batch_df = (pd.read_csv(excel_path, dtype=str, keep_default_na=False, na_values=[])
@@ -2071,7 +2088,7 @@ class MetaTagApp(tk.Tk):
         if progress_file.exists():
             try:
                 prev = json.loads(progress_file.read_text(encoding="utf-8"))
-                if prev.get("total") == total and prev.get("excel") == str(self.csv_path_var.get()):
+                if prev.get("total") == total and prev.get("excel") == batch_excel_id:
                     done_count = prev.get("done", 0)
                     if done_count > 0 and done_count < total:
                         if messagebox.askyesno(
@@ -2133,43 +2150,67 @@ class MetaTagApp(tk.Tk):
                                cursor="hand2", command=on_cancel)
         btn_cancel.pack(pady=(0, 8))
         prog_win.protocol("WM_DELETE_WINDOW", on_cancel)
+        resume_ok = ok_count
+        resume_errors = list(errors)
+        worker_events = queue.Queue()
+        finished = False
+
+        def finish(ok_count, errors):
+            nonlocal finished
+            finished = True
+            if cancelled.is_set():
+                self._log(f"\n⏹ Lote cancelado: {ok_count}/{total} procesadas.\n", "info")
+                self.status_var.set(f"⏹ Lote cancelado: {ok_count}/{total}")
+            else:
+                try: progress_file.unlink()
+                except Exception as e:
+                    logging.error(f"Error eliminando archivo de progreso: {e}", exc_info=True)
+                summary = (f"✅ {ok_count} de {total} imágenes procesadas correctamente.\n"
+                           f"📁 Guardadas en: {self.output_folder}")
+                if errors:
+                    summary += f"\n\n⚠ {len(errors)} error(es):\n"
+                    summary += "\n".join(errors[:8])
+                    if len(errors) > 8:
+                        summary += f"\n… y {len(errors)-8} más."
+                messagebox.showinfo("Lote por Orden — Completado", summary)
+                self._log(f"\n✔ Lote por orden: {ok_count}/{total} procesadas. "
+                          f"{len(errors)} errores.\n", "head")
+                self.status_var.set(f"✔ Lote por orden: {ok_count}/{total} listas")
+            if self.current_img:
+                cur_name = Path(self.current_img).name
+                processed_names = {img_files[j].name for j in range(total)}
+                if cur_name in processed_names:
+                    out = self._output_path_for(self.current_img, folder)
+                    if out.exists(): self._load_image(str(out), update_loupe=False)
+            if prog_win.winfo_exists():
+                prog_win.destroy()
 
         def worker():
             ok_count, errors = self._batch_worker(
                 img_files, batch_df, meta_cols, sort_mode,
-                total, start_idx, omit_empty, organizado,
-                update_ui, cancelled, progress_file, prog_win)
+                total, start_idx, omit_empty, organizado, folder,
+                batch_excel_id, resume_ok, resume_errors,
+                worker_events, cancelled, progress_file)
+            worker_events.put(("finish", (ok_count, errors)))
 
-            def finish():
-                if cancelled.is_set():
-                    self._log(f"\n⏹ Lote cancelado: {ok_count}/{total} procesadas.\n", "info")
-                    self.status_var.set(f"⏹ Lote cancelado: {ok_count}/{total}")
-                else:
-                    try: progress_file.unlink()
-                    except Exception as e:
-                        logging.error(f"Error eliminando archivo de progreso: {e}", exc_info=True)
-                    summary = (f"✅ {ok_count} de {total} imágenes procesadas correctamente.\n"
-                               f"📁 Guardadas en: {self.output_folder}")
-                    if errors:
-                        summary += f"\n\n⚠ {len(errors)} error(es):\n"
-                        summary += "\n".join(errors[:8])
-                        if len(errors) > 8:
-                            summary += f"\n… y {len(errors)-8} más."
-                    messagebox.showinfo("Lote por Orden — Completado", summary)
-                    self._log(f"\n✔ Lote por orden: {ok_count}/{total} procesadas. "
-                              f"{len(errors)} errores.\n", "head")
-                    self.status_var.set(f"✔ Lote por orden: {ok_count}/{total} listas")
-                if self.current_img:
-                    cur_name = Path(self.current_img).name
-                    processed_names = {img_files[j].name for j in range(total)}
-                    if cur_name in processed_names:
-                        out = self.output_folder / cur_name
-                        if out.exists(): self._load_image(str(out), update_loupe=False)
-                prog_win.destroy()
-
-            self.after(0, finish)
+        def poll_worker_events():
+            try:
+                while True:
+                    event, value = worker_events.get_nowait()
+                    if event == "update" and prog_win.winfo_exists():
+                        update_ui(*value)
+                    elif event == "log":
+                        self._log(*value)
+                    elif event == "finish":
+                        finish(*value)
+                        return
+            except queue.Empty:
+                pass
+            if not finished:
+                self.after(50, poll_worker_events)
 
         threading.Thread(target=worker, daemon=True).start()
+        self.after(50, poll_worker_events)
 
     # ── Selección de columnas para lote ──
     def _batch_pick_columns(self, all_cols, img_col=""):  # -> Optional[list]
@@ -2593,7 +2634,7 @@ class MetaTagApp(tk.Tk):
                 self.progress_queue.put(("progress", (i + 1) / total * 100))
                 continue
 
-            out_path = self.output_folder / Path(img_path).name
+            out_path = self._output_path_for(img_path, folder)
             try:
                 divergencias = self._check_metadata_divergence(img_path, meta)
                 if divergencias:
@@ -2660,7 +2701,7 @@ class MetaTagApp(tk.Tk):
         self.config(cursor="watch")
         self._inject_btn.configure(text="⏳ Inyectando...", state="disabled")
         self.output_folder.mkdir(parents=True, exist_ok=True)
-        out_path = self.output_folder / Path(self.current_img).name
+        out_path = self._output_path_for(self.current_img, self.img_folder_var.get())
 
         def task():
             try:
@@ -2902,9 +2943,8 @@ class MetaTagApp(tk.Tk):
                 f"(la sección donde se guardan los datos no está vacía).\n\n"
                 f"Si escribes los nuevos metadatos ahora, estos se MEZCLARÁN "
                 f"con los datos viejos.\n\n"
-                f"¿Quieres limpiar esos {len(ocupadas)} archivos ahora mismo "
-                f"(borrar solo la sección de metadatos de MetaTag, sin tocar "
-                f"el resto de la imagen) antes de continuar?")
+                f"¿Quieres crear COPIAS limpias de esos {len(ocupadas)} archivos en "
+                f"la carpeta de salida? Los originales no se modificarán.")
             if respuesta:
                 self._clear_metatag_sections([f for f, _ in ocupadas])
 
@@ -2912,11 +2952,12 @@ class MetaTagApp(tk.Tk):
 
     def _clear_metatag_sections(self, files: list):
         """
-        Limpia ÚNICAMENTE la sección de metadatos que MetaTag usa
-        (ImageDescription, UserComment/Comment con el JSON, XPComment,
-        XPKeywords) — sin tocar ninguna otra propiedad de la imagen.
+        Crea copias en la carpeta de salida y limpia únicamente la sección de
+        MetaTag allí. Los originales nunca se modifican.
         """
         total = len(files)
+        source_folder = self.img_folder_var.get()
+        self.output_folder.mkdir(parents=True, exist_ok=True)
         prog_win = tk.Toplevel(self)
         prog_win.title("Limpiando metadatos previos…")
         prog_win.configure(bg=C["panel"])
@@ -2947,9 +2988,11 @@ class MetaTagApp(tk.Tk):
             ok = err = 0
             for i, f in enumerate(files):
                 try:
-                    ext = f.suffix.lower()
+                    target = self._output_path_for(f, source_folder)
+                    shutil.copy2(f, target)
+                    ext = target.suffix.lower()
                     if ext in (".jpg", ".jpeg"):
-                        with Image.open(str(f)) as _img_src:
+                        with Image.open(str(target)) as _img_src:
                             img = _img_src.copy()
                         try:
                             exif = piexif.load(img.info.get("exif", b""))
@@ -2959,11 +3002,11 @@ class MetaTagApp(tk.Tk):
                         exif["0th"].pop(40092, None)
                         exif["0th"].pop(40094, None)
                         exif["Exif"].pop(piexif.ExifIFD.UserComment, None)
-                        img.save(str(f), "jpeg", exif=piexif.dump(exif), quality=95)
+                        img.save(str(target), "jpeg", exif=piexif.dump(exif), quality=95)
 
                     elif ext == ".png":
                         from PIL import PngImagePlugin
-                        with Image.open(str(f)) as _img_src:
+                        with Image.open(str(target)) as _img_src:
                             img = _img_src.copy()
                         new_info = PngImagePlugin.PngInfo()
                         old_text = dict(getattr(img, "text", {}))
@@ -2971,17 +3014,17 @@ class MetaTagApp(tk.Tk):
                             old_text.pop(k, None)
                         for k, v in old_text.items():
                             new_info.add_text(k, v)
-                        img.save(str(f), "PNG", pnginfo=new_info)
+                        img.save(str(target), "PNG", pnginfo=new_info)
 
                     elif ext in (".tif", ".tiff"):
-                        with Image.open(str(f)) as _img_src:
+                        with Image.open(str(target)) as _img_src:
                             img = _img_src.copy()
                         try:
                             exif = piexif.load(img.info.get("exif", b""))
                         except Exception:
                             exif = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
                         exif["0th"].pop(piexif.ImageIFD.ImageDescription, None)
-                        img.save(str(f), exif=piexif.dump(exif))
+                        img.save(str(target), exif=piexif.dump(exif))
 
                     ok += 1
                 except Exception as e:
@@ -2993,11 +3036,11 @@ class MetaTagApp(tk.Tk):
                 prog_win.destroy()
                 self._log(f"\n🧹 Limpieza de secciones MetaTag: {ok} limpiadas · "
                           f"{err} errores.\n", "head")
-                self.status_var.set(f"✔ {ok} imágenes limpiadas, listas para nuevos metadatos")
+                self.status_var.set(f"✔ {ok} copias limpias creadas, listas para nuevos metadatos")
                 messagebox.showinfo("Limpieza completa",
-                    f"✔ {ok} imágenes quedaron con la sección de metadatos vacía.\n"
+                    f"✔ {ok} copias quedaron con la sección de metadatos vacía en:\n{self.output_folder}\n"
                     f"{f'✗ {err} con errores.' if err else ''}\n\n"
-                    f"Ya puedes escribir los metadatos nuevos sin riesgo de mezclas.")
+                    f"Los originales no fueron modificados.")
 
             self.after(0, finish)
 
