@@ -8,7 +8,7 @@ Dependencias: pip install pandas openpyxl pillow piexif matplotlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import pandas as pd
-import os, json, re, threading, queue, shutil, sys, subprocess
+import os, json, re, threading, queue, shutil, sys, subprocess, traceback
 from typing import Union, Optional
 
 if sys.platform == "win32":
@@ -790,6 +790,12 @@ class MetaTagApp(tk.Tk):
                                      fg="#FFF5E8", font=FONTS["LABEL_B"], relief="flat",
                                      bd=0, cursor="hand2", pady=int(9*self.current_scale),
                                      activebackground=C["accent_hover"], activeforeground="#FFF5E8")
+        self._cancel_btn = tk.Button(self.action_frame, text="Cancelar",
+                                     command=self._cancel_processing, bg=C["btn_ghost_bg"],
+                                     fg=C["text"], font=FONTS["TINY"], relief="flat",
+                                     bd=0, cursor="hand2", pady=int(6*self.current_scale),
+                                     activebackground=C["accent_hover"], activeforeground="#FFF5E8")
+        self._cancel_btn.pack_forget()
         self._inject_btn = tk.Button(self.action_frame, text="📌 Inyectar en Foto Actual",
                                      command=self._inject_manual, bg=C["warn"],
                                      fg="#FFFFFF", font=FONTS["LABEL_B"], relief="flat",
@@ -2498,6 +2504,8 @@ class MetaTagApp(tk.Tk):
     #  PROCESAMIENTO NORMAL (MODO INTELIGENTE)
     # ─────────────────────────────────────────────────────────────
     def _start_processing(self):
+        if getattr(self, "_proc_thread", None) and self._proc_thread.is_alive():
+            return messagebox.showwarning("Procesando", "Ya hay un procesamiento en curso.")
         if self.grid.df is None:
             return messagebox.showwarning("Sin datos", "Carga un archivo Excel / CSV.")
         folder = self.img_folder_var.get()
@@ -2506,24 +2514,61 @@ class MetaTagApp(tk.Tk):
         if not self.grid.selected_cells:
             return messagebox.showwarning("Sin selección", "Selecciona celdas en la tabla.")
 
-        img_col_idx  = self._img_col_idx()
-        meta_by_row  = self.grid.get_selected_metadata(img_col_idx)
-        total_sel    = sum(1 for (r, c) in self.grid.selected_cells if c != img_col_idx)
-        total_valid  = sum(len(m) for m in meta_by_row.values())
+        # ── SNAPSHOT EN HILO PRINCIPAL: Tk/UI → datos inmutables → worker ──
+        img_col_idx   = self._img_col_idx()
+        meta_by_row   = self.grid.get_selected_metadata(img_col_idx)
+        total_sel     = sum(1 for (r, c) in self.grid.selected_cells if c != img_col_idx)
+        total_valid   = sum(len(m) for m in meta_by_row.values())
 
         if total_valid == 0:
             return messagebox.showwarning("Sin datos",
                 "Las celdas seleccionadas están vacías o son omitidas.")
 
+        df             = self.grid.df
+        organizado     = self.meta_mode_organized.get()
+        omit_empty     = self.omit_empty_var.get()
+        selected_cells = set(self.grid.selected_cells)
+        empty_cnt      = max(0, sum(1 for (r, c) in selected_cells if c != img_col_idx)
+                             - sum(len(m) for m in meta_by_row.values()))
+
+        self._proc_cancel = threading.Event()
         self.config(cursor="watch")
         self._write_btn.configure(text="⏳  Procesando…", state="disabled")
+        self._cancel_btn_show()
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self._log(f"\n📁 Salida Lote: {self.output_folder}\n", "info")
         self.progress_var.set(0)
         self.status_var.set("Iniciando procesamiento en segundo plano...")
         self._save_config()
-        threading.Thread(target=self._process_all, args=(folder, meta_by_row), daemon=True).start()
+        self._proc_thread = threading.Thread(
+            target=self._process_all,
+            args=(folder, meta_by_row, df, img_col_idx, organizado, omit_empty, empty_cnt),
+            daemon=True)
+        self._proc_thread.start()
         self.after(100, self._process_queue)
+
+    def _cancel_processing(self):
+        cancel = getattr(self, "_proc_cancel", None)
+        if cancel:
+            cancel.set()
+            self.status_var.set("Cancelando… el proceso actual finalizará de forma segura.")
+            try:
+                self._cancel_btn.configure(state="disabled")
+            except Exception:
+                pass
+
+    def _cancel_btn_show(self):
+        try:
+            self._cancel_btn.pack(side="left", pady=(0, 4))
+            self._cancel_btn.configure(state="normal")
+        except Exception:
+            pass
+
+    def _cancel_btn_hide(self):
+        try:
+            self._cancel_btn.pack_forget()
+        except Exception:
+            pass
 
     def _find_img_name_in_row(self, ri: int) -> str:
         row = self.grid.df.iloc[ri]
@@ -2537,88 +2582,117 @@ class MetaTagApp(tk.Tk):
                     return val
         return ""
 
-    def _process_all(self, folder: str, meta_by_row: dict):
-        rows_to_process    = sorted(meta_by_row.keys())
-        total, ok, err, amb = len(rows_to_process) or 1, 0, 0, 0
-        organizado         = self.meta_mode_organized.get()
+    def _process_all(self, folder: str, meta_by_row: dict, df,
+                     img_col_idx: int, organizado: bool, omit_empty: bool,
+                     empty_cnt: int):
+        cancel = getattr(self, "_proc_cancel", None)
+        try:
+            rows_to_process    = sorted(meta_by_row.keys())
+            total, ok, err, amb = len(rows_to_process) or 1, 0, 0, 0
 
-        for i, ri in enumerate(rows_to_process):
-            img_name = self._find_img_name_in_row(ri)
-            meta     = meta_by_row[ri]
-            self.progress_queue.put(("status", f"Procesando {i+1}/{total}..."))
+            for i, ri in enumerate(rows_to_process):
+                if cancel and cancel.is_set():
+                    self.progress_queue.put(("cancelled",
+                        f"Procesamiento cancelado a mitad de camino "
+                        f"({ok} escritas · {err} errores · {amb} ambigüedades)."))
+                    return
 
-            if not img_name:
-                self.progress_queue.put(("progress", (i + 1) / total * 100))
-                continue
+                img_name = self._find_img_name_in_row_data(df.iloc[ri])
+                meta     = meta_by_row[ri]
+                self.progress_queue.put(("status", f"Procesando {i+1}/{total}..."))
 
-            img_path, status, candidates = self._find_image_ex(img_name, folder)
-            if not img_path:
-                if status == "ambiguous":
-                    cand_names = ", ".join(Path(c).name for c in candidates)
+                if not img_name:
+                    self.progress_queue.put(("progress", (i + 1) / total * 100))
+                    continue
+
+                img_path, status, candidates = self._find_image_ex(img_name, folder)
+                if not img_path:
+                    if status == "ambiguous":
+                        cand_names = ", ".join(Path(c).name for c in candidates)
+                        self.progress_queue.put(("log", (
+                            f"  ⛔ Ambigua: {img_name} → varios archivos con la misma "
+                            f"clave, NO se eligió ninguno: {cand_names}\n", "warn")))
+                        amb += 1
+                    else:
+                        self.progress_queue.put(("log", (f"  ✗ No encontrada: {img_name}\n", "err")))
+                    err += 1
+                    self.progress_queue.put(("progress", (i + 1) / total * 100))
+                    continue
+
+                out_path = self.output_folder / Path(img_path).name
+                try:
+                    divergencias = self._check_metadata_divergence(img_path, meta)
+                    if divergencias:
+                        self.progress_queue.put(("log", (
+                            f"  ⚠ {Path(img_path).name}: metadatos previos NO coinciden "
+                            f"con el Excel, se sobreescribirán:\n"
+                            f"     {' | '.join(divergencias)}\n", "warn")))
+
+                    shutil.copy2(img_path, out_path)
+                    self._write_meta(str(out_path), meta, organizado)
                     self.progress_queue.put(("log", (
-                        f"  ⛔ Ambigua: {img_name} → varios archivos con la misma "
-                        f"clave, NO se eligió ninguno: {cand_names}\n", "warn")))
-                    amb += 1
-                else:
-                    self.progress_queue.put(("log", (f"  ✗ No encontrada: {img_name}\n", "err")))
-                err += 1
+                        f"  ✔ {Path(img_path).name}\n"
+                        f"     → {' | '.join(f'{k}: {v}' for k,v in meta.items())}\n", "ok")))
+                    ok += 1
+                except Exception as e:
+                    self.progress_queue.put(("log", (f"  ✗ {img_name}: {e}\n", "err")))
+                    err += 1
                 self.progress_queue.put(("progress", (i + 1) / total * 100))
-                continue
 
-            out_path = self.output_folder / Path(img_path).name
-            try:
-                divergencias = self._check_metadata_divergence(img_path, meta)
-                if divergencias:
-                    self.progress_queue.put(("log", (
-                        f"  ⚠ {Path(img_path).name}: metadatos previos NO coinciden "
-                        f"con el Excel, se sobreescribirán:\n"
-                        f"     {' | '.join(divergencias)}\n", "warn")))
-
-                shutil.copy2(img_path, out_path)
-                self._write_meta(str(out_path), meta, organizado)
-                self.progress_queue.put(("log", (
-                    f"  ✔ {Path(img_path).name}\n"
-                    f"     → {' | '.join(f'{k}: {v}' for k,v in meta.items())}\n", "ok")))
-                ok += 1
-            except Exception as e:
-                self.progress_queue.put(("log", (f"  ✗ {img_name}: {e}\n", "err")))
-                err += 1
-            self.progress_queue.put(("progress", (i + 1) / total * 100))
-
-        empty_cnt  = max(0, sum(1 for (r, c) in self.grid.selected_cells
-                                if c != self._img_col_idx())
-                         - sum(len(m) for m in meta_by_row.values()))
-        empty_note = f" · {empty_cnt} omitidas" if empty_cnt > 0 and self.omit_empty_var.get() else ""
-        amb_note   = f" · {amb} ambigüedades" if amb > 0 else ""
-        self.progress_queue.put(("log", (f"\n── Completado: {ok} escritas · {err} errores{empty_note}{amb_note} ──\n", "head")))
-        self.progress_queue.put(("done", f"✔ {ok} guardadas · {err} errores{empty_note}{amb_note}"))
+            empty_note = f" · {empty_cnt} omitidas" if empty_cnt > 0 and omit_empty else ""
+            amb_note   = f" · {amb} ambigüedades" if amb > 0 else ""
+            self.progress_queue.put(("log", (f"\n── Completado: {ok} escritas · {err} errores{empty_note}{amb_note} ──\n", "head")))
+            self.progress_queue.put(("done", f"✔ {ok} guardadas · {err} errores{empty_note}{amb_note}"))
+        except Exception as e:
+            self.progress_queue.put(("log", (f"  ✗ Error interno del proceso:\n{traceback.format_exc()}\n", "err")))
+            self.progress_queue.put(("error", f"Error interno durante el procesamiento: {e}"))
 
     def _process_queue(self):
-        try:
-            while True:
+        while True:
+            try:
                 msg_type, value = self.progress_queue.get_nowait()
-                if msg_type == "progress":
-                    self.progress_var.set(value)
-                elif msg_type == "status":
-                    self.status_var.set(value)
-                elif msg_type == "log":
-                    msg, tag = value
-                    self._log_safe(msg, tag)
-                elif msg_type == "done":
-                    self.status_var.set(value)
-                    self.config(cursor="")
-                    self._write_btn.configure(text="▶  Escribir Metadatos", state="normal")
-                    messagebox.showinfo("Proceso completado", value)
-                    return
-                elif msg_type == "error":
-                    self.status_var.set(f"Error: {value}")
-                    self.config(cursor="")
-                    self._write_btn.configure(text="▶  Escribir Metadatos", state="normal")
-                    messagebox.showerror("Error", value)
-                    return
-        except queue.Empty:
-            pass
-        self.after(100, self._process_queue)
+            except queue.Empty:
+                break
+            if msg_type == "progress":
+                self.progress_var.set(value)
+            elif msg_type == "status":
+                self.status_var.set(value)
+            elif msg_type == "log":
+                msg, tag = value
+                self._log_safe(msg, tag)
+            elif msg_type == "done":
+                self._proc_finish_ui("done", value)
+                return
+            elif msg_type == "error":
+                self._proc_finish_ui("error", value)
+                return
+            elif msg_type == "cancelled":
+                self._log_safe(f"[i] {value}\n", "warn")
+                self._proc_finish_ui("cancelled", value)
+                return
+
+        thread = self._proc_thread
+        if thread is None:
+            return
+        if thread.is_alive():
+            self.after(100, self._process_queue)
+            return
+
+        self._log_safe("  ✗ El proceso en segundo plano terminó de forma inesperada "
+                       "sin emitir una señal de finalización.\n", "err")
+        self._proc_finish_ui("unexpected", "El proceso terminó de forma inesperada.")
+
+    def _proc_finish_ui(self, msg_type: str, message: str):
+        self.status_var.set(message)
+        self.config(cursor="")
+        self._write_btn.configure(text="▶  Escribir Metadatos", state="normal")
+        self._cancel_btn_hide()
+        self._proc_thread = None
+        self._proc_cancel = None
+        if msg_type == "done":
+            messagebox.showinfo("Proceso completado", message)
+        elif msg_type == "error":
+            messagebox.showerror("Error", message)
 
     def _inject_manual(self):
         if self.current_row is None or self.grid.df is None:

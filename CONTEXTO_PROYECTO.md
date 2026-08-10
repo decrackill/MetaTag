@@ -299,6 +299,21 @@
   - **Resultado**: 23/23 pruebas verdes (11 Bloque 1 + 12 Bloque 2); `py_compile` OK.
   - **Smoke test Tk**: SÍ fue posible (display `:0` funcional); se ejecutó de verdad y quedó cubierto por `ExcelGridTkTestCase` (con `skipUnless` para entornos sin display).
 
+  ### Robustez del procesamiento en segundo plano (Bloque 3, resuelto 2026-08-10)
+
+  El proceso por lote por celdas (`_start_processing` → `_process_all` → `_process_queue`) no manejaba correctamente el ciclo de vida del worker en segundo plano:
+
+  - **Acceso a Tk desde el hilo worker:** `_process_all` leía `self.omit_empty_var`/`self.meta_mode_organized` (variables Tk) directamente desde el hilo secundario. Resuelto con **snapshot en el hilo principal**: `_start_processing` captura `df`, `meta_by_row`, `organizado`, `omit_empty`, `empty_cnt` antes de arrancar el hilo; el worker ya no toca la UI.
+  - **Terminación inesperada no detectada:** si el worker moría sin emitir `done`/`error`, la cola seguía en polling infinito. Ahora `_process_queue` comprueba `thread.is_alive()`; si el hilo murió sin señal terminal, se registra y restaura la UI (`_proc_finish_ui("unexpected", …)`), sin reprogramar `after`.
+  - **Cancelación a mitad de camino:** nueva señal cooperativa `_proc_cancel` (Event) + botón "Cancelar" (`_cancel_btn`). El worker la comprueba por fila y emite `("cancelled", …)` con el conteo parcial; `_cancel_processing` la activa desde la UI.
+  - **Excepción no controlada en el worker:** `_process_all` ahora envuelve todo el bucle en `try/except` y emite `("error", …)` con `traceback` en el log, en lugar de morir silenciosamente.
+  - **Doble procesamiento:** guard en `_start_processing` si `_proc_thread` está vivo.
+  - **Restauración de UI centralizada:** `_proc_finish_ui(msg_type, message)` restaura cursor, botón escribir y oculta el botón de cancelar para `done`/`error`/`cancelled`/`unexpected`; solo `done` y `error` muestran messagebox.
+
+  ### `invalid command name` de Tk al destruir ExcelGrid (resuelto 2026-08-10)
+
+  `ExcelGrid._schedule_redraw` programaba `after_idle(_deferred_redraw)` sin guardar su id; si el grid se destruía antes de que el evento idle se ejecutara, Tk emitía `invalid command name "..._deferred_redraw"`. Resuelto guardando `_redraw_after_id` y cancelándolo en un nuevo `ExcelGrid.destroy()`.
+
   ### Salida corrupta de terminal
 
   Durante la sesión de auditoría (2026-08-10) se detectó que ciertos comandos largos producían **salida corrupta/duplicada** en la terminal (grep/lecturas extensas devolvían contenido repetido). Esto **no significa necesariamente que el código esté corrupto**. La verificación se realizó escribiendo la salida a archivos temporales y leyéndolos con la herramienta Read, confirmando el contenido real de los módulos. Estado: investigado / workaround aplicado. No se ha establecido causa definitiva.
@@ -376,16 +391,29 @@
 
   ---
 
+  ### 2026-08-10 — Robustez del procesamiento en segundo plano y cancelación (Bloque 3)
+
+  - **17 tests nuevos en `tests/test_queue.py`**, todos verdes:
+    - `WorkerTestCase` (7): worker exitoso; archivo inexistente; matching ambiguo; excepción interna (emite `error`, no muere); cancelación antes de empezar; cancelación a mitad (`1 escritas`); y prueba de que el worker NO accede a Tk (FakeApp con "trampas" que lanzan `AssertionError` si el hilo toca `grid`/variables Tk).
+    - `QueueTestCase` (7): restauración de UI tras `done`/`error`/`cancelled`; polling continuo con worker vivo; detección de muerte inesperada; sin pollings infinitos tras la muerte; guard que impide lanzar un segundo procesamiento.
+    - `ProcessingSmokeTestCase` (3): **smoke tests reales de Tk** (display `:0` funcional): procesamiento normal con restauración de UI, cancelación a mitad de camino determinista, y error interno con restauración. Usan app real con messagebox/save-config parcheados y datos temporales.
+  - **Bugs resueltos en la infraestructura de test (no en la lógica):** los mensajes `("log", …)` del worker solo se vuelcan a la UI vía `_process_queue`, así que los tests de worker aplican los no-terminales con el helper `apply_msgs`; el `messagebox` real abría un modal y colgaba las pruebas → sustituido por registro en `setUp`.
+  - **Cambio adicional aprobado en `src/metatag_widgets.py`:** `ExcelGrid.destroy()` cancela el `after_idle(_deferred_redraw)` pendiente (evita el `invalid command name` de Tk al destruir el widget; también aplica a la app real al cerrar justo después de cargar datos).
+  - **Resultado final: 40/40 tests OK** (23 Bloques 1–2 + 17 Bloque 3); `py_compile` OK.
+  - **Limitaciones:** los smoke tests de Tk requieren display (`skipUnless`); en entornos headless quedan pendientes de validación manual. El tiempo de espera de `_wait_finished` es 15 s (suficiente para el dataset de prueba).
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
   MetaTag v8.9.
 
   ### Trabajo actual
-  Desarrollo/adaptación de **Image Sync** como herramienta de correspondencia y **renombramiento de fotografías** (nombres de fotos ↔ columna del Excel).
+  **Bloque 4 — responsividad y adaptación de la interfaz** (auditoría + reparación del layout de toda la UI: resoluciones, tamaños de ventana, DPI). El renombrador Image Sync está en espera (ver sección 11).
 
   ### Trabajo próximo
-  Validar y mejorar el renombrador (emparejamiento seguro, conflictos, duplicados, nombres vacíos, simulación).
+  Validar y mejorar el renombrador (emparejamiento seguro, conflictos, duplicados, nombres vacíos, simulación) — después de cerrar el Bloque 4.
 
   ### Trabajo posterior
   Mejorar/separar el módulo de estadísticas.
@@ -397,18 +425,20 @@
   No se han confirmado bloqueadores críticos en esta sesión.
 
   ### Nota de estado (2026-08-10)
-  Matching seguro implementado y verificado (Bloque 1) y `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado). El proceso de escritura por lote (`_process_all`) todavía lee `self.omit_empty_var`/`self.meta_mode_organized` desde el hilo worker; el renombrado por Grid sigue pendiente (Bloque 3).
+  Matching seguro implementado y verificado (Bloque 1), `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado) y procesamiento en segundo plano robustecido con cancelación (Bloque 3, `_process_all` con snapshot + `_process_queue` con detección de muerte inesperada + `_proc_finish_ui`). La nota previa que preveía "renombrado por Grid (Bloque 3)" queda obsoleta: el Bloque 3 terminó siendo la robustez del procesamiento por lote; el renombrador sigue pendiente y NO debe iniciarse todavía (primero el Bloque 4, responsividad de la UI).
 
   ---
 
   ## 18. Próximo paso recomendado
 
-  1. Terminar de validar **Image Sync / renombrador**.
-  2. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1, 2026-08-10): `_find_image_ex` con detección de ambigüedades; tests `tests/test_matching.py` y `tests/test_dataset_269.py`.
-  3. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
-  4. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
-  5. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.
-  6. Después, continuar con las mejoras del **módulo de estadísticas**.
+  1. **Bloque 4 — responsividad de la UI** (EN CURSO, 2026-08-10): auditoría de toda la interfaz (metatag_v8, metatag_graficas, metatag_widgets, Visor) frente a resoluciones/tamaños de ventana/DPI; separar visualización en pantalla de exportación de gráficas; luego reparar. ✅ Criterio de aceptación Bloque 3: 40/40 tests OK.
+  2. Después: terminar de validar **Image Sync / renombrador**.
+  3. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1, 2026-08-10): `_find_image_ex` con detección de ambigüedades; tests `tests/test_matching.py` y `tests/test_dataset_269.py`.
+  4. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
+  5. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
+  6. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.
+  7. ✅ Procesamiento en segundo plano robustecido (Bloque 3, 2026-08-10): cancelación, detección de muerte inesperada, snapshot de Tk; tests `tests/test_queue.py` (17), 40/40 verdes.
+  8. Después, continuar con las mejoras del **módulo de estadísticas**.
 
   ---
 

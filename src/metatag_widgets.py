@@ -26,6 +26,7 @@ class ExcelGrid(tk.Frame):
         self.hovered_row = None  # type: Optional[int]
         self.hidden_columns: set     = set()
         self._redraw_pending         = False
+        self._redraw_after_id        = None
 
         self.unhide_bar = tk.Frame(self, bg=self.C.get("accent_pale", "#3D1F0A"))
         self.unhide_lbl = tk.Label(self.unhide_bar, text="", bg=self.C.get("accent_pale", "#3D1F0A"),
@@ -102,11 +103,23 @@ class ExcelGrid(tk.Frame):
     def _schedule_redraw(self):
         if not self._redraw_pending:
             self._redraw_pending = True
-            self.canvas.after_idle(self._deferred_redraw)
+            self._redraw_after_id = self.canvas.after_idle(self._deferred_redraw)
 
     def _deferred_redraw(self):
-        self._redraw_pending = False
+        self._redraw_pending  = False
+        self._redraw_after_id = None
         self.redraw()
+
+    def destroy(self):
+        # Cancela el redraw pendiente: si el grid se destruye antes de que el
+        # evento idle se ejecute, Tk emitiría "invalid command name".
+        if self._redraw_after_id is not None:
+            try:
+                self.canvas.after_cancel(self._redraw_after_id)
+            except Exception:
+                pass
+            self._redraw_after_id = None
+        super().destroy()
 
     def load(self, df: pd.DataFrame):
         self.df = df
