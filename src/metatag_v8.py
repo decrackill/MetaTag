@@ -11,6 +11,28 @@ import pandas as pd
 import os, json, re, threading, queue, shutil, sys, subprocess, traceback
 from typing import Union, Optional
 
+
+def _clamp_toplevel(win, parent, w, h, margin=24):
+    """Centra una Toplevel sobre `parent` y la limita al área visible."""
+    try:
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+    except Exception:
+        screen_w, screen_h = 1024, 768
+    w = max(margin, min(w, screen_w - margin))
+    h = max(margin, min(h, screen_h - margin))
+    try:
+        if parent is not None:
+            px = parent.winfo_rootx() + parent.winfo_width() // 2
+            py = parent.winfo_rooty() + parent.winfo_height() // 2
+        else:
+            px, py = screen_w // 2, screen_h // 2
+    except Exception:
+        px, py = screen_w // 2, screen_h // 2
+    x = min(max(px - w // 2, 0), screen_w - w)
+    y = min(max(py - h // 2, 0), screen_h - h)
+    win.geometry(f"{w}x{h}+{x}+{y}")
+
 if sys.platform == "win32":
     try:
         import ctypes
@@ -379,7 +401,7 @@ class MetaTagApp(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Atajos de teclado")
         win.configure(bg=C["bg"])
-        win.geometry(f"{int(420*self.current_scale)}x{int(520*self.current_scale)}")
+        _clamp_toplevel(win, self, int(420*self.current_scale), int(520*self.current_scale))
         win.resizable(False, False)
         win.attributes("-topmost", True)
 
@@ -531,6 +553,14 @@ class MetaTagApp(tk.Tk):
         btn = self._theme_btn
         self.update_idletasks()
         bx, by = btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height() + 2
+        sw, sh = popup.winfo_screenwidth(), popup.winfo_screenheight()
+        popup.update_idletasks()
+        pw = popup.winfo_reqwidth()
+        ph = popup.winfo_reqheight()
+        if bx + pw > sw - 8:
+            bx = max(0, sw - pw - 8)
+        if by + ph > sh - 8:
+            by = max(0, sh - ph - 8)
         popup.geometry(f"+{bx}+{by}")
 
         outer = tk.Frame(popup, bg=C["border"], padx=1, pady=1)
@@ -1108,7 +1138,8 @@ class MetaTagApp(tk.Tk):
             self._load_loupe_image(self.current_img); return
 
         self.loupe_window = tk.Toplevel(self)
-        self.loupe_window.geometry(f"{int(1000*self.current_scale)}x{int(700*self.current_scale)}")
+        _clamp_toplevel(self.loupe_window, self,
+                        int(1000*self.current_scale), int(700*self.current_scale))
         self.loupe_window.configure(bg=C["surface"])
         self.loupe_canvas = tk.Canvas(self.loupe_window, bg=C["surface"],
                                       highlightthickness=0, cursor="fleur")
@@ -1680,7 +1711,7 @@ class MetaTagApp(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Columnas de ordenamiento")
         win.configure(bg=S["bg"])
-        win.geometry(f"{int(400*sc)}x{int(380*sc)}")
+        _clamp_toplevel(win, self, int(400*sc), int(380*sc))
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.grid_rowconfigure(2, weight=1)
@@ -1810,11 +1841,8 @@ class MetaTagApp(tk.Tk):
         dlg.grab_set()
         dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
 
-        # Centrar sobre ventana principal
-        self.update_idletasks()
-        px = self.winfo_x() + self.winfo_width()  // 2
-        py = self.winfo_y() + self.winfo_height() // 2
-        dlg.geometry(f"440x240+{px - 220}+{py - 120}")
+        # Centrar sobre ventana principal y limitar al área visible
+        _clamp_toplevel(dlg, self, 440, 240)
 
         # ── Franja superior de color ──────────────────────────────
         header = tk.Frame(dlg, bg=C["header_bg"], height=48)
@@ -2063,7 +2091,7 @@ class MetaTagApp(tk.Tk):
         prog_win = tk.Toplevel(self)
         prog_win.title("Lote por Orden — Escribiendo…")
         prog_win.configure(bg=C["panel"])
-        prog_win.geometry("480x200")
+        _clamp_toplevel(prog_win, self, 480, 200)
         prog_win.resizable(False, False)
         prog_win.grab_set()
 
@@ -2149,7 +2177,7 @@ class MetaTagApp(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Seleccionar columnas de metadatos")
         win.configure(bg=S["bg"])
-        win.geometry(f"{int(400*sc)}x{int(420*sc)}")
+        _clamp_toplevel(win, self, int(400*sc), int(420*sc))
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.grid_rowconfigure(2, weight=1)
@@ -2328,7 +2356,7 @@ class MetaTagApp(tk.Tk):
         win = tk.Toplevel(self)
         win.title("Orden de las fotos")
         win.configure(bg=S["bg"])
-        win.geometry(f"{int(420*sc)}x{int(320*sc)}")
+        _clamp_toplevel(win, self, int(420*sc), int(320*sc))
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.grid_rowconfigure(2, weight=1)
@@ -2919,7 +2947,7 @@ class MetaTagApp(tk.Tk):
         prog_win = tk.Toplevel(self)
         prog_win.title("Verificando imágenes originales…")
         prog_win.configure(bg=C["panel"])
-        prog_win.geometry("480x180")
+        _clamp_toplevel(prog_win, self, 480, 180)
         prog_win.resizable(False, False)
         prog_win.grab_set()
         tk.Label(prog_win, text="Revisando metadatos previos",
@@ -3000,7 +3028,7 @@ class MetaTagApp(tk.Tk):
         prog_win = tk.Toplevel(self)
         prog_win.title("Limpiando metadatos previos…")
         prog_win.configure(bg=C["panel"])
-        prog_win.geometry("480x180")
+        _clamp_toplevel(prog_win, self, 480, 180)
         prog_win.resizable(False, False)
         prog_win.grab_set()
         tk.Label(prog_win, text="Limpiando secciones de metadatos MetaTag",

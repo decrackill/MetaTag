@@ -314,6 +314,23 @@
 
   `ExcelGrid._schedule_redraw` programaba `after_idle(_deferred_redraw)` sin guardar su id; si el grid se destruía antes de que el evento idle se ejecutara, Tk emitía `invalid command name "..._deferred_redraw"`. Resuelto guardando `_redraw_after_id` y cancelándolo en un nuevo `ExcelGrid.destroy()`.
 
+  ### Responsividad de la interfaz (Bloque 4, resuelto 2026-08-10)
+
+  Auditoría completa de la UI frente a resoluciones/tamaños de ventana/DPI y reparación mínima y localizada (sin refactor masivo):
+
+  - **Exportación de gráficas desacoplada del tamaño de ventana** (`src/metatag_graficas.py`): la figura se estiraba con el contenedor (matplotlib 3.11) y `savefig(dpi=300)` usaba ese `figsize`, así que el PNG dependía de la ventana. Ahora `export_chart` fija temporalmente la figura a `EXPORT_FIG_SIZE=(12,8)"` a `EXPORT_DPI=200` (desconectando el bind `<Configure>` del canvas), guarda y restaura. Verificado: **PNG idéntico (2283×1464)** exportado con la ventana a 900×600 y a 1920×1080.
+  - **Popup selector limitado en X e Y** (mismo archivo): antes solo había clamp en X; el popup podía salir por el borde inferior. Ahora también clamp en Y.
+  - **Insights con scrollbar**: `insight_text` (lista de categorías) ahora vive en un frame con `ttk.Scrollbar` vertical; el contenido largo ya no se corta.
+  - **`_place_labels_clean` con fuente adaptativa**: `fontsize` se reduce con el número de categorías (`max(6, min(9, 90//n))`) para evitar solapamiento con hasta 39 categorías.
+  - **`show_stats.minsize` escalado** por `current_scale` (antes 800×500 fijo).
+  - **Ventanas secundarias centradas y limitadas a pantalla** (`src/metatag_v8.py`): nuevo helper `_clamp_toplevel(win, parent, w, h)` aplicado a atajos, lupa, columnas de orden, columnas de metadatos, orden de fotos, diálogo Sí/No y las 3 ventanas de progreso (antes podían abrirse fuera de pantalla). El popup de tema también se limita al área visible.
+  - **Visor** (`src/Visor.py`): `minsize` bajado de 960×640 a **860×520** (a 1024×768 el 90% de la pantalla son 921×691; el minsize de 960 forzaba salirse por la derecha); el diálogo del comparador ahora es redimensionable y limitado a la pantalla; añadido `SetProcessDpiAwareness` portable para Windows (el Visor se lanza como subproceso y no heredaba el del launcher → se veía borroso en HiDPI).
+  - **ExcelGrid**: revisado, **sin cambios necesarios** (ya tiene canvas escalable + scrollbars + culling). El `fill="x"` del `ImageBrowser` es intencional: su listbox interno ya expande con scrollbar propio y la vista previa absorbe el espacio extra; convertirlo a `expand=True` quitaría espacio al preview.
+  - **DPI**: no se toca el scaling global; la figura usa `_dpi_screen` real y las fuentes escalan con `current_scale` (basado solo en ancho — limitación documentada, no corregida por no estar justificada por las pruebas).
+  - **Tests nuevos** (`tests/test_responsive.py`, 12): `_clamp_toplevel` nunca deja ventanas fuera de pantalla (6 resoluciones × 5 tamaños), centrado sobre padre, ventana grande limitada a pantalla, fuente adaptativa de `_place_labels_clean`, y smoke real de Tk: `show_stats` se redimensiona dentro de la pantalla, minsize escalado, scrollbar de insights presente, **exportación idéntica a 2 tamaños de ventana**, ventana principal dentro de la pantalla (incluido minsize 860×520) y ventanas secundarias dentro de la pantalla.
+  - **Resultado: 52/52 tests OK** (40 previos + 12 nuevos); `py_compile` OK en los módulos tocados.
+  - **Rango soportado documentado**: **≥1024×768** (soporte oficial y adaptativo). 900×600 y 800×600 = degradación controlada / best effort (el minsize 860×520 de la ventana principal limita 800×600 a 860×600 sin romper nada). Solo se probó físicamente en 1920×1080; el resto se simuló con `geometry()`.
+
   ### Salida corrupta de terminal
 
   Durante la sesión de auditoría (2026-08-10) se detectó que ciertos comandos largos producían **salida corrupta/duplicada** en la terminal (grep/lecturas extensas devolvían contenido repetido). Esto **no significa necesariamente que el código esté corrupto**. La verificación se realizó escribiendo la salida a archivos temporales y leyéndolos con la herramienta Read, confirmando el contenido real de los módulos. Estado: investigado / workaround aplicado. No se ha establecido causa definitiva.
@@ -404,13 +421,22 @@
 
   ---
 
+  ### 2026-08-10 — Responsividad de la interfaz (Bloque 4)
+
+  - Auditoría completa de la UI (`metatag_v8.py`, `metatag_graficas.py`, `metatag_widgets.py`, `Visor.py`) frente a resoluciones (1024×768 a 2560×1440 + 900×600/800×600 de degradación), tamaños de ventana y DPI.
+  - Reparaciones mínimas y localizadas: export de gráficas independiente de la ventana, popup selector con clamp X/Y, insights con scrollbar, fuente adaptativa de etiquetas, minsize escalado de `show_stats`, helper `_clamp_toplevel` para todas las Toplevels, popup de tema limitado a pantalla, Visor (minsize 860×520, comparador redimensionable, DPI Windows portable).
+  - `tests/test_responsive.py`: **12 tests** (headless de clamp y etiquetas + smoke real de Tk).
+  - Resultado: **52/52 OK**; `py_compile` OK; commit `fix: mejorar responsividad de la interfaz`.
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
   MetaTag v8.9.
 
   ### Trabajo actual
-  **Bloque 4 — responsividad y adaptación de la interfaz** (auditoría + reparación del layout de toda la UI: resoluciones, tamaños de ventana, DPI). El renombrador Image Sync está en espera (ver sección 11).
+  **Bloque 4 — responsividad y adaptación de la interfaz** ✅ terminado (auditoría + reparación, 2026-08-10): 52/52 tests OK, commit `fix: mejorar responsividad de la interfaz`. El renombrador Image Sync está en espera (ver sección 11).
 
   ### Trabajo próximo
   Validar y mejorar el renombrador (emparejamiento seguro, conflictos, duplicados, nombres vacíos, simulación) — después de cerrar el Bloque 4.
@@ -425,13 +451,13 @@
   No se han confirmado bloqueadores críticos en esta sesión.
 
   ### Nota de estado (2026-08-10)
-  Matching seguro implementado y verificado (Bloque 1), `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado) y procesamiento en segundo plano robustecido con cancelación (Bloque 3, `_process_all` con snapshot + `_process_queue` con detección de muerte inesperada + `_proc_finish_ui`). La nota previa que preveía "renombrado por Grid (Bloque 3)" queda obsoleta: el Bloque 3 terminó siendo la robustez del procesamiento por lote; el renombrador sigue pendiente y NO debe iniciarse todavía (primero el Bloque 4, responsividad de la UI).
+  Matching seguro implementado y verificado (Bloque 1), `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado), procesamiento en segundo plano robustecido con cancelación (Bloque 3, `_process_all` con snapshot + `_process_queue` con detección de muerte inesperada + `_proc_finish_ui`) y responsividad de la interfaz corregida (Bloque 4, export de gráficas desacoplado + `_clamp_toplevel` + Visor). El renombrador sigue pendiente y NO debe iniciarse todavía.
 
   ---
 
   ## 18. Próximo paso recomendado
 
-  1. **Bloque 4 — responsividad de la UI** (EN CURSO, 2026-08-10): auditoría de toda la interfaz (metatag_v8, metatag_graficas, metatag_widgets, Visor) frente a resoluciones/tamaños de ventana/DPI; separar visualización en pantalla de exportación de gráficas; luego reparar. ✅ Criterio de aceptación Bloque 3: 40/40 tests OK.
+  1. ✅ **Bloque 4 — responsividad de la UI** (completado, 2026-08-10): auditoría de toda la interfaz frente a resoluciones/tamaños de ventana/DPI; visualización y exportación de gráficas desacopladas; ventanas secundarias centradas/limitadas; Visor arreglado. Tests `tests/test_responsive.py` (12), **52/52 verdes**. Commit `fix: mejorar responsividad de la interfaz`.
   2. Después: terminar de validar **Image Sync / renombrador**.
   3. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1, 2026-08-10): `_find_image_ex` con detección de ambigüedades; tests `tests/test_matching.py` y `tests/test_dataset_269.py`.
   4. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
