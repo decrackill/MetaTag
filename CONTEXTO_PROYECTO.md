@@ -289,6 +289,16 @@
   - 2 → IDs sin archivo (`0053_EC_C7_XII_372_R.jpg`, `0055_EC_C7_VI_146_P.jpg`)
   - 2 → archivos huérfanos (`0053_EC_RS_372_F.jpg.JPG`, `0059_EC_RS_109_P.jpg.JPG`)
 
+  ### Complejidad de `ExcelGrid.redraw` (resuelto 2026-08-10)
+
+  - **BUG de complejidad**: `redraw()` (en `src/metatag_widgets.py`) llamaba `self._col_fully_selected(ci)` **dentro del bucle de celdas** (filas × columnas visibles). `_col_fully_selected` recorre todas las filas (`all((r, ci) in selected_cells …)`), así que el coste por redraw era del orden de `filas_visibles × columnas × filas_totales`.
+  - **Causa**: el estado "columna totalmente seleccionada" es una propiedad de la columna, pero se recalculaba por cada celda en lugar de una vez por columna.
+  - **Solución**: se precalcula `col_sel_map = {ci: self._col_fully_selected(ci) for ci, _, _ in vis_cols}` una sola vez por `redraw()` (antes del bucle de celdas) y se usa `col_sel_map[ci]` en el encabezado y en cada celda. `_col_fully_selected` se invoca ahora **como máximo una vez por columna visible por redraw**.
+  - **Archivos modificados**: `src/metatag_widgets.py` (solo `redraw`).
+  - **Tests creados**: `tests/test_grid.py` — equivalencia lógica naive vs. mapa (8 estados de selección), comportamiento real de `_col_fully_selected` (7 casos de selección), conteo de llamadas con Tk real (1× por columna visible; con columnas ocultas solo las visibles) y smoke test real de ExcelGrid.
+  - **Resultado**: 23/23 pruebas verdes (11 Bloque 1 + 12 Bloque 2); `py_compile` OK.
+  - **Smoke test Tk**: SÍ fue posible (display `:0` funcional); se ejecutó de verdad y quedó cubierto por `ExcelGridTkTestCase` (con `skipUnless` para entornos sin display).
+
   ### Salida corrupta de terminal
 
   Durante la sesión de auditoría (2026-08-10) se detectó que ciertos comandos largos producían **salida corrupta/duplicada** en la terminal (grep/lecturas extensas devolvían contenido repetido). Esto **no significa necesariamente que el código esté corrupto**. La verificación se realizó escribiendo la salida a archivos temporales y leyéndolos con la herramienta Read, confirmando el contenido real de los módulos. Estado: investigado / workaround aplicado. No se ha establecido causa definitiva.
@@ -357,6 +367,15 @@
 
   ---
 
+  ### 2026-08-10 — Optimización de `ExcelGrid.redraw` (Bloque 2)
+
+  - Bug de complejidad en `ExcelGrid.redraw`: `_col_fully_selected(ci)` se llamaba por cada celda; se precalculó `col_sel_map` una vez por columna visible.
+  - Sin cambios de comportamiento observable (mismo modelo de selección, mismos colores/estilos, mismo viewport culling, mismas columnas).
+  - `tests/test_grid.py`: equivalencia naive vs. mapa, selección, conteo de llamadas con Tk real y smoke test (display `:0` disponible).
+  - Resultado: 23/23 verdes; commit `perf: optimizar redibujado del ExcelGrid`.
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
@@ -378,7 +397,7 @@
   No se han confirmado bloqueadores críticos en esta sesión.
 
   ### Nota de estado (2026-08-10)
-  Matching seguro implementado y verificado (Bloque 1). El proceso de escritura por lote (`_process_all`) todavía lee `self.omit_empty_var`/`self.meta_mode_organized` desde el hilo worker; el grid de selección interactivo (`self.grid.selected_cells`) y el renombrado por Grid siguen pendientes (Bloques 2 y 3).
+  Matching seguro implementado y verificado (Bloque 1) y `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado). El proceso de escritura por lote (`_process_all`) todavía lee `self.omit_empty_var`/`self.meta_mode_organized` desde el hilo worker; el renombrado por Grid sigue pendiente (Bloque 3).
 
   ---
 
@@ -388,7 +407,8 @@
   2. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1, 2026-08-10): `_find_image_ex` con detección de ambigüedades; tests `tests/test_matching.py` y `tests/test_dataset_269.py`.
   3. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
   4. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
-  5. Después, continuar con las mejoras del **módulo de estadísticas**.
+  5. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.
+  6. Después, continuar con las mejoras del **módulo de estadísticas**.
 
   ---
 
