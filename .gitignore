@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.xlsx
+*.xls
+*.xlsm
+*.json
+/data/
+Finales 1 a 103/
+*_progress.json
+*.tmp
+*.log
