@@ -102,21 +102,31 @@ class RenameEscenariosTestCase(RenameModelBaseTestCase):
         self.assertEqual(self._files(), ["b.jpg", "dup.jpg"])
 
     def test_conflicto_destino_existente(self):
-        model = _make_model(self.folder, ["a.jpg", "b.jpg", "x.jpg"],
+        # m.jpg quiere llamarse "x" pero x.jpg YA existe (otro archivo) →
+        # conflicto real: no se sobreescribe, se salta esa fila.
+        model = _make_model(self.folder, ["a.jpg", "b.jpg", "m.jpg", "x.jpg"],
                             ["a1", "a2", "x"])
         ok, errors = self._run_rename(model)
         self.assertEqual(ok, 2)
         self.assertTrue(any("ya existe" in e for e in errors))
-        self.assertEqual(self._files(), ["a1.jpg", "a2.jpg", "x.jpg"])
+        self.assertEqual(self._files(), ["a1.jpg", "a2.jpg", "m.jpg", "x.jpg"])
 
     def test_nombres_ya_correctos(self):
+        # alfa.jpg ya se llama "alfa" → NO es conflicto: es "ya correcto".
         model = _make_model(self.folder, ["alfa.jpg", "beta.jpg"],
                             ["alfa", "beta"])
         ok, errors = self._run_rename(model)
-        self.assertEqual(ok, 0,
-                         "nombre ya correcto: el destino coincide con el origen")
-        self.assertTrue(any("ya existe" in e for e in errors))
+        self.assertEqual(ok, 2, "ya correctos se procesan sin error")
+        self.assertEqual(errors, [])
         self.assertEqual(self._files(), ["alfa.jpg", "beta.jpg"])
+
+    def test_conflicto_vs_ya_correcto_sin_falsa_alarma(self):
+        # Una foto cuyo nombre coincide con el destino ES su propio archivo;
+        # se considera "ya correcto", jamás un conflicto destructivo.
+        model = _make_model(self.folder, ["foto.jpg"], ["foto"])
+        ok, errors = self._run_rename(model)
+        self.assertEqual((ok, errors), (1, []))
+        self.assertEqual(self._files(), ["foto.jpg"])
 
     def test_cancelacion_detiene_lote(self):
         import threading

@@ -125,6 +125,185 @@ class TestRenameModel:
         model.set_name(99, "Z")
         assert model.names == ["A"]
 
+    # ── FASE A: seguridad del modelo ──────────────────────────────────────
+
+    def test_ya_correcto_plan_state(self, model, tmp_dir):
+        """Si el destino ES el mismo archivo → estado 'ya_correcto', sin error."""
+        Path(tmp_dir, "foto.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model._names = ["foto"]
+        pairs = model.build_preview()
+        assert pairs[0][4] == "ya_correcto"
+        errors = []
+        model.rename_all(lambda c, t, n: None, lambda ok, e: errors.extend(e))
+        assert errors == []
+        # el archivo sigue existiendo y con el mismo nombre
+        assert (Path(tmp_dir) / "foto.jpg").exists()
+
+    def test_ya_correcto_rename_noop(self, model, tmp_dir):
+        """rename_all no toca archivos ya correctos."""
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model._names = ["a"]
+        ok = []
+        model.rename_all(lambda c, t, n: None, lambda k, e: ok.append(k))
+        assert ok == [1]
+
+    def test_conflict_state_skipped(self, model, tmp_dir):
+        """Conflicto = el destino existe y es OTRO archivo → no se sobreescribe."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "X.jpg").write_bytes(b"otro contenido")
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model._names = ["X"]
+        pairs = model.build_preview()
+        assert pairs[0][4] == "conflicto"
+        errors = []
+        model.rename_all(lambda c, t, n: None, lambda ok, e: errors.extend(e))
+        assert any("existe" in e.lower() for e in errors)
+        # el archivo de conflicto NO se sobreescribió ni se borró
+        assert (Path(tmp_dir) / "X.jpg").read_bytes() == b"otro contenido"
+        assert (Path(tmp_dir) / "a.jpg").exists()
+
+    def test_copy_mode_conflict_does_not_overwrite(self, model, tmp_dir):
+        """Modo copia también respeta conflictos (no sobreescribe)."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "Renombradas").mkdir()
+        (Path(tmp_dir) / "Renombradas" / "X.jpg").write_bytes(b"existente")
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model._names = ["X"]
+        errors = []
+        model.rename_all(lambda c, t, n: None, lambda ok, e: errors.extend(e),
+                         copy_mode=True)
+        assert any("existe" in e.lower() for e in errors)
+        assert (Path(tmp_dir) / "Renombradas" / "X.jpg").read_bytes() == b"existente"
+
+    def test_duplicate_name_skipped_with_error(self, model, tmp_dir):
+        """Dos filas con el mismo nombre destino → la segunda se omite."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "b.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model._names = ["X", "X"]
+        errors = []
+        model.rename_all(lambda c, t, n: None, lambda ok, e: errors.extend(e))
+        assert any("duplicado" in e.lower() for e in errors)
+        files = sorted(f.name for f in Path(tmp_dir).iterdir())
+        assert files == ["X.jpg", "b.jpg"]
+
+    def test_not_found_never_renames(self, model, tmp_dir):
+        """Un nombre sin fotografía en modo matching seguro NO toca nada."""
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model.matching_mode = True
+        model._names = ["inexistente"]
+        errors = []
+        ok = []
+        model.rename_all(lambda c, t, n: None, lambda k, e: (ok.append(k), errors.extend(e)))
+        assert ok == [0]
+        assert any("no se encontr" in e.lower() for e in errors)
+        assert (Path(tmp_dir) / "a.jpg").exists()
+
+    def test_undo_does_not_overwrite_new_file(self, model, tmp_dir):
+        """Deshacer NO sobreescribe un archivo creado después del rename."""
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model._names = ["X"]
+        model.rename_all(lambda c, t, n: None, lambda ok, e: None)
+        # alguien crea un archivo en la ruta original ANTES de deshacer
+        Path(tmp_dir, "a.jpg").write_bytes(b"nuevo")
+        errors = []
+        ok = []
+        model.undo_last(lambda c, t, n: None, lambda k, e: (ok.append(k), errors.extend(e)))
+        assert ok == [0]
+        assert any("conflicto" in e.lower() or "sobreescribe" in e.lower()
+                   for e in errors)
+        assert (Path(tmp_dir) / "a.jpg").read_bytes() == b"nuevo"
+        assert (Path(tmp_dir) / "X.jpg").exists()
+
+    def test_plan_never_marks_ok_when_conflict(self, model, tmp_dir):
+        """El plan no puede mentir: conflicto visible en preview ANTES de ejecutar."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "X.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model._names = ["X"]
+        pairs = model.build_preview()
+        state = pairs[0][4]
+        assert state == "conflicto"
+
+    def test_matching_mode_plan_states(self, model, tmp_dir):
+        """Modo matching seguro: not_found / ya_correcto / ok coherentes."""
+        Path(tmp_dir, "juan perez.jpg").touch()
+        Path(tmp_dir, "maria garcia.png").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model.matching_mode = True
+        model._names = ["juan perez", "maria garcia", "desconocido"]
+        pairs = model.build_preview()
+        states = [p[4] for p in pairs]
+        assert states == ["ya_correcto", "ya_correcto", "not_found"]
+
+    def test_matching_mode_reuso_marca_duplicado(self, model, tmp_dir):
+        """Dos filas que emparejan la MISMA foto → la 2ª es duplicado (reuso)."""
+        Path(tmp_dir, "juan perez.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model.matching_mode = True
+        model._names = ["juan perez", "juan perez"]
+        states = [p[4] for p in model.build_preview()]
+        assert states == ["ya_correcto", "duplicado"]
+
+    def test_matching_mode_ambiguo_nunca_elige(self, model, tmp_dir):
+        """Clave id-suffix compartida → estado 'ambiguo', no se elige nada."""
+        Path(tmp_dir, "0053_EC_RS_372_F.jpg").touch()
+        Path(tmp_dir, "0053_EC_C7_XII_372_F.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model.matching_mode = True
+        model._names = ["0053_EC_XX_999_F"]
+        states = [p[4] for p in model.build_preview()]
+        assert states == ["ambiguo"]
+
+    def test_matching_mode_motor_no_disponible_es_error(self, model, tmp_dir):
+        """Motor ausente + matching ON → ERROR (nunca fallback posicional)."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "b.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.load_photos()
+        model.matching_mode = True
+        model._names = ["X", "Y"]
+        # simula que metatag_matching no pudo importarse
+        saved, mod.ImageMatcher = mod.ImageMatcher, None
+        try:
+            assert not model.matching_available
+            states = [p[4] for p in model.build_preview()]
+            assert states == ["error", "error"]
+            # y rename_all NO renombra nada por posición
+            errors = []
+            ok = []
+            model.rename_all(lambda c, t, n: None,
+                             lambda k, e: (ok.append(k), errors.extend(e)))
+            assert ok == [0]
+            assert any("error" in e.lower() for e in errors)
+            files = sorted(f.name for f in Path(tmp_dir).iterdir())
+            assert files == ["a.jpg", "b.jpg"]  # nada se tocó
+        finally:
+            mod.ImageMatcher = saved
+
+    def test_matching_mode_sin_carpeta_es_error(self, model):
+        """Matching ON sin carpeta seleccionada → ERROR, no posicional."""
+        model.matching_mode = True
+        model._names = ["X"]
+        assert model.folder_path is None
+        states = [p[4] for p in model.build_preview()]
+        assert states == ["error"]
+
 
 class TestSortOptions:
     def test_natural_sort(self, model, tmp_dir):
@@ -190,7 +369,7 @@ class TestExport:
         import csv
         with open(csv_path) as f:
             rows = list(csv.reader(f))
-        assert rows[0] == ["original", "nuevo_nombre", "duplicado"]
+        assert rows[0] == ["original", "nuevo_nombre", "duplicado", "estado"]
         assert len(rows) == 3
 
     def test_export_log(self, model, tmp_dir):

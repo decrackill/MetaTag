@@ -45,6 +45,7 @@
   |---|---|---|---|
   | `src/metatag_v8.py` | Aplicación principal: UI, carga de datos, emparejamiento, escritura, Image Sync | `ImageBrowser`, integración `ExcelGrid`, inyección manual/lote, `_sync_excel_to_images`, `_sync_images_to_excel`, `_find_image`, temas, lupa, búsqueda | Implementado y activo |
   | `src/metatag_writer.py` | Escritura de metadatos **pura y testeable** (sin Tkinter) | `META_GROUPS`, `META_GROUP_ORDER`, `formatear_metadatos`, `read_existing_metadata`, `check_metadata_divergence`, `write_jpeg`, `write_png`, `write_tiff`, `write_meta` | Implementado |
+  | `src/metatag_matching.py` | Motor de emparejamiento seguro **puro** (sin Tkinter/PIL), port fiel de `_find_image_ex` | `ImageMatcher` (`find_image_ex`, `find_image`, `find_image_ex_with_method`, `_index_folder`), `_safe_stem`, `_normalize_numbers`, `_extract_id_suffix`, `match_name_to_photo` | Implementado (FASE A) |
   | `src/metatag_graficas.py` | Estadísticas, selector de gráficas, generación y exportación | `show_stats`, `make_selector`, `update_chart`, `export_chart`, `on_hover` | Implementado; mejoras futuras planeadas |
   | `src/metatag_widgets.py` | Grid Excel sobre Canvas con viewport culling | Clase `ExcelGrid`: `load`, `redraw`, selección de filas/columnas, `get_row_metadata`, `get_selected_metadata` | Implementado |
   | `src/Visor.py` | Visor independiente de metadatos EXIF/JSON/GPS, comparador, zoom y export PDF | `VisorApp`, `_extract_exif`, `_extract_gps`, `_extract_json`, `_open_image_comparison`, `_export_pdf`, `_generate_pdf_document` | Implementado |
@@ -259,8 +260,8 @@
   **Ideas funcionales discutidas** (distinguir claramente estado):
 
   - IMPLEMENTADO (base reutilizable): matching inteligente (`_find_image`, `_safe_stem`, `_extract_id_suffix`), detección de coincidencias aproximadas, huérfanas y valores sin imagen (usado hoy por Image Sync de orden).
-  - IMPLEMENTADO EN LA HERRAMIENTA STANDALONE (`tools/renombrador/`, 2026-08-10): selección de carpeta de fotografías, carga de Excel/CSV con selección de hoja y columna, ordenamiento de fotografías, vista previa con detección de duplicados, renombramiento real (con reemplazo de destino existente), deshacer de la última operación y modo copia a `Renombradas/`. Comportamiento POSICIONAL (no matching por nombre).
-  - PENDIENTE (integración en `metatag_v8.py`): lanzador dentro de la app, generación de correspondencias por matching, detección de nombres vacíos, simulación/dry-run, registro de operación, y refinar la detección de conflictos (ver sección 13: "ya correctos" se reporta como conflicto).
+  - IMPLEMENTADO EN LA HERRAMIENTA STANDALONE (`tools/renombrador/`, 2026-08-10): selección de carpeta de fotografías, carga de Excel/CSV con selección de hoja y columna, ordenamiento de fotografías, vista previa con detección de duplicados, renombramiento real (con reemplazo de destino existente), deshacer de la última operación, modo copia a `Renombradas/` y **modo "matching seguro"** (cada nombre busca SU foto). FASE A (2026-08-10): el motor es un port puro del `_find_image_ex` validado (`src/metatag_matching.py`), sin fallback posicional silencioso (estado `error` si no hay motor/carpeta) y con 7 estados coherentes `ok / ya_correcto / conflicto / duplicado / not_found / ambiguo / error`.
+  - PENDIENTE (integración en `metatag_v8.py`): lanzador dentro de la app, generación de correspondencias por matching, detección de nombres vacíos, simulación/dry-run, registro de operación, y refinar la detección de conflictos (los casos "ya correctos" ya NO se reportan como conflicto; ver sección 13).
 
   ---
 
@@ -363,14 +364,19 @@
   - Cabeceras del Excel con espacios finales (`Sitio `, etc.); el código los elimina con `.strip()`.
   - El proyecto usa nombres de módulo prefijados `metatag_*`; no hay `requirements.txt` (las dependencias se gestionan vía los scripts de instalación).
 
-  ### Renombrador standalone: comportamientos a revisar en la integración (2026-08-10)
+  ### Renombrador standalone: comportamientos revisados (2026-08-10)
 
-  Observaciones sobre `tools/renombrador/renombrar_fotos_gui.py` (NO corregidas: la regla de la sesión fue no cambiar lógica salvo error evidente de portabilidad; la corrección corresponde a la fase de integración):
+  Observaciones de la fase de integración sobre `tools/renombrador/renombrar_fotos_gui.py`, todas resueltas:
 
-  - **"Nombres ya correctos" se reporta como conflicto**: si el nombre objetivo coincide con el nombre actual de la foto, `dest == origen`, la guarda `if not copy_mode and dest.exists()` lo salta y lo registra como "ya existe en destino". No daña los archivos, pero el usuario lo vería como error. Candidato a tratar como `success` sin tocar el archivo.
-  - **Bloque `if dest.exists(): dest.unlink()` duplicado** (líneas ~413-424): código muerto inofensivo (tras un unlink exitoso `dest.exists()` es False; tras un fallo ya hubo `continue`). Limpiar en integración.
-  - **Flujo posicional**: `zip(fotos, nombres)` empareja foto 1 ↔ fila 1. Sin matching por nombre (a diferencia del Image Sync de la app). Documentar en la UI al integrar.
-  - Verificado por tests: duplicados dentro del lote se saltan con error; cancelación cooperativa funciona; `undo_last` restaura el lote anterior; modo copia crea `Renombradas/` sin tocar originales.
+  - **"Nombres ya correctos" se reporta como conflicto** → RESUELTO: si `dest == origen` (mismo inodo vía `_same_file`) se cuenta como `success` sin tocar el archivo (estado `ya_correcto`). Verificado por `tests/test_renombrador.py` y `test_conflicto_vs_ya_correcto_sin_falsa_alarma`.
+  - **Bloque `if dest.exists(): dest.unlink()` duplicado** → RESUELTO: el `unlink()` solo queda en `undo_last` (modo copia), que es su uso legítimo.
+  - **Flujo posicional**: `zip(fotos, nombres)` sigue siendo el modo por defecto (compatibilidad standalone); con el modo "matching seguro" ON cada nombre busca SU foto y el fallback posicional silencioso queda PROHIBIDO (FASE A).
+
+  ### Fallback posicional silencioso y estado `ambiguous` (resuelto 2026-08-10)
+
+  - **Fallback posicional silencioso (FASE A)**: `_build_plan` y `_build_plan_matching` del renombrador degradaban a posicional si el motor de matching no estaba disponible o faltaba la carpeta, con matching seguro activo → renombraba por posición fotos que el usuario esperaba emparejadas por nombre. Resuelto con `_error_plan` (estado `error`, `src=None`); `rename_all` lo omite sin tocar disco.
+  - **Estado `ambiguous` (inglés) vs `ambiguo` (canónico de la UI)**: el modelo emitía `"ambiguous"` y la vista espera `"ambiguo"` en `PLAN_STATES`; las filas ambiguas se veían sin etiqueta ni color. Unificado a `"ambiguo"`.
+  - **`pHash` muerto en `src/metatag_matching.py`**: `_pixel_hash`/`_hamming`/`_hash_cache` nunca participaban en las decisiones (un informe previo los describió como desambiguación por contenido). Eliminados junto con los imports de PIL/hashlib/difflib; el módulo quedó como port puro del algoritmo validado.
 
   ### Artefacto de pruebas Tk: `_default_root` huérfano (2026-08-10)
 
@@ -476,28 +482,50 @@
 
   ---
 
+  ### 2026-08-10 — FASE A: seguridad del renombrador + matching seguro como port puro
+
+  **Hallazgos de la auditoría del matching seguro (src/metatag_matching.py):**
+
+  - **El "pHash" reportado era código muerto**: `_pixel_hash`/`_hamming`/`_hash_cache`/`_image_hash` existían pero NO participaban en ninguna decisión de `find_image_ex` (que solo usaba umbral de `SequenceMatcher`). Un informe previo lo describió como "para desambiguar" sin ser cierto. Se eliminó por completo (también los imports de `PIL`, `hashlib`, `difflib`, `unicodedata`).
+  - **El matcher era DISTINTO al algoritmo validado**: usaba tokenización + `SequenceMatcher` con umbral difuso, mientras la línea base validada (`_find_image_ex` de `metatag_v8.py`) usa la jerarquía direct → nombre-exacto → stem-exacto → clean → normalize → id-suffix → substring. Habría cambiado las correspondencias del dataset (p. ej. el caso 0053 hubiera pasado de stem-exacto a ambiguo).
+
+  **Solución aplicada:** `src/metatag_matching.py` se reescribió como **port FIEL y determinista** de `_find_image_ex` (mismo orden de pasos, misma construcción de caché con `rglob` recursivo, mismas claves), sin Tkinter/PIL/difflib, con índice ordenado por ruta para que la decisión no dependa del orden del sistema de archivos. API: `ImageMatcher.find_image_ex(name, folder) → (path, status, candidates)` (`"ok" | "not_found" | "ambiguous"`) + `find_image_ex_with_method` para etiquetar el paso (auditoría/tests).
+
+  **Verificación contra el dataset real (Finales 1 a 103, 269 IDs):** el port reproduce EXACTAMENTE la línea base — **267 ok / 0 ambiguas / 2 not_found** (las mismas `0053_EC_C7_XII_372_R.jpg`, `0055_EC_C7_VI_146_P.jpg`), **distribución 18/184/21/44**, **0 reusos**, **2 huérfanas** (`0053_EC_RS_372_F.jpg.JPG`, `0059_EC_RS_109_P.jpg.JPG`), **0 discrepancias** vs la réplica de referencia. Coste: índice 3,5 ms + 96 ms para recorrer los 269 (~0,36 ms/nombre).
+
+  **Bugs corregidos en el renombrador (`tools/renombrador/renombrar_fotos_gui.py`):**
+
+  - **Fallback posicional silencioso (criticidad alta)**: con matching seguro activo, si el motor no estaba disponible o faltaba la carpeta, `_build_plan`/`_build_plan_matching` degradaban silenciosamente a posicional → renombraban por posición fotos que el usuario esperaba emparejadas por nombre. Ahora un plan de **ERROR** (`_error_plan`, estado `error`, `src=None`) y `rename_all` lo omite sin tocar disco. **Queda prohibido el fallback posicional cuando matching está ON.**
+  - **Estado `ambiguous` vs `ambiguo` (criticidad media)**: el modelo emitía el estado en inglés (`"ambiguous"`) pero la vista define `PLAN_STATES` con `"ambiguo"`; las filas ambiguas se renderizaban sin etiqueta ni color. Unificado a `"ambiguo"` en plan, `_skip_text`, `rename_all` y docstrings (el matcher sigue devolviendo `"ambiguous"` como estado interno de matching).
+
+  **Tests:** `tests/test_metatag_matching.py` (14: pureza sin tkinter/PIL/difflib, ambigüedad id-suffix y substring, normalize, not_found, determinismo, jerarquía de métodos, equivalencia dataset 269). En `tools/renombrador/test_renombrador.py` +4: motor no disponible → error (nada se renombra), sin carpeta → error, reuso → duplicado, ambiguo → `"ambiguo"`. Resultado: **97/97 tests de proyecto + 46/46 pytest del renombrador, todos verdes**.
+
+  **FASE B — PENDIENTE / PROPUESTA FUTURA (NO implementada, sin cambios de código):** contenido visual/perceptual para desambiguar (hash perceptivo real de píxeles, comparación por contenidos con PIL) como último recurso SOLO cuando la clave textual sea ambigua y las candidatas sean imágenes reales. Implica reabrir `ImageMatcher` con dependencia opcional (PIL) y umbrales de similitud — exactamente lo que la FASE A eliminó por no estar validado. Requiere su propio análisis de impacto sobre la línea base (267/0/2) antes de activarse; mientras tanto, la ambigüedad textual se reporta y NO se elige candidato (comportamiento seguro actual).
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
   MetaTag v8.9.
 
   ### Trabajo actual
-  **Fases 4–6 (2026-08-10) — scroll de selección de columnas arreglado + tests del renombrador** ✅ terminado: **82/82 tests OK** (52 previos + 30 nuevos), commit `feat: fijar scroll de selección de columnas y añadir tests del renombrador`. El renombrador standalone está funcional en `tools/renombrador/`; la integración en la app sigue pendiente (ver sección 11).
+  **FASE A (2026-08-10) — seguridad del renombrador + matching seguro como port puro** ✅ terminado: `src/metatag_matching.py` reescrito como port fiel/determinista de `_find_image_ex` (sin pHash muerto, sin umbral difuso); fallback posicional silencioso eliminado (estado `error`); estados unificados a `ambiguo`; verificación real del dataset 269 (267/0/2, 18/184/21/44, 0 reusos). Tests: **97/97 proyecto + 46/46 renombrador verdes**. La integración del renombrador en la app sigue pendiente (ver sección 11).
 
   ### Trabajo próximo
-  Integrar la herramienta del renombrador en `metatag_v8.py` (lanzador + diálogo de configuración) y refinar casos límite ya detectados (nombres "ya correctos", código muerto de unlink, vacíos) — sección 11 y 13.
+  Integrar la herramienta del renombrador en `metatag_v8.py` (lanzador + diálogo de configuración) y refinar casos límite ya detectados (código muerto de unlink, vacíos) — sección 11 y 13.
 
   ### Trabajo posterior
   Mejorar/separar el módulo de estadísticas.
 
   ### Idea futura
-  Sincronización externa Excel ↔ MetaTag (no implementada).
+  Sincronización externa Excel ↔ MetaTag (no implementada). **FASE B — desambiguación por contenido visual/pHash REAL (PENDIENTE/PROPUESTA FUTURA, NO implementada):** usar hash perceptivo de píxeles como último recurso SOLO ante claves textuales ambiguas; requiere análisis de impacto sobre la línea base (267/0/2) antes de activarse (ver entrada de FASE A en la sección 16).
 
   ### Bloqueadores
   No se han confirmado bloqueadores críticos en esta sesión.
 
   ### Nota de estado (2026-08-10)
-  Matching seguro implementado y verificado (Bloque 1), `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado), procesamiento en segundo plano robustecido con cancelación (Bloque 3, `_process_all` con snapshot + `_process_queue` con detección de muerte inesperada + `_proc_finish_ui`), responsividad de la interfaz corregida (Bloque 4, export de gráficas desacoplado + `_clamp_toplevel` + Visor) y scroll de las ventanas de selección de columnas fijado sin `bind_all` (Fase 4). El renombrador standalone (`tools/renombrador/`) está funcional y con tests (Fase 6), pero su integración dentro de `metatag_v8.py` sigue pendiente.
+  Matching seguro implementado y verificado (Bloque 1), `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado), procesamiento en segundo plano robustecido con cancelación (Bloque 3, `_process_all` con snapshot + `_process_queue` con detección de muerte inesperada + `_proc_finish_ui`), responsividad de la interfaz corregida (Bloque 4, export de gráficas desacoplado + `_clamp_toplevel` + Visor), scroll de las ventanas de selección de columnas fijado sin `bind_all` (Fase 4), y **FASE A (seguridad del renombrador + matching seguro como port puro, 2026-08-10)**: `src/metatag_matching.py` reescrito como port fiel/determinista del `_find_image_ex` validado (sin pHash muerto ni umbral difuso), fallback posicional silencioso eliminado (estado `error`), estados unificados a `ambiguo`, verificación real del dataset 269 (267/0/2, 18/184/21/44). El renombrador standalone (`tools/renombrador/`) está funcional y con tests (FASE A: 46/46 pytest), pero su integración dentro de `metatag_v8.py` sigue pendiente.
 
   ---
 
@@ -505,8 +533,8 @@
 
   1. ✅ **Bloque 4 — responsividad de la UI** (completado, 2026-08-10): auditoría de toda la interfaz frente a resoluciones/tamaños de ventana/DPI; visualización y exportación de gráficas desacopladas; ventanas secundarias centradas/limitadas; Visor arreglado. Tests `tests/test_responsive.py` (12), **52/52 verdes**. Commit `fix: mejorar responsividad de la interfaz`.
   2. ✅ **Fases 4–6 — scroll de selección de columnas + tests del renombrador** (completado, 2026-08-10): helper `_build_scroll_picker_window` sin `bind_all`; tests de renombrador (11) y pickers (19, incl. matriz de resoluciones y limpieza de trazas). **82/82 verdes**. Commit `feat: fijar scroll de selección de columnas y añadir tests del renombrador`.
-  3. **Siguiente: integrar el renombrador standalone en `metatag_v8.py`** (lanzador + diálogo de configuración) usando `tools/renombrador/` como base; cubrir los casos límite de la sección 13 (nombres "ya correctos", unlink duplicado, vacíos) y decidir entre flujo posicional vs. matching por nombre.
-  4. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1, 2026-08-10): `_find_image_ex` con detección de ambigüedades; tests `tests/test_matching.py` y `tests/test_dataset_269.py`.
+  3. **Siguiente: integrar el renombrador standalone en `metatag_v8.py`** (lanzador + diálogo de configuración) usando `tools/renombrador/` como base; cubrir los casos límite de la sección 13 (código muerto de unlink, vacíos) y el flujo posicional vs. matching por nombre.
+  4. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1 + FASE A, 2026-08-10): `_find_image_ex` con detección de ambigüedades; `src/metatag_matching.py` es su port puro y fiel; tests `tests/test_matching.py`, `tests/test_dataset_269.py` y `tests/test_metatag_matching.py`.
   5. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
   6. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
   7. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.

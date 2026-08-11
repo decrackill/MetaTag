@@ -36,6 +36,44 @@ import customtkinter as ctk
 import pandas as pd
 from PIL import Image
 
+# ── matching seguro (opcional) ──────────────────────────────────────────────
+# El Renombrador puede funcionar de forma totalmente independiente (modo
+# posicional). Si el proyecto MetaTag está presente, importa el motor de
+# emparejamiento seguro (puro, sin Tkinter) para el modo "matching seguro".
+try:
+    import sys
+    _PROJECT_SRC = Path(__file__).resolve().parents[2] / "src"
+    if str(_PROJECT_SRC) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_SRC))
+    from metatag_matching import ImageMatcher
+except Exception:
+    ImageMatcher = None
+
+# Estados posibles de cada fila de la vista previa / plan de renombrado.
+PLAN_STATES = ("ok", "ya_correcto", "conflicto", "duplicado",
+               "not_found", "ambiguo", "error")
+STATE_LABELS = {
+    "ok": "", "ya_correcto": "Ya correcto", "conflicto": "Conflicto",
+    "duplicado": "Duplicado", "not_found": "No encontrada",
+    "ambiguo": "Ambiguo", "error": "Error",
+}
+_STATE_BG = {
+    "ya_correcto": "#243b24",
+    "conflicto": "#3d2020",
+    "duplicado": "#3d2020",
+    "not_found": "#3d2020",
+    "ambiguo": "#3a331f",
+    "error": "#3d2020",
+}
+_STATE_FG = {
+    "ya_correcto": "green",
+    "conflicto": "red",
+    "duplicado": "red",
+    "not_found": "red",
+    "ambiguo": "yellow",
+    "error": "red",
+}
+
 # ── logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger(__name__)
@@ -269,11 +307,42 @@ class RenameModel:
         self.column_name:  Optional[str]  = None
         self.sheet_name:   Optional[str]  = None
         self.sort_mode:    str             = "natural"
+        # Posicional = primera foto ↔ primer nombre (compatibilidad standalone).
+        # Matching seguro = cada nombre busca SU fotografía (recomendado).
+        self.matching_mode: bool = False
+        self._matcher      = None          # ImageMatcher (carga perezosa)
         self._photos:      list[Path]      = []
         self._names:       list[str]       = []
+        self._plan:        list[dict]      = []   # último plan construido
         self.skipped_rows: list[int]       = []   # filas de Excel ignoradas (vacías/no leíbles) — FIX #6
         # historial multinivel para deshacer: lista de lotes
         self._undo_stack:  list[tuple[list[tuple[Path, Path]], Optional[Path], bool]] = []
+
+    # ── matching seguro ────────────────────────────────────────────────────
+    @property
+    def matching_available(self) -> bool:
+        return self._get_matcher() is not None
+
+    def _get_matcher(self):
+        if self._matcher is None and ImageMatcher is not None:
+            try:
+                self._matcher = ImageMatcher()
+            except Exception:
+                self._matcher = None
+        return self._matcher
+
+    @staticmethod
+    def _same_file(a: Optional[Path], b: Optional[Path]) -> bool:
+        """True si 'a' y 'b' son el MISMO archivo lógico (mismo inodo)."""
+        if not a or not b:
+            return False
+        try:
+            return os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b)
+        except OSError:
+            try:
+                return a.resolve() == b.resolve()
+            except OSError:
+                return False
 
     # ── propiedades ────────────────────────────────────────────────────────
     @property
@@ -378,16 +447,180 @@ class RenameModel:
             self._names[index] = name
 
     # ── preview ────────────────────────────────────────────────────────────
-    def build_preview(self) -> list[tuple[str, str, Path, bool]]:
-        """Devuelve lista de (nombre_original, nombre_nuevo, path_foto, es_duplicado)."""
-        seen: dict[str, int] = {}
-        pairs: list[tuple[str, str, Path, bool]] = []
-        for photo, name in zip(self._photos, self._names):
-            full_name = name + photo.suffix
-            is_dup = seen.get(full_name, 0) > 0
-            seen[full_name] = seen.get(full_name, 0) + 1
-            pairs.append((photo.name, full_name, photo, is_dup))
+    def build_preview(self) -> list[tuple[str, str, Optional[Path], bool, str]]:
+        """
+        Devuelve lista de (nombre_original, nombre_nuevo, path_foto, es_duplicado, estado).
+
+        El estado representa el resultado REAL de la operación sobre esa fila
+        ANTES de ejecutarla: ok / ya_correcto / conflicto / duplicado /
+        not_found / ambiguo / error. Nunca debe aparecer una fila como
+        segura en la preview y fallar después por una condición previsible.
+        """
+        plan = self._build_plan()
+        pairs: list[tuple[str, str, Optional[Path], bool, str]] = []
+        for item in plan:
+            src = item["src"]
+            orig = src.name if src else "—"
+            pairs.append((orig, item["new"], src, item["is_dup"], item["state"]))
         return pairs
+
+    def _error_plan(self, reason: str) -> list[dict]:
+        """Plan de error: una fila por nombre, sin tocar disco nunca.
+
+        Se usa cuando el modo matching seguro está activo pero NO se puede
+        emparejar (motor no disponible o carpeta no seleccionada). Un plan
+        de error NUNCA puede degradar a posicional: renombrar por posición
+        con el matching activo renombraría fotos equivocadas en silencio.
+        """
+        plan: list[dict] = []
+        for i, name in enumerate(self._names):
+            plan.append({
+                "src": None, "new": name, "state": "error", "reason": reason,
+                "method": "error", "candidates": [], "is_dup": False,
+                "name": name, "row": i + 2,
+            })
+        self._plan = plan
+        return plan
+
+    def _build_plan(self) -> list[dict]:
+        """Construye el plan de renombrado (posicional o por matching seguro).
+
+        Seguridad: si el matching seguro está activo pero el motor no está
+        disponible o no hay carpeta, devuelve un plan de ERROR. Queda
+        PROHIBIDO el fallback posicional silencioso (renombraría por
+        posición fotos que el usuario esperaba emparejadas por nombre).
+        """
+        if self.matching_mode:
+            if not self.matching_available:
+                return self._error_plan(
+                    "el motor de matching seguro no está disponible "
+                    "(no se pudo importar metatag_matching)")
+            if not self.folder_path or not self.folder_path.is_dir():
+                return self._error_plan(
+                    "no hay una carpeta de imágenes seleccionada")
+            return self._build_plan_matching()
+        return self._build_plan_positional()
+
+    def _build_plan_positional(self) -> list[dict]:
+        """
+        Plan posicional (compatibilidad standalone): primera foto ↔ primer
+        nombre. NO garantiza identidad de fotografías; se documenta en la UI.
+        """
+        seen_dest: dict[str, int] = {}
+        plan: list[dict] = []
+        for photo, name in zip(self._photos, self._names):
+            new_full = name + photo.suffix
+            is_dup = seen_dest.get(new_full, 0) > 0
+            seen_dest[new_full] = seen_dest.get(new_full, 0) + 1
+            dest = photo.parent / new_full
+            if is_dup:
+                state, reason = "duplicado", "el nombre destino ya está usado en el lote"
+            elif self._same_file(photo, dest):
+                state, reason = "ya_correcto", "el archivo ya tiene este nombre"
+            elif dest.exists():
+                state, reason = "conflicto", "el destino ya existe en la carpeta"
+            else:
+                state, reason = "ok", ""
+            plan.append({
+                "src": photo, "new": new_full, "state": state, "reason": reason,
+                "method": None, "candidates": [], "is_dup": is_dup,
+                "name": name, "row": None,
+            })
+        self._plan = plan
+        return plan
+
+    def _build_plan_matching(self) -> list[dict]:
+        """
+        Plan por MATCHING SEGURO: cada nombre del Excel busca SU fotografía.
+
+        Reglas de seguridad:
+        - "not_found"  → no se renombra nada.
+        - "ambiguo"    → no se elige candidato; se listan todos.
+        - reuso (un archivo ya emparejado por otra fila) → "duplicado".
+        - Prohibido el fallback posicional silencioso.
+        """
+        folder = self.folder_path
+        matcher = self._get_matcher()
+        if not folder or not folder.is_dir() or matcher is None:
+            return self._error_plan(
+                "no se puede emparejar: carpeta o motor de matching no "
+                "disponibles")
+
+        used: set[str] = set()
+        seen_dest: dict[str, int] = {}
+        plan: list[dict] = []
+
+        for i, name in enumerate(self._names):
+            row_no = i + 2   # +1 encabezado, +1 índice 0→1 (convención de load_names)
+            try:
+                path, status, candidates = matcher.find_image_ex(name, str(folder))
+            except Exception:
+                path, status, candidates = None, "not_found", []
+
+            if status != "ok":
+                plan.append({
+                    "src": None, "new": name,
+                    "state": "ambiguo" if status == "ambiguous" else "not_found",
+                    "reason": ("varios archivos compiten por la misma clave "
+                               "(no se elige ninguno)" if status == "ambiguous"
+                               else "no se encontró ninguna fotografía para este nombre"),
+                    "method": status, "candidates": candidates, "is_dup": False,
+                    "name": name, "row": row_no,
+                })
+                continue
+
+            src = Path(path)
+            src_key = str(src)
+            if src_key in used:
+                plan.append({
+                    "src": src, "new": name + src.suffix, "state": "duplicado",
+                    "reason": "la fotografía ya está emparejada con otra fila (reuso)",
+                    "method": "reuso", "candidates": [], "is_dup": True,
+                    "name": name, "row": row_no,
+                })
+                continue
+            used.add(src_key)
+
+            new_full = name + src.suffix
+            is_dup = seen_dest.get(new_full, 0) > 0
+            seen_dest[new_full] = seen_dest.get(new_full, 0) + 1
+            dest = src.parent / new_full
+            if is_dup:
+                state, reason = "duplicado", "el nombre destino ya está usado en el lote"
+            elif self._same_file(src, dest):
+                state, reason = "ya_correcto", "el archivo ya tiene este nombre"
+            elif dest.exists():
+                state, reason = "conflicto", "el destino ya existe en la carpeta"
+            else:
+                state, reason = "ok", ""
+            plan.append({
+                "src": src, "new": new_full, "state": state, "reason": reason,
+                "method": "ok", "candidates": [], "is_dup": is_dup,
+                "name": name, "row": row_no,
+            })
+
+        self._plan = plan
+        return plan
+
+    @staticmethod
+    def _skip_text(item: dict) -> str:
+        """Mensaje legible para filas omitidas (nunca destructivo)."""
+        src = item["src"]
+        src_name = src.name if src else "—"
+        state = item["state"]
+        if state == "not_found":
+            return f"Omitida: no se encontró fotografía para «{item['name']}»"
+        if state == "ambiguo":
+            cands = ", ".join(Path(c).name for c in item.get("candidates") or [])
+            return (f"Omitida (ambigua): «{item['name']}» coincide con varios archivos "
+                    f"({cands}); no se eligió ninguno")
+        if state == "error":
+            return f"Omitida (error): {item.get('reason') or 'matching no disponible'}"
+        if state == "duplicado":
+            return f"Omitida (duplicado): {src_name} → {item['new']} ({item.get('reason') or 'nombre ya usado'})"
+        if state == "conflicto":
+            return f"Omitida (conflicto): {src_name} → {item['new']} ({item.get('reason') or 'el destino ya existe'})"
+        return f"Omitida: {src_name} → {item['new']}"
 
     # ── renombramiento ─────────────────────────────────────────────────────
     def rename_all(
@@ -396,9 +629,20 @@ class RenameModel:
         on_done: Callable[[int, list[str]], None],
         cancel_ev: Optional[threading.Event] = None,
         copy_mode: bool = False,
+        plan: Optional[list[dict]] = None,
     ) -> None:
-        """Renombra (o copia) archivos en un hilo secundario."""
-        total   = min(len(self._photos), len(self._names))
+        """Renombra (o copia) archivos en un hilo secundario.
+
+        Reglas de seguridad (obligatorias):
+        - "ya_correcto": el destino es EL MISMO archivo → no se toca, sin error.
+        - "conflicto": el destino existe y es OTRO archivo → NO se sobreescribe,
+          NO se elimina, NO se modifica (en ningún modo, incluido copia).
+        - "not_found" / "ambiguo" / "duplicado" / "error": se omiten, nunca se renombra.
+        - Re-chequeo TOCTOU justo antes de tocar disco.
+        """
+        if plan is None:
+            plan = self._build_plan()
+        total   = len(plan) or 1
         success = 0
         errors: list[str] = []
         batch:  list[tuple[Path, Path]] = []
@@ -413,40 +657,61 @@ class RenameModel:
                 on_done(0, [f"No se pudo crear carpeta de copias: {exc}"])
                 return
 
-        for i, (photo, name) in enumerate(zip(self._photos, self._names)):
+        for i, item in enumerate(plan):
             if cancel_ev and cancel_ev.is_set():
                 errors.append("Cancelado por el usuario.")
                 break
-            new_name = name + photo.suffix
+            src      = item["src"]
+            new_full = item["new"]
+            state    = item["state"]
 
+            if state in ("not_found", "ambiguo", "duplicado", "conflicto",
+                         "error"):
+                errors.append(self._skip_text(item))
+                on_progress(i + 1, total, f"[{state}] {new_full}")
+                continue
+
+            if state == "ya_correcto":
+                success += 1
+                on_progress(i + 1, total, f"[ya correcto] {new_full}")
+                continue
+
+            if src is None:
+                continue
+
+            new_name = new_full
             if new_name in seen_dest:
                 seen_dest[new_name] += 1
-                errors.append(f"Saltado duplicado: {photo.name} → {new_name} (nombre ya usado)")
-                log.warning("DUP  %s → %s (skip)", photo.name, new_name)
+                errors.append(f"Saltado duplicado: {src.name} → {new_name} (nombre ya usado)")
+                log.warning("DUP  %s → %s (skip)", src.name, new_name)
                 on_progress(i + 1, total, f"[duplicado] {new_name}")
                 continue
             seen_dest[new_name] = 1
 
             dest = (dest_folder / new_name) if copy_mode and dest_folder \
-                   else (photo.parent / new_name)
-            if not copy_mode and dest.exists():
-                errors.append(f"Saltado: {photo.name} → {new_name} (ya existe en destino)")
-                log.warning("CONFLICT  %s → %s (exists)", photo.name, new_name)
+                   else (src.parent / new_name)
+            if dest.exists():
+                if self._same_file(dest, src):
+                    success += 1   # el destino es el propio origen → ya correcto
+                    on_progress(i + 1, total, f"[ya correcto] {new_name}")
+                    continue
+                errors.append(f"Saltado: {src.name} → {new_name} (el destino ya existe, no se sobreescribe)")
+                log.warning("CONFLICT  %s → %s (exists)", src.name, new_name)
                 on_progress(i + 1, total, f"[conflicto] {new_name}")
                 continue
             try:
                 if copy_mode:
-                    shutil.copy2(photo, dest)
+                    shutil.copy2(src, dest)
                 else:
-                    photo.rename(dest)
-                batch.append((dest, photo))
+                    src.rename(dest)
+                batch.append((dest, src))
                 success += 1
-                log.info("OK  %s → %s", photo.name, new_name)
+                log.info("OK  %s → %s", src.name, new_name)
             except PermissionError:
-                errors.append(f"{photo.name} → {new_name}  (permiso denegado)")
-                log.error("PERM  %s", photo.name)
+                errors.append(f"{src.name} → {new_name}  (permiso denegado)")
+                log.error("PERM  %s", src.name)
             except OSError as exc:
-                errors.append(f"{photo.name} → {new_name}  ({exc})")
+                errors.append(f"{src.name} → {new_name}  ({exc})")
                 log.error("ERR %s", exc)
             on_progress(i + 1, total, new_name)
 
@@ -460,7 +725,13 @@ class RenameModel:
         on_progress: Callable[[int, int, str], None],
         on_done: Callable[[int, list[str]], None],
     ) -> None:
-        """Revierte el último lote."""
+        """Revierte el último lote.
+
+        Seguridad: antes de restaurar a la ruta original se comprueba que esa
+        ruta no haya sido ocupada por OTRO archivo creado después del
+        renombrado. Si existe otro archivo → NO se sobreescribe: se registra
+        conflicto de undo y se preservan ambos.
+        """
         if not self._undo_stack:
             on_done(0, ["No hay nada que deshacer."])
             return
@@ -470,14 +741,22 @@ class RenameModel:
         errors: list[str] = []
         for i, (current, original) in enumerate(batch):
             try:
-                if current.exists():
-                    if copy_mode:
-                        current.unlink()
-                    else:
-                        current.rename(original)
+                if not current.exists():
+                    errors.append(f"Archivo no encontrado: {current.name}")
+                elif copy_mode:
+                    current.unlink()
                     success += 1
                 else:
-                    errors.append(f"Archivo no encontrado: {current.name}")
+                    if original.exists():
+                        if self._same_file(original, current):
+                            success += 1   # ya restaurado (mismo archivo)
+                        else:
+                            errors.append(
+                                f"Conflicto al deshacer: no se sobreescribe "
+                                f"{original.name} (hay otro archivo en esa ruta)")
+                    else:
+                        current.rename(original)
+                        success += 1
             except OSError as exc:
                 errors.append(f"{current.name} → {original.name}  ({exc})")
             on_progress(i + 1, total, original.name)
@@ -490,23 +769,24 @@ class RenameModel:
         on_done(success, errors)
 
     # ── exportar log ───────────────────────────────────────────────────────
-    def export_log(self, pairs: list[tuple[str, str, Path, bool]], dest: Path) -> None:
+    def export_log(self, pairs: list[tuple[str, str, Path, bool, str]], dest: Path) -> None:
         with dest.open("w", encoding="utf-8") as f:
             f.write("=" * 62 + "\n")
             f.write("  LOG DE RENOMBRAMIENTO — Renombrador de Fotos v4\n")
             f.write(f"  Fecha   : {datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}\n")
             f.write(f"  Carpeta : {self.folder_path}\n")
             f.write("=" * 62 + "\n\n")
-            for orig, new, _, _ in pairs:
-                f.write(f"  {orig}  →  {new}\n")
+            for orig, new, _, _, state in pairs:
+                label = f"  [{state}] " if state and state != "ok" else "  "
+                f.write(f"{label}{orig}  →  {new}\n")
             f.write(f"\n  Total: {len(pairs)} archivo(s)\n")
 
-    def export_preview_csv(self, pairs: list[tuple[str, str, Path, bool]], dest: Path) -> None:
+    def export_preview_csv(self, pairs: list[tuple[str, str, Path, bool, str]], dest: Path) -> None:
         with dest.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["original", "nuevo_nombre", "duplicado"])
-            for orig, new, _, is_dup in pairs:
-                w.writerow([orig, new, "Sí" if is_dup else ""])
+            w.writerow(["original", "nuevo_nombre", "duplicado", "estado"])
+            for orig, new, _, is_dup, state in pairs:
+                w.writerow([orig, new, "Sí" if is_dup else "", state])
 
 
 # ===========================================================================
@@ -1073,7 +1353,7 @@ class PreviewTable(ctk.CTkFrame):
         self._lbl_empty.pack(pady=28)
 
     # ── API pública ────────────────────────────────────────────────────────
-    def render(self, pairs: list[tuple[str, str, Path, bool]]) -> None:
+    def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
         """Reemplaza el contenido de la tabla de forma no-bloqueante."""
         self._cancel_jobs()
         self._current_query = ""
@@ -1084,8 +1364,9 @@ class PreviewTable(ctk.CTkFrame):
                 "photo_path": photo_path,
                 "photo_index": i,
                 "is_dup": is_dup,
+                "state": state,
             }
-            for i, (orig, new, photo_path, is_dup) in enumerate(pairs)
+            for i, (orig, new, photo_path, is_dup, state) in enumerate(pairs)
         ]
         self._rows = []
         for w in self.winfo_children():
@@ -1119,32 +1400,45 @@ class PreviewTable(ctk.CTkFrame):
             row["visible"] = not q or q in row["orig_text"] or q in row["new_text"]
         self._refresh_visible_rows()
 
-    def update_dup_states(self, pairs: list[tuple[str, str, Path, bool]]) -> None:
-        """Recolorea solo filas cuyo estado de duplicado cambió. No destruye widgets."""
+    def update_dup_states(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
+        """Recolorea solo filas cuyo estado o duplicado cambió. No destruye widgets."""
         for row_data in self._rows:
             idx = row_data["photo_index"]
             if idx >= len(pairs):
                 continue
-            _, _, _, is_dup = pairs[idx]
-            if row_data.get("is_dup") == is_dup:
+            _, _, _, is_dup, state = pairs[idx]
+            changed = False
+            if row_data.get("is_dup") != is_dup:
+                row_data["is_dup"] = is_dup
+                changed = True
+            if row_data.get("state") != state:
+                row_data["state"] = state
+                changed = True
+            if not changed:
                 continue
-            row_data["is_dup"] = is_dup
 
-            bg = "#3d2020" if is_dup else (C["surface"] if idx % 2 == 0 else C["bg"])
+            bg = _STATE_BG.get(state) if state != "ok" else None
+            if bg is None:
+                bg = "#3d2020" if is_dup else (C["surface"] if idx % 2 == 0 else C["bg"])
             row_data["frame"].configure(fg_color=bg)
 
             arrow = row_data.get("arrow_widget")
             if arrow is not None:
-                arrow.configure(text_color=C["red"] if is_dup else C["accent2"])
+                arrow.configure(text_color=self._arrow_color(state, is_dup))
 
             new_widget = row_data.get("new_widget")
             if new_widget is not None:
-                color = C["red"] if is_dup else C["text"]
+                color = self._new_color(state, is_dup)
                 if isinstance(new_widget, ctk.CTkEntry):
-                    new_widget.configure(border_color=color if is_dup else C["border"],
+                    new_widget.configure(border_color=color if state != "ok" else C["border"],
                                          text_color=color)
                 else:
                     new_widget.configure(text_color=color)
+
+            state_lbl = row_data.get("state_widget")
+            if state_lbl is not None:
+                state_lbl.configure(text=STATE_LABELS.get(state, ""),
+                                    text_color=_STATE_FG.get(state, C["overlay"]))
 
     # ── internos ──────────────────────────────────────────────────────────
     def _cancel_jobs(self) -> None:
@@ -1178,13 +1472,25 @@ class PreviewTable(ctk.CTkFrame):
             (1, "Original",    "w",  8),
             (2, "→",           "w",  4),
             (3, "Nuevo nombre","w",  8),
-            (4, "",            "e",  4),
+            (4, "Estado",      "w",  8),
         ]
         for col, txt, sticky, padx in cols:
             lbl = ctk.CTkLabel(hdr, text=txt, width=1,
                                font=FONT_SM_BD, text_color=C["accent"],
                                fg_color="transparent")
             lbl.grid(row=0, column=col, sticky=sticky, padx=padx, pady=4)
+
+    @staticmethod
+    def _arrow_color(state: str, is_dup: bool) -> str:
+        if state != "ok":
+            return _STATE_FG.get(state, C["red"])
+        return C["red"] if is_dup else C["accent2"]
+
+    @staticmethod
+    def _new_color(state: str, is_dup: bool) -> str:
+        if state != "ok":
+            return _STATE_FG.get(state, C["text"])
+        return C["red"] if is_dup else C["text"]
 
     def _load_chunk(self) -> None:
         chunk, self._pending = self._pending[:self.CHUNK], self._pending[self.CHUNK:]
@@ -1204,8 +1510,11 @@ class PreviewTable(ctk.CTkFrame):
         new = row_data["new"]
         photo_path = row_data["photo_path"]
         is_dup = row_data.get("is_dup", False)
+        state = row_data.get("state", "ok")
 
-        bg = "#3d2020" if is_dup else (C["surface"] if i % 2 == 0 else C["bg"])
+        bg = _STATE_BG.get(state) if state != "ok" else None
+        if bg is None:
+            bg = "#3d2020" if is_dup else (C["surface"] if i % 2 == 0 else C["bg"])
         row = ctk.CTkFrame(self, fg_color=bg, corner_radius=0, height=32)
         row.pack_propagate(False)
         self._configure_grid(row)
@@ -1223,14 +1532,14 @@ class PreviewTable(ctk.CTkFrame):
                                                   sticky="w", padx=8)
 
         # Columna →
-        arrow_color = C["red"] if is_dup else C["accent2"]
+        arrow_color = self._arrow_color(state, is_dup)
         arrow_lbl = ctk.CTkLabel(row, text="→", width=1,
                      font=FONT_SM, text_color=arrow_color,
                      fg_color="transparent")
         arrow_lbl.grid(row=0, column=2, sticky="w", padx=4)
 
         # Columna Nuevo nombre
-        new_color = C["red"] if is_dup else C["text"]
+        new_color = self._new_color(state, is_dup)
         if self._edit_mode:
             new_var = ctk.StringVar(value=new)
             new_widget = ctk.CTkEntry(row, textvariable=new_var,
@@ -1256,10 +1565,14 @@ class PreviewTable(ctk.CTkFrame):
                                       fg_color="transparent")
             new_widget.grid(row=0, column=3, sticky="w", padx=8)
 
-        # Columna Miniatura
-        thumb_lbl = ctk.CTkLabel(row, text="", width=1, fg_color="transparent")
-        thumb_lbl.grid(row=0, column=4, sticky="e", padx=4)
-        self._thumb_q.append((thumb_lbl, photo_path))
+        # Columna Estado
+        state_lbl = ctk.CTkLabel(row, text=STATE_LABELS.get(state, ""), width=1,
+                                 anchor="w", font=FONT_SM,
+                                 text_color=_STATE_FG.get(state, C["overlay"]),
+                                 fg_color="transparent")
+        state_lbl.grid(row=0, column=4, sticky="w", padx=8)
+
+        # Miniaturas: se muestran en el tooltip hover (ya no hay columna dedicada).
 
         visible = not self._current_query or self._current_query in orig.lower() or self._current_query in row_data.get("new", "").lower()
         row_data["visible"] = visible
@@ -1271,12 +1584,15 @@ class PreviewTable(ctk.CTkFrame):
             "visible": visible,
             "new_widget": new_widget,
             "arrow_widget": arrow_lbl,
+            "state_widget": state_lbl,
             "is_dup": is_dup,
+            "state": state,
         })
         if visible:
             row.pack(fill="x")
-        row._tooltip_path = photo_path
-        row.bind("<Enter>", self._lazy_tooltip, add="+")
+        if photo_path is not None:
+            row._tooltip_path = photo_path
+            row.bind("<Enter>", self._lazy_tooltip, add="+")
 
 
 
@@ -1336,8 +1652,10 @@ class PreviewTable(ctk.CTkFrame):
         if not self._all_pairs:
             return
         query = self._current_query
-        self.render([(row["orig"], row["new"], row["photo_path"], row.get("is_dup", False))
-                     for row in self._all_pairs])
+        self.render([
+            (row["orig"], row["new"], row["photo_path"], row.get("is_dup", False),
+             row.get("state", "ok"))
+            for row in self._all_pairs])
         if query:
             self.filter(query)
 
@@ -1621,6 +1939,17 @@ class MainView(ctk.CTk):
                         font=FONT_SM,
                         text_color=C["subtext"]).pack(side="right", padx=(0, 10))
 
+        # Matching seguro: cada nombre busca SU fotografía (recomendado).
+        # Disponible solo si el motor puro de MetaTag está presente.
+        self._match_var = ctk.BooleanVar(value=False)
+        self._btn_match = ctk.CTkCheckBox(
+            act, text="Matching seguro", variable=self._match_var,
+            font=FONT_SM, text_color=C["subtext"],
+            command=self._ctrl.on_matching_toggle)
+        self._btn_match.pack(side="right", padx=(0, 10))
+        if not self._ctrl.matching_available():
+            self._btn_match.configure(state="disabled")
+
         # footer
         ftr = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=0, height=26)
         ftr.pack(fill="x", side="bottom"); ftr.pack_propagate(False)
@@ -1660,6 +1989,7 @@ class MainView(ctk.CTk):
     def get_column(self) -> str:        return self._col_var.get()
     def get_sort_mode(self) -> str:     return SORT_OPTIONS.get(self._sort_var.get(), "natural")
     def get_copy_mode(self) -> bool:    return self._copy_var.get()
+    def get_matching_mode(self) -> bool: return self._match_var.get()
     def get_edit_mode(self) -> bool:    return self._edit_var.get()
 
     def set_folder_status(self, state: str, msg: str) -> None:
@@ -1691,7 +2021,7 @@ class MainView(ctk.CTk):
     def hide_columns(self) -> None:
         self._col_frame.grid_remove()
 
-    def render_preview(self, pairs: list[tuple[str, str, Path, bool]]) -> None:
+    def render_preview(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
         self._preview.render(pairs)
 
     def filter_preview(self, query: str) -> None:
@@ -1794,7 +2124,7 @@ class AppController:
     def __init__(self) -> None:
         self._model       = RenameModel()
         self._view        = MainView(controller=self)
-        self._last_pairs: list[tuple[str, str, Path, bool]] = []
+        self._last_pairs: list[tuple[str, str, Optional[Path], bool, str]] = []
         self._cancel_ev:  Optional[threading.Event] = None
         self._dup_recalc_job: Optional[str] = None
         self._restore_state()
@@ -2016,8 +2346,9 @@ class AppController:
             return
         n_ph, n_nm = len(self._model.photos), len(self._model.names)
 
-        # FIX #6: verificación de desajuste con diagnóstico claro
-        if n_ph != n_nm:
+        # FIX #6: verificación de desajuste (solo modo posicional: ahí sí el
+        # conteo debe cuadrar). En matching seguro cada nombre busca SU foto.
+        if not self._model.matching_mode and n_ph != n_nm:
             diff = abs(n_ph - n_nm)
             if n_ph > n_nm:
                 log.warning("Hay %d foto(s) sin nombre en el Excel.", diff)
@@ -2037,7 +2368,7 @@ class AppController:
         self._view.set_btn_log(True)
         self._view.set_btn_csv(True)
 
-        dup_count = sum(1 for _, _, _, is_dup in pairs if is_dup)
+        dup_count = sum(1 for _, _, _, is_dup, _ in pairs if is_dup)
         if dup_count > 0:
             self._view.toast(
                 f"⚠ {dup_count} nombre{'s' if dup_count != 1 else ''} duplicado{'s' if dup_count != 1 else ''} "
@@ -2095,14 +2426,35 @@ class AppController:
 
     # ── rename / undo ──────────────────────────────────────────────────────
     def _do_rename(self) -> None:
+        plan = getattr(self._model, "_plan", None) or None
         self._run_async(self._model.rename_all, "", self._finish_rename,
-                        cancel_ev=self._cancel_ev, copy_mode=self._view.get_copy_mode())
+                        cancel_ev=self._cancel_ev, copy_mode=self._view.get_copy_mode(),
+                        plan=plan)
 
     def _do_undo(self) -> None:
         self._run_async(self._model.undo_last, "Revirtiendo ", self._finish_undo)
 
     def on_edit_mode_change(self, enabled: bool) -> None:
         self._view.set_edit_mode(enabled)
+
+    def matching_available(self) -> bool:
+        return self._model.matching_available
+
+    def on_matching_toggle(self) -> None:
+        """Activa/desactiva el emparejamiento seguro (nombre → SU foto)."""
+        enabled = self._view.get_matching_mode()
+        self._model.matching_mode = enabled
+        if enabled:
+            self._view.toast(
+                "Matching seguro: ON — cada nombre del Excel buscará SU "
+                "fotografía. Si no hay coincidencia clara, la fila se omitirá.",
+                "ok")
+        else:
+            self._view.toast(
+                "Modo posicional: la 1ª foto ↔ 1er nombre (puede no coincidir "
+                "la persona).", "warn")
+        if self._model.photos and self._model.names:
+            self._refresh_preview()
 
     def on_preview_name_changed(self, index: int, new_name: str, photo_path: Path) -> None:
         if 0 <= index < len(self._model._names):
