@@ -1,10 +1,10 @@
-"""Tests del Renombrador de Fotos incorporado en tools/renombrador/.
+"""Tests del Renombrador de Fotos incorporado en src/renombrar_fotos_gui.py.
 
 Capa compatible con el sistema de pruebas del proyecto (unittest).
 Se prueban los escenarios de renombrado de RenameModel usando SIEMPRE
 directorios temporales (nunca se tocan fotografías reales ni el Excel).
 
-El test original de la herramienta (tools/renombrador/test_renombrador.py)
+El test original de la herramienta (tests/test_renombrador_pytest.py)
 usa pytest y se conserva como test propio de la herramienta; esta capa
 cubre los mismos escenarios bajo `python -m unittest discover -s tests`.
 """
@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "renombrador"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import renombrar_fotos_gui as mod
 
 

@@ -905,6 +905,7 @@ class MetaTagApp(tk.Tk):
         section("HERRAMIENTAS AVANZADAS")
         self._btn(parent, "📊 Ver Estadísticas (Gráficos)",  self._show_stats,           primary=False)
         self._btn(parent, "🗂 Lote por Orden (Excel→Fotos)", self._batch_write_by_order, primary=False)
+        self._btn(parent, "🖼 Renombrador de Fotos",         self._launch_renombrador,   primary=False)
 
         section("SINCRONIZACIÓN DE ORDEN")
         self._btn(parent, "🔄 Reordenar imágenes según Excel",  self._sync_images_to_excel, primary=False)
@@ -984,6 +985,23 @@ class MetaTagApp(tk.Tk):
                                           bg=C["btn_ghost_bg"], fg=C["text"])
         self._update_meta_preview()
         self._on_sel_change()
+
+    def _launch_renombrador(self):
+        renombrador = Path(__file__).resolve().parent / "renombrar_fotos_gui.py"
+        if not renombrador.exists():
+            return messagebox.showerror(
+                "Error",
+                f"No se encontró el Renombrador de Fotos en:\n{renombrador}")
+        try:
+            subprocess.Popen([sys.executable, str(renombrador)])
+        except Exception as e:
+            logging.error("Error al lanzar el Renombrador: %s", e, exc_info=True)
+            messagebox.showerror(
+                "Error al abrir el Renombrador",
+                "No se pudo lanzar el Renombrador de Fotos.\n\n"
+                f"{e}\n\n"
+                "Revisa que esté instalado CustomTkinter "
+                "(pip install customtkinter).")
 
     def _set_mode(self, mode):
         self.process_mode.set(mode)

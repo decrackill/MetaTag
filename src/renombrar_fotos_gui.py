@@ -40,9 +40,11 @@ from PIL import Image
 # El Renombrador puede funcionar de forma totalmente independiente (modo
 # posicional). Si el proyecto MetaTag está presente, importa el motor de
 # emparejamiento seguro (puro, sin Tkinter) para el modo "matching seguro".
+# El script vive en src/ junto a metatag_matching.py: se inserta su propio
+# directorio en sys.path para funcionar sin depender del cwd de invocación.
 try:
     import sys
-    _PROJECT_SRC = Path(__file__).resolve().parents[2] / "src"
+    _PROJECT_SRC = Path(__file__).resolve().parent
     if str(_PROJECT_SRC) not in sys.path:
         sys.path.insert(0, str(_PROJECT_SRC))
     from metatag_matching import ImageMatcher

@@ -1,16 +1,17 @@
 """
 Tests automatizados para Renombrador de Fotos v4.0
-Ejecutar: python -m pytest test_renombrador.py -v
+Ejecutar: python -m pytest tests/test_renombrador_pytest.py -v
 """
 import os
+import sys
 import shutil
 import tempfile
 from pathlib import Path
 from datetime import datetime
 
 import pytest
-import sys
-sys.path.insert(0, os.path.dirname(__file__))
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import renombrar_fotos_gui as mod
 
