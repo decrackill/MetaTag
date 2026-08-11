@@ -231,7 +231,19 @@
 
   ## 11. Nueva herramienta: Image Sync / Renombrador
 
-  Estado actual: **EN DESARROLLO**. No es funcionalidad cerrada.
+  Estado actual: **INTEGRACIÓN PENDIENTE**. La herramienta standalone del usuario
+  (`~/Descargas/Renombrador_Fotos`) ya está **funcional y verificada** dentro del
+  repositorio en `tools/renombrador/` (customtkinter, ver sección 16, 2026-08-10):
+  se ejecuta de verdad con display, tiene 11 tests de modelo en
+  `tests/test_renombrador.py` y conserva su suite pytest propia
+  (`tools/renombrador/test_renombrador.py`). FALTA integrarla en `metatag_v8.py`
+  (lanzador + diálogo de configuración) y cubrir los casos de conflicto/duplicado
+  a nivel de interfaz.
+
+  Nota de nomenclatura: la herramienta se auto-titula **"Renombrador de Fotos v4.0"**
+  (no "Image Sync"). En modo copia crea la subcarpeta `Renombradas/`. Su flujo es
+  **posicional**: foto 1 ↔ fila 1 de la columna del Excel (sin matching por nombre),
+  procesa `min(fotos, nombres)` parejas y conserva la extensión original.
 
   **Concepto funcional:**
 
@@ -247,7 +259,8 @@
   **Ideas funcionales discutidas** (distinguir claramente estado):
 
   - IMPLEMENTADO (base reutilizable): matching inteligente (`_find_image`, `_safe_stem`, `_extract_id_suffix`), detección de coincidencias aproximadas, huérfanas y valores sin imagen (usado hoy por Image Sync de orden).
-  - PLANEADO: selección de carpeta de fotografías, carga/uso del Excel, selección de hoja, selección de columna, ordenamiento de fotografías, generación de correspondencias, vista previa, detección de conflictos, detección de duplicados, detección de nombres vacíos, simulación, renombramiento real, registro de operación, posible deshacer futuro, posible modo copia/backup futuro.
+  - IMPLEMENTADO EN LA HERRAMIENTA STANDALONE (`tools/renombrador/`, 2026-08-10): selección de carpeta de fotografías, carga de Excel/CSV con selección de hoja y columna, ordenamiento de fotografías, vista previa con detección de duplicados, renombramiento real (con reemplazo de destino existente), deshacer de la última operación y modo copia a `Renombradas/`. Comportamiento POSICIONAL (no matching por nombre).
+  - PENDIENTE (integración en `metatag_v8.py`): lanzador dentro de la app, generación de correspondencias por matching, detección de nombres vacíos, simulación/dry-run, registro de operación, y refinar la detección de conflictos (ver sección 13: "ya correctos" se reporta como conflicto).
 
   ---
 
@@ -350,6 +363,19 @@
   - Cabeceras del Excel con espacios finales (`Sitio `, etc.); el código los elimina con `.strip()`.
   - El proyecto usa nombres de módulo prefijados `metatag_*`; no hay `requirements.txt` (las dependencias se gestionan vía los scripts de instalación).
 
+  ### Renombrador standalone: comportamientos a revisar en la integración (2026-08-10)
+
+  Observaciones sobre `tools/renombrador/renombrar_fotos_gui.py` (NO corregidas: la regla de la sesión fue no cambiar lógica salvo error evidente de portabilidad; la corrección corresponde a la fase de integración):
+
+  - **"Nombres ya correctos" se reporta como conflicto**: si el nombre objetivo coincide con el nombre actual de la foto, `dest == origen`, la guarda `if not copy_mode and dest.exists()` lo salta y lo registra como "ya existe en destino". No daña los archivos, pero el usuario lo vería como error. Candidato a tratar como `success` sin tocar el archivo.
+  - **Bloque `if dest.exists(): dest.unlink()` duplicado** (líneas ~413-424): código muerto inofensivo (tras un unlink exitoso `dest.exists()` es False; tras un fallo ya hubo `continue`). Limpiar en integración.
+  - **Flujo posicional**: `zip(fotos, nombres)` empareja foto 1 ↔ fila 1. Sin matching por nombre (a diferencia del Image Sync de la app). Documentar en la UI al integrar.
+  - Verificado por tests: duplicados dentro del lote se saltan con error; cancelación cooperativa funciona; `undo_last` restaura el lote anterior; modo copia crea `Renombradas/` sin tocar originales.
+
+  ### Artefacto de pruebas Tk: `_default_root` huérfano (2026-08-10)
+
+  En los tests, crear un primer `tk.Tk()` (p. ej. una comprobación de display) deja esa raíz como `tkinter._default_root`; los `tk.BooleanVar()` sin master del picker se ligan a ese intérprete y `select()`/`get()` leen variables Tcl distintas (resultado vacío en `Aceptar`). En producción esto NO ocurre (la app es el primer `Tk`). Los tests lo evitan destruyendo la raíz de comprobación y reseteando `tk._default_root = None`. No requiere cambio en `metatag_v8.py`.
+
   ---
 
   ## 14. Decisiones arquitectónicas
@@ -430,16 +456,36 @@
 
   ---
 
+  ### 2026-08-10 — Fix scroll ventanas de selección + tests renombrador (Fases 4–6)
+
+  **Dependencias:** se instaló `customtkinter` en el `.venv` (dependencia del renombrador). `smoke_renombrador.py` real: MainView v4 construida en 1920×1080, ventana 1100×864, OK.
+
+  **Fase 4 — scroll de las ventanas de selección de columnas (`src/metatag_v8.py`):**
+  - Se detectó que `_batch_pick_columns` y `_pick_sort_columns` enlazaban la rueda del ratón **por fila** (`<MouseWheel>`, `<Button-4>`, `<Button-5>` sobre cada Checkbutton) y además con `bind_all`: duplicación de handlers y scroll global (cualquier ventana de MetaTag con rueda desplazaba el picker). El `bind_all` de la ventana nueva además podía colisionar con un cierre en curso.
+  - Fix mínimo sin tocar la lógica de selección: **nuevo helper `_build_scroll_picker_window`** (Toplevel con canvas + inner + scrollbar; rueda enlazada UNA vez en la Toplevel → funciona sobre canvas, labels, Checkbuttons, scrollbar y huecos vía bindtags; sin `bind_all`; bindings mueren con la ventana). Ambas ventanas de selección (columnas de metadatos y de orden) se refactorizaron para usarlo. `_batch_pick_columns` conserva Todas/Ninguna/Invertir, contador `N / M` y preservación de la columna de imagen al invertir. El helper acepta `on_cancel_hook` para conservar la limpieza de trazas write de Tk que hacía el código original al cancelar (el sort no tiene trazas).
+  - `py_compile` OK y **52/52 tests previos siguen verdes** (sin regresiones).
+
+  **Fase 5 — matriz de resoluciones del picker:** test `ClampMatrixTestCase` (8 resoluciones: 640×480 → 2560×1440) que aplica la fórmula de dimensionado real del picker y verifica que la ventana siempre cabe en pantalla (x, y ≥ 0; x+ancho ≤ pantalla; ≥24px). Complementa los smoke scroll de `ColumnPickerScrollTestCase`.
+
+  **Fase 6 — tests nuevos (30):**
+  - `tests/test_renombrador.py` (**11, sin display**): nombres simples, extensiones distintas, ceros, archivos faltantes (min), archivos adicionales, duplicados (se saltan), conflicto con destino existente, nombres ya correctos (documentado: se reporta conflicto), cancelación cooperativa, `undo_last` y `build_preview` (marca duplicados). Comportamiento verificado por ejecución real con directorios temporales.
+  - `tests/test_column_picker.py` (**19, smoke Tk real**): apertura con 19 columnas y contador `18 / 19`, Todas/Ninguna/Invertir (preserva columna imagen), toggle manual, Aceptar devuelve la selección (18), Cancelar None **y Cancelar limpia las trazas write de Tk**, scroll por rueda sobre canvas/texto/Checkbutton/scrollbar, scrollbar anclada y visible con desbordamiento, selección estable tras desplazar, redimensionado sin overflow horizontal, volver arriba, orden por selección y matriz de resoluciones.
+  - Para los smoke se parchea `wait_window` (pump que espera el cierre real) y se respeta la advertencia `_default_root` (sección 13).
+
+  **Resultado: 82/82 tests OK** (52 previos + 30 nuevos). Commit `feat: fijar scroll de selección de columnas y añadir tests del renombrador`.
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
   MetaTag v8.9.
 
   ### Trabajo actual
-  **Bloque 4 — responsividad y adaptación de la interfaz** ✅ terminado (auditoría + reparación, 2026-08-10): 52/52 tests OK, commit `fix: mejorar responsividad de la interfaz`. El renombrador Image Sync está en espera (ver sección 11).
+  **Fases 4–6 (2026-08-10) — scroll de selección de columnas arreglado + tests del renombrador** ✅ terminado: **82/82 tests OK** (52 previos + 30 nuevos), commit `feat: fijar scroll de selección de columnas y añadir tests del renombrador`. El renombrador standalone está funcional en `tools/renombrador/`; la integración en la app sigue pendiente (ver sección 11).
 
   ### Trabajo próximo
-  Validar y mejorar el renombrador (emparejamiento seguro, conflictos, duplicados, nombres vacíos, simulación) — después de cerrar el Bloque 4.
+  Integrar la herramienta del renombrador en `metatag_v8.py` (lanzador + diálogo de configuración) y refinar casos límite ya detectados (nombres "ya correctos", código muerto de unlink, vacíos) — sección 11 y 13.
 
   ### Trabajo posterior
   Mejorar/separar el módulo de estadísticas.
@@ -451,20 +497,21 @@
   No se han confirmado bloqueadores críticos en esta sesión.
 
   ### Nota de estado (2026-08-10)
-  Matching seguro implementado y verificado (Bloque 1), `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado), procesamiento en segundo plano robustecido con cancelación (Bloque 3, `_process_all` con snapshot + `_process_queue` con detección de muerte inesperada + `_proc_finish_ui`) y responsividad de la interfaz corregida (Bloque 4, export de gráficas desacoplado + `_clamp_toplevel` + Visor). El renombrador sigue pendiente y NO debe iniciarse todavía.
+  Matching seguro implementado y verificado (Bloque 1), `ExcelGrid.redraw` optimizado (Bloque 2, `col_sel_map` precalculado), procesamiento en segundo plano robustecido con cancelación (Bloque 3, `_process_all` con snapshot + `_process_queue` con detección de muerte inesperada + `_proc_finish_ui`), responsividad de la interfaz corregida (Bloque 4, export de gráficas desacoplado + `_clamp_toplevel` + Visor) y scroll de las ventanas de selección de columnas fijado sin `bind_all` (Fase 4). El renombrador standalone (`tools/renombrador/`) está funcional y con tests (Fase 6), pero su integración dentro de `metatag_v8.py` sigue pendiente.
 
   ---
 
   ## 18. Próximo paso recomendado
 
   1. ✅ **Bloque 4 — responsividad de la UI** (completado, 2026-08-10): auditoría de toda la interfaz frente a resoluciones/tamaños de ventana/DPI; visualización y exportación de gráficas desacopladas; ventanas secundarias centradas/limitadas; Visor arreglado. Tests `tests/test_responsive.py` (12), **52/52 verdes**. Commit `fix: mejorar responsividad de la interfaz`.
-  2. Después: terminar de validar **Image Sync / renombrador**.
-  3. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1, 2026-08-10): `_find_image_ex` con detección de ambigüedades; tests `tests/test_matching.py` y `tests/test_dataset_269.py`.
-  4. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
-  5. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
-  6. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.
-  7. ✅ Procesamiento en segundo plano robustecido (Bloque 3, 2026-08-10): cancelación, detección de muerte inesperada, snapshot de Tk; tests `tests/test_queue.py` (17), 40/40 verdes.
-  8. Después, continuar con las mejoras del **módulo de estadísticas**.
+  2. ✅ **Fases 4–6 — scroll de selección de columnas + tests del renombrador** (completado, 2026-08-10): helper `_build_scroll_picker_window` sin `bind_all`; tests de renombrador (11) y pickers (19, incl. matriz de resoluciones y limpieza de trazas). **82/82 verdes**. Commit `feat: fijar scroll de selección de columnas y añadir tests del renombrador`.
+  3. **Siguiente: integrar el renombrador standalone en `metatag_v8.py`** (lanzador + diálogo de configuración) usando `tools/renombrador/` como base; cubrir los casos límite de la sección 13 (nombres "ya correctos", unlink duplicado, vacíos) y decidir entre flujo posicional vs. matching por nombre.
+  4. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1, 2026-08-10): `_find_image_ex` con detección de ambigüedades; tests `tests/test_matching.py` y `tests/test_dataset_269.py`.
+  5. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
+  6. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
+  7. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.
+  8. ✅ Procesamiento en segundo plano robustecido (Bloque 3, 2026-08-10): cancelación, detección de muerte inesperada, snapshot de Tk; tests `tests/test_queue.py` (17), 40/40 verdes.
+  9. Después, continuar con las mejoras del **módulo de estadísticas**.
 
   ---
 

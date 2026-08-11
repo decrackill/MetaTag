@@ -33,6 +33,134 @@ def _clamp_toplevel(win, parent, w, h, margin=24):
     y = min(max(py - h // 2, 0), screen_h - h)
     win.geometry(f"{w}x{h}+{x}+{y}")
 
+
+def _build_scroll_picker_window(parent, scale, title, description,
+                                build_actions=None, build_rows=None,
+                                on_ok_result=None, on_cancel_hook=None):
+    """Ventana Toplevel de selección con lista scrollable robusta.
+
+    Scroll: la rueda del ratón se enlaza en la propia Toplevel. Como la
+    Toplevel forma parte de los bindtags de TODOS sus descendientes, el
+    scroll funciona con el cursor sobre el canvas, el frame interno, los
+    labels, los Checkbuttons, los espacios vacíos y el propio scrollbar.
+    No usa bind_all global (no afecta a otras ventanas de MetaTag) y no
+    duplica handlers por fila; los bindings mueren con la ventana.
+
+    `build_actions(top_info)` añade controles extra bajo la descripción.
+    `build_rows(inner)` puebla las opciones de la lista scrollable.
+    `on_ok_result()` devuelve el resultado guardado al pulsar Aceptar.
+
+    Devuelve (win, result_cell). El llamador termina con wait_window(win)
+    y lee result_cell[0].
+    """
+    S = C
+    win = tk.Toplevel(parent)
+    win.title(title)
+    win.configure(bg=S["bg"])
+    win.attributes("-topmost", True)
+
+    # ── tamaño inicial responsivo (aprovecha el espacio disponible) ──
+    sw = win.winfo_screenwidth()
+    sh = win.winfo_screenheight()
+    w = min(int(480 * scale), max(int(380 * scale), int(sw * 0.45)))
+    h = min(int(620 * scale), max(int(420 * scale), int(sh * 0.68)))
+    _clamp_toplevel(win, parent, w, h)
+    win.minsize(int(340 * scale), int(300 * scale))
+    win.resizable(True, True)
+    win.grid_rowconfigure(2, weight=1)
+    win.grid_columnconfigure(0, weight=1)
+
+    result = [None]
+
+    def on_cancel():
+        if on_cancel_hook:
+            on_cancel_hook()
+        win.destroy()
+
+    def on_ok():
+        result[0] = on_ok_result() if on_ok_result else None
+        win.destroy()
+
+    # ── cabecera ──
+    hdr = tk.Frame(win, bg=S["header_bg"])
+    hdr.grid(row=0, column=0, sticky="ew")
+    tk.Label(hdr, text=f"  {title}", bg=S["header_bg"], fg=S["header_fg"],
+             font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+
+    # ── descripción + acciones opcionales ──
+    top_info = tk.Frame(win, bg=S["bg"])
+    top_info.grid(row=1, column=0, sticky="ew", padx=14)
+    tk.Label(top_info, text=description, bg=S["bg"], fg=S["text3"],
+             font=FONTS["TINY"], wraplength=int(400 * scale)).pack(pady=(12, 4))
+    if build_actions:
+        build_actions(top_info)
+
+    # ── lista scrollable: canvas + inner + scrollbar ──
+    list_frame = tk.Frame(win, bg=S["surface"],
+                          highlightbackground=S["border"], highlightthickness=1)
+    list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(4, 4))
+    list_frame.grid_rowconfigure(0, weight=1)
+    list_frame.grid_columnconfigure(0, weight=1)
+
+    canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
+    vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+    inner = tk.Frame(canvas, bg=S["surface"])
+    inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+    canvas.configure(yscrollcommand=vsb.set)
+
+    canvas.grid(row=0, column=0, sticky="nsew")
+    vsb.grid(row=0, column=1, sticky="ns")
+
+    def _wheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _wheel_linux(event):
+        canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+
+    win.bind("<MouseWheel>", _wheel, add="+")
+    win.bind("<Button-4>", _wheel_linux, add="+")
+    win.bind("<Button-5>", _wheel_linux, add="+")
+
+    def _sync_scroll(_e=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _update_vsb(_e=None):
+        lo, hi = canvas.yview()
+        if lo <= 0.0 and hi >= 1.0:
+            vsb.grid_remove()
+        elif not vsb.winfo_manager():
+            vsb.grid(row=0, column=1, sticky="ns")
+
+    def _on_canvas_configure(_e=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.itemconfigure(inner_id, width=canvas.winfo_width())
+        _update_vsb()
+
+    inner.bind("<Configure>", _sync_scroll)
+    canvas.bind("<Configure>", _on_canvas_configure)
+    win.bind("<Configure>", _update_vsb, add="+")
+
+    if build_rows:
+        build_rows(inner)
+
+    # ── separador y botones (fila fija, siempre accesibles) ──
+    sep = tk.Frame(win, bg=S["border"], height=1)
+    sep.grid(row=3, column=0, sticky="ew")
+    btn_frame = tk.Frame(win, bg=S["bg"])
+    btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+    tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
+              font=FONTS["LABEL"], relief="flat", cursor="hand2",
+              command=on_cancel).pack(side="right", ipady=4)
+    tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
+              font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
+              activebackground=S["accent_hover"],
+              command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
+    win.protocol("WM_DELETE_WINDOW", on_cancel)
+
+    win.after(100, _sync_scroll)
+    return win, result
+
+
 if sys.platform == "win32":
     try:
         import ctypes
@@ -1708,116 +1836,46 @@ class MetaTagApp(tk.Tk):
     def _pick_sort_columns(self, all_cols):  # -> Optional[list]
         S = C
         sc = self.current_scale
-        win = tk.Toplevel(self)
-        win.title("Columnas de ordenamiento")
-        win.configure(bg=S["bg"])
-        _clamp_toplevel(win, self, int(400*sc), int(380*sc))
-        win.resizable(False, False)
-        win.attributes("-topmost", True)
-        win.grid_rowconfigure(2, weight=1)
-        win.grid_columnconfigure(0, weight=1)
 
-        result = [None]
         col_vars = {}
-        def on_ok():
-            result[0] = [c for c, v in col_vars.items() if v.get()]
-            win.destroy()
-        def on_cancel():
-            win.destroy()
+        def on_ok_result():
+            return [c for c, v in col_vars.items() if v.get()]
 
-        hdr = tk.Frame(win, bg=S["header_bg"])
-        hdr.grid(row=0, column=0, sticky="ew")
-        tk.Label(hdr, text="  Seleccionar columnas de orden", bg=S["header_bg"],
-                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+        def build_rows(inner):
+            for idx, col in enumerate(all_cols):
+                row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
+                var = tk.BooleanVar(value=False)
+                col_vars[col] = var
 
-        tk.Label(win, text="Elige las columnas por las que se ordenarán las imágenes (en el orden que selecciones)",
-                 bg=S["bg"], fg=S["text3"], font=FONTS["BODY"],
-                 wraplength=int(360*sc)).grid(row=1, column=0, pady=(10, 4), padx=14)
+                row = tk.Frame(inner, bg=row_bg, cursor="hand2")
+                row.pack(fill="x")
 
-        list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
-                              highlightthickness=1)
-        list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 4))
+                indicator = tk.Frame(row, bg=S["accent"], width=4)
+                indicator.pack(side="left", fill="y")
 
-        canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
-        canvas.pack_propagate(False)
-        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=S["surface"])
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+                cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
+                                    bg=row_bg, fg=S["text"],
+                                    selectcolor=S["surface"],
+                                    activebackground=row_bg,
+                                    font=FONTS["BODY"], anchor="w",
+                                    cursor="hand2")
+                cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
 
-        def _sync_scroll(e=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        inner.bind("<Configure>", _sync_scroll)
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        def _on_mousewheel_linux(event):
-            if event.num == 4:
-                canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                canvas.yview_scroll(1, "units")
-        for w in (canvas, inner, list_frame):
-            w.bind("<MouseWheel>", _on_mousewheel)
-            w.bind("<Button-4>", _on_mousewheel_linux)
-            w.bind("<Button-5>", _on_mousewheel_linux)
+                def _enter(e, r=row, ind=indicator):
+                    r.configure(bg=S["accent_pale"])
+                    ind.configure(bg=S["accent_hover"])
+                def _leave(e, r=row, ind=indicator, bg=row_bg):
+                    r.configure(bg=bg)
+                    ind.configure(bg=S["accent"])
+                for w in (row, cb):
+                    w.bind("<Enter>", _enter)
+                    w.bind("<Leave>", _leave)
 
-        def _bind_all_children(widget):
-            widget.bind("<MouseWheel>", _on_mousewheel)
-            widget.bind("<Button-4>",   _on_mousewheel_linux)
-            widget.bind("<Button-5>",   _on_mousewheel_linux)
-
-        def _update_vsb(*_):
-            lo, hi = canvas.yview()
-            if lo <= 0.0 and hi >= 1.0:
-                vsb.pack_forget()
-            else:
-                if not vsb.winfo_ismapped():
-                    vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        canvas.bind("<Configure>", lambda e: (inner.update_idletasks(), _update_vsb()))
-        inner.bind("<Configure>",  lambda e: _update_vsb())
-        for idx, col in enumerate(all_cols):
-            row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
-            var = tk.BooleanVar(value=False)
-            col_vars[col] = var
-
-            row = tk.Frame(inner, bg=row_bg, cursor="hand2")
-            row.pack(fill="x")
-
-            indicator = tk.Frame(row, bg=S["accent"], width=4)
-            indicator.pack(side="left", fill="y")
-
-            cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
-                                bg=row_bg, fg=S["text"],
-                                selectcolor=S["surface"],
-                                activebackground=row_bg,
-                                font=FONTS["BODY"], anchor="w",
-                                cursor="hand2")
-            cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
-
-            def _enter(e, r=row, ind=indicator):
-                r.configure(bg=S["accent_pale"])
-                ind.configure(bg=S["accent_hover"])
-            def _leave(e, r=row, ind=indicator, bg=row_bg):
-                r.configure(bg=bg)
-                ind.configure(bg=S["accent"])
-            for w in (row, cb):
-                w.bind("<Enter>", _enter)
-                w.bind("<Leave>", _leave)
-
-        sep = tk.Frame(win, bg=S["border"], height=1)
-        sep.grid(row=3, column=0, sticky="ew")
-        btn_frame = tk.Frame(win, bg=S["bg"])
-        btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
-        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
-                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
-                  command=on_cancel).pack(side="right", ipady=4)
-        tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
-                  font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
-                  activebackground=S["accent_hover"],
-                  command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
-
+        win, result = _build_scroll_picker_window(
+            self, sc, "Columnas de ordenamiento",
+            "Elige las columnas por las que se ordenarán las imágenes "
+            "(en el orden que selecciones)",
+            build_rows=build_rows, on_ok_result=on_ok_result)
         self.wait_window(win)
         return result[0]
 
@@ -2174,31 +2232,22 @@ class MetaTagApp(tk.Tk):
     def _batch_pick_columns(self, all_cols, img_col=""):  # -> Optional[list]
         S = C
         sc = self.current_scale
-        win = tk.Toplevel(self)
-        win.title("Seleccionar columnas de metadatos")
-        win.configure(bg=S["bg"])
-        _clamp_toplevel(win, self, int(400*sc), int(420*sc))
-        win.resizable(False, False)
-        win.attributes("-topmost", True)
-        win.grid_rowconfigure(2, weight=1)
-        win.grid_columnconfigure(0, weight=1)
 
         col_vars = {}
         col_trace_ids = []
-        result = [None]
+        sel_count_var = tk.StringVar()
+
         def _cleanup_traces():
             for var, tid in col_trace_ids:
                 try:
                     var.trace_remove("write", tid)
                 except Exception:
                     pass
-        def on_ok():
-            _cleanup_traces()
-            result[0] = [c for c, v in col_vars.items() if v.get()]
-            win.destroy()
-        def on_cancel():
-            _cleanup_traces()
-            win.destroy()
+
+        def _update_count():
+            n = sum(1 for v in col_vars.values() if v.get())
+            sel_count_var.set(f"{n} / {len(all_cols)}")
+
         def select_all():
             for c, v in col_vars.items(): v.set(True)
             _update_count()
@@ -2210,142 +2259,78 @@ class MetaTagApp(tk.Tk):
                 if c != img_col: v.set(not v.get())
             _update_count()
 
-        hdr = tk.Frame(win, bg=S["header_bg"])
-        hdr.grid(row=0, column=0, sticky="ew")
-        tk.Label(hdr, text="  Columnas de metadatos", bg=S["header_bg"],
-                 fg=S["header_fg"], font=FONTS["H2"]).pack(side="left", pady=10, padx=8)
+        def on_ok_result():
+            _cleanup_traces()
+            return [c for c, v in col_vars.items() if v.get()]
 
-        top_info = tk.Frame(win, bg=S["bg"])
-        top_info.grid(row=1, column=0, sticky="ew", padx=14)
-        tk.Label(top_info, text="Selecciona las columnas que se escribirán en los metadatos",
-                 bg=S["bg"], fg=S["text3"], font=FONTS["TINY"],
-                 wraplength=int(360*sc)).pack(pady=(12, 4))
-        sel_count_var = tk.StringVar(value=f"{len([c for c in all_cols if c != img_col])} / {len(all_cols)}")
-        tk.Label(top_info, textvariable=sel_count_var, bg=S["bg"], fg=S["accent"],
-                 font=FONTS["LABEL_B"]).pack(pady=(0, 6))
-        actions = tk.Frame(top_info, bg=S["bg"])
-        actions.pack()
-        tk.Button(actions, text="Todas", bg=S["btn_ghost_bg"], fg=S["accent"],
-                  font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
-                  command=select_all).pack(side="left", padx=(0, 4))
-        tk.Button(actions, text="Ninguna", bg=S["btn_ghost_bg"], fg=S["text3"],
-                  font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
-                  command=deselect_all).pack(side="left", padx=(0, 4))
-        tk.Button(actions, text="Invertir", bg=S["btn_ghost_bg"], fg=S["text3"],
-                  font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
-                  command=invert_sel).pack(side="left")
+        def build_actions(top_info):
+            sel_count_var.set(f"{len([c for c in all_cols if c != img_col])} / {len(all_cols)}")
+            tk.Label(top_info, textvariable=sel_count_var, bg=S["bg"], fg=S["accent"],
+                     font=FONTS["LABEL_B"]).pack(pady=(0, 6))
+            actions = tk.Frame(top_info, bg=S["bg"])
+            actions.pack(pady=(0, 6))
+            tk.Button(actions, text="Todas", bg=S["btn_ghost_bg"], fg=S["accent"],
+                      font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
+                      command=select_all).pack(side="left", padx=(0, 4))
+            tk.Button(actions, text="Ninguna", bg=S["btn_ghost_bg"], fg=S["text3"],
+                      font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
+                      command=deselect_all).pack(side="left", padx=(0, 4))
+            tk.Button(actions, text="Invertir", bg=S["btn_ghost_bg"], fg=S["text3"],
+                      font=FONTS["TINY"], relief="flat", bd=0, cursor="hand2",
+                      command=invert_sel).pack(side="left")
 
-        list_frame = tk.Frame(win, bg=S["surface"], highlightbackground=S["border"],
-                              highlightthickness=1)
-        list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(4, 4))
+        def build_rows(inner):
+            for idx, col in enumerate(all_cols):
+                is_img = (col == img_col)
+                var = tk.BooleanVar(value=(not is_img))
+                col_vars[col] = var
 
-        canvas = tk.Canvas(list_frame, bg=S["surface"], highlightthickness=0)
-        canvas.pack_propagate(False)
-        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=S["surface"])
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=vsb.set)
+                row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
+                row = tk.Frame(inner, bg=row_bg)
+                row.pack(fill="x")
 
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        def _on_mousewheel_linux(event):
-            if event.num == 4:
-                canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                canvas.yview_scroll(1, "units")
-        for w in (canvas, inner, list_frame):
-            w.bind("<MouseWheel>", _on_mousewheel)
-            w.bind("<Button-4>", _on_mousewheel_linux)
-            w.bind("<Button-5>", _on_mousewheel_linux)
+                _tid = var.trace_add("write", lambda *_: _update_count())
+                col_trace_ids.append((var, _tid))
 
-        def _bind_all_children(widget):
-            widget.bind("<MouseWheel>", _on_mousewheel)
-            widget.bind("<Button-4>",   _on_mousewheel_linux)
-            widget.bind("<Button-5>",   _on_mousewheel_linux)
+                if is_img:
+                    indicator = tk.Frame(row, bg=S["text3"], width=4)
+                    indicator.pack(side="left", fill="y")
+                    cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
+                                        bg=row_bg, fg=S["text3"],
+                                        selectcolor=S["surface"],
+                                        activebackground=row_bg,
+                                        font=FONTS["BODY"], anchor="w",
+                                        cursor="hand2", disabledforeground=S["text3"])
+                    cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
+                    tk.Label(row, text="imagen", bg=row_bg, fg=S["text3"],
+                             font=FONTS["TINY"]).pack(side="right", padx=8)
+                else:
+                    indicator = tk.Frame(row, bg=S["accent"], width=4)
+                    indicator.pack(side="left", fill="y")
+                    cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
+                                        bg=row_bg, fg=S["text"],
+                                        selectcolor=S["surface"],
+                                        activebackground=row_bg,
+                                        font=FONTS["BODY"], anchor="w",
+                                        cursor="hand2")
+                    cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
 
-        def _update_vsb(*_):
-            lo, hi = canvas.yview()
-            if lo <= 0.0 and hi >= 1.0:
-                vsb.pack_forget()
-            else:
-                if not vsb.winfo_ismapped():
-                    vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        canvas.bind("<Configure>", lambda e: (inner.update_idletasks(), _update_vsb()))
-        inner.bind("<Configure>",  lambda e: _update_vsb())
+                    def _enter(e, r=row, ind=indicator):
+                        r.configure(bg=S["accent_pale"])
+                        ind.configure(bg=S["accent_hover"])
+                    def _leave(e, r=row, ind=indicator, bg=row_bg):
+                        r.configure(bg=bg)
+                        ind.configure(bg=S["accent"])
+                    row.bind("<Enter>", _enter)
+                    row.bind("<Leave>", _leave)
+                    cb.bind("<Enter>", _enter)
+                    cb.bind("<Leave>", _leave)
 
-        def _update_count():
-            n = sum(1 for v in col_vars.values() if v.get())
-            sel_count_var.set(f"{n} / {len(all_cols)}")
-
-        for idx, col in enumerate(all_cols):
-            is_img = (col == img_col)
-            var = tk.BooleanVar(value=(not is_img))
-            col_vars[col] = var
-
-            row_bg = S["row_even"] if idx % 2 == 0 else S["row_odd"]
-            row = tk.Frame(inner, bg=row_bg)
-            row.pack(fill="x")
-
-            _tid = var.trace_add("write", lambda *_: _update_count())
-            col_trace_ids.append((var, _tid))
-
-            if is_img:
-                indicator = tk.Frame(row, bg=S["text3"], width=4)
-                indicator.pack(side="left", fill="y")
-                cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
-                                    bg=row_bg, fg=S["text3"],
-                                    selectcolor=S["surface"],
-                                    activebackground=row_bg,
-                                    font=FONTS["BODY"], anchor="w",
-                                    cursor="hand2", disabledforeground=S["text3"])
-                cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
-                tk.Label(row, text="imagen", bg=row_bg, fg=S["text3"],
-                         font=FONTS["TINY"]).pack(side="right", padx=8)
-            else:
-                indicator = tk.Frame(row, bg=S["accent"], width=4)
-                indicator.pack(side="left", fill="y")
-                cb = tk.Checkbutton(row, text=f"  {col}", variable=var,
-                                    bg=row_bg, fg=S["text"],
-                                    selectcolor=S["surface"],
-                                    activebackground=row_bg,
-                                    font=FONTS["BODY"], anchor="w",
-                                    cursor="hand2")
-                cb.pack(side="left", fill="x", expand=True, padx=4, pady=5)
-
-                def _enter(e, r=row, ind=indicator):
-                    r.configure(bg=S["accent_pale"])
-                    ind.configure(bg=S["accent_hover"])
-                def _leave(e, r=row, ind=indicator, bg=row_bg):
-                    r.configure(bg=bg)
-                    ind.configure(bg=S["accent"])
-                row.bind("<Enter>", _enter)
-                row.bind("<Leave>", _leave)
-                cb.bind("<Enter>", _enter)
-                cb.bind("<Leave>", _leave)
-            _bind_all_children(row)
-
-        def _sync_scroll(e=None):
-            inner.update_idletasks()
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        inner.bind("<Configure>", _sync_scroll)
-        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        win.after(100, _sync_scroll)
-
-        sep = tk.Frame(win, bg=S["border"], height=1)
-        sep.grid(row=3, column=0, sticky="ew")
-
-        btn_frame = tk.Frame(win, bg=S["bg"])
-        btn_frame.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
-        tk.Button(btn_frame, text="Cancelar", bg=S["btn_ghost_bg"], fg=S["text"],
-                  font=FONTS["LABEL"], relief="flat", cursor="hand2",
-                  command=on_cancel).pack(side="right", ipady=4)
-        tk.Button(btn_frame, text="Aceptar", bg=S["accent"], fg="#FFF5E8",
-                  font=FONTS["LABEL_B"], relief="flat", cursor="hand2",
-                  activebackground=S["accent_hover"],
-                  command=on_ok).pack(side="right", padx=(0, 8), ipady=4)
-        win.protocol("WM_DELETE_WINDOW", on_cancel)
-
+        win, result = _build_scroll_picker_window(
+            self, sc, "Seleccionar columnas de metadatos",
+            "Selecciona las columnas que se escribirán en los metadatos",
+            build_actions=build_actions, build_rows=build_rows,
+            on_ok_result=on_ok_result, on_cancel_hook=_cleanup_traces)
         self.wait_window(win)
         return result[0]
 
