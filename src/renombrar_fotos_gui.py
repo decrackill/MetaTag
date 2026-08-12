@@ -51,6 +51,13 @@ try:
 except Exception:
     ImageMatcher = None
 
+# ── tokens técnicos de tema (fuente de verdad: metatag_theme.py) ──
+import metatag_theme as mt
+from metatag_theme import (
+    CustomTkinterThemeAdapter, compute_font_scale, scaled_size,
+    DEFAULT_THEME, THEME_ORDER,
+)
+
 # Estados posibles de cada fila de la vista previa / plan de renombrado.
 PLAN_STATES = ("ok", "ya_correcto", "conflicto", "duplicado",
                "not_found", "ambiguo", "error")
@@ -59,68 +66,31 @@ STATE_LABELS = {
     "duplicado": "Duplicado", "not_found": "No encontrada",
     "ambiguo": "Ambiguo", "error": "Error",
 }
-_STATE_BG = {
-    "ya_correcto": "#243b24",
-    "conflicto": "#3d2020",
-    "duplicado": "#3d2020",
-    "not_found": "#3d2020",
-    "ambiguo": "#3a331f",
-    "error": "#3d2020",
-}
-_STATE_FG = {
-    "ya_correcto": "green",
-    "conflicto": "red",
-    "duplicado": "red",
-    "not_found": "red",
-    "ambiguo": "yellow",
-    "error": "red",
-}
+# Los colores por estado viven en el tema técnico (C["state_bg"] / C["state_fg"]),
+# derivados de los semánticos canónicos de MetaTag (ok / err / warn).
 
 # ── logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger(__name__)
 
 # ── tema ───────────────────────────────────────────────────────────────────
+# Los colores provienen de metatag_theme (los 3 temas canónicos de MetaTag).
+# C es un alias global que se refresca al cambiar de tema (y la vista se
+# reconstruye completa para que ningún widget conserve colores del tema viejo).
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-PALETTES: dict[str, dict[str, str]] = {
-    "dark": {
-        "bg": "#1e1e2e", "surface": "#313244", "surface2": "#45475a",
-        "surface3": "#585b70", "accent": "#89b4fa", "accent2": "#cba6f7",
-        "green": "#a6e3a1", "red": "#f38ba8", "yellow": "#f9e2af",
-        "text": "#cdd6f4", "subtext": "#a6adc8", "border": "#45475a",
-        "overlay": "#6c7086",
-    },
-    "light": {
-        "bg": "#eff1f5", "surface": "#e6e9f0", "surface2": "#dce0e8",
-        "surface3": "#c6cdf1", "accent": "#1e66f5", "accent2": "#8839ef",
-        "green": "#40a02b", "red": "#d20f39", "yellow": "#df8e1d",
-        "text": "#4c4f69", "subtext": "#6c6f85", "border": "#dce0e8",
-        "overlay": "#9ca0b0",
-    },
-    "highcontrast": {
-        "bg": "#000000", "surface": "#1a1a1a", "surface2": "#333333",
-        "surface3": "#4d4d4d", "accent": "#00ffff", "accent2": "#ff00ff",
-        "green": "#00ff00", "red": "#ff0000", "yellow": "#ffff00",
-        "text": "#ffffff", "subtext": "#cccccc", "border": "#666666",
-        "overlay": "#999999",
-    },
-}
+CURRENT_THEME: str = DEFAULT_THEME
+_THEME_ADAPTER = CustomTkinterThemeAdapter()
+C = _THEME_ADAPTER.palette(CURRENT_THEME)
 
-_high_contrast = False
+def _refresh_button_constants() -> None:
+    global BTN_SECONDARY, BTN_DANGER, BTN_PRIMARY
+    BTN_SECONDARY = {"fg_color": C["surface2"], "hover_color": C["accent"]}
+    BTN_DANGER    = {"fg_color": C["surface2"], "hover_color": C["red"]}
+    BTN_PRIMARY   = {"fg_color": C["accent"],   "hover_color": C["accent2"]}
 
-def _current_palette() -> dict[str, str]:
-    if _high_contrast:
-        return PALETTES["highcontrast"]
-    mode = ctk.get_appearance_mode().lower()
-    return PALETTES.get(mode, PALETTES["dark"])
-
-C = _current_palette()   # alias global; se refresca en _on_theme_changed
-
-BTN_SECONDARY = {"fg_color": C["surface2"], "hover_color": C["accent"]}
-BTN_DANGER    = {"fg_color": C["surface2"], "hover_color": C["red"]}
-BTN_PRIMARY   = {"fg_color": C["accent"],   "hover_color": C["accent2"]}
+_refresh_button_constants()
 
 # ── fuentes (se inicializan en MainView.__init__ después de crear la ventana Tk) ──
 FONT_XS: ctk.CTkFont
@@ -133,19 +103,24 @@ FONT_LG_BD: ctk.CTkFont
 FONT_HD: ctk.CTkFont
 FONT_TITLE: ctk.CTkFont
 
-def _init_fonts() -> None:
+def _init_fonts(screen_width: int) -> None:
     global FONT_XS, FONT_XS_SM, FONT_SM, FONT_SM_BD, FONT_MD, FONT_MD_BD, FONT_LG_BD, FONT_HD, FONT_TITLE
     _family = "Segoe UI" if platform.system() == "Windows" else (
         ".SF NS Text" if platform.system() == "Darwin" else "Noto Sans")
-    FONT_XS    = ctk.CTkFont(_family, 9)
-    FONT_XS_SM = ctk.CTkFont(_family, 10)
-    FONT_SM    = ctk.CTkFont(_family, 11)
-    FONT_SM_BD = ctk.CTkFont(_family, 11, "bold")
-    FONT_MD    = ctk.CTkFont(_family, 12)
-    FONT_MD_BD = ctk.CTkFont(_family, 12, "bold")
-    FONT_LG_BD = ctk.CTkFont(_family, 13, "bold")
-    FONT_HD    = ctk.CTkFont(_family, 14, "bold")
-    FONT_TITLE = ctk.CTkFont(_family, 18, "bold")
+    # Misma lógica de escalado que MetaTag (misma referencia, mismo rango y la
+    # fórmula max(floor, int(base*scale))) pero con las bases propias del
+    # Renombrador (9–18). En pantalla de referencia (1920px) queda idéntico
+    # al escalado actual.
+    _s = compute_font_scale(screen_width)
+    FONT_XS    = ctk.CTkFont(_family, scaled_size(9,  _s, 6))
+    FONT_XS_SM = ctk.CTkFont(_family, scaled_size(10, _s, 6))
+    FONT_SM    = ctk.CTkFont(_family, scaled_size(11, _s, 7))
+    FONT_SM_BD = ctk.CTkFont(_family, scaled_size(11, _s, 7), "bold")
+    FONT_MD    = ctk.CTkFont(_family, scaled_size(12, _s, 7))
+    FONT_MD_BD = ctk.CTkFont(_family, scaled_size(12, _s, 7), "bold")
+    FONT_LG_BD = ctk.CTkFont(_family, scaled_size(13, _s, 8), "bold")
+    FONT_HD    = ctk.CTkFont(_family, scaled_size(14, _s, 8), "bold")
+    FONT_TITLE = ctk.CTkFont(_family, scaled_size(18, _s, 10), "bold")
 
 # ── persistencia ───────────────────────────────────────────────────────────
 _STATE_FILE = Path(__file__).parent / ".renombrador_state.json"
@@ -999,9 +974,11 @@ class StatusBadge(ctk.CTkLabel):
         super().__init__(master, text="—", width=28, height=28,
                          corner_radius=14,
                          font=FONT_SM_BD, **kw)
+        self._state = "idle"
         self.set_state("idle")
 
     def set_state(self, state: str) -> None:
+        self._state = state
         bg_k, fg_k, icon = self._S.get(state, self._S["idle"])
         self.configure(fg_color=C[bg_k], text_color=C[fg_k], text=icon)
 
@@ -1161,7 +1138,7 @@ class FileBrowser(ctk.CTkToplevel):
         self._btn_ok = ctk.CTkButton(
             bot, text="Seleccionar", width=110, height=32,
             **BTN_PRIMARY,
-            text_color="#1e1e2e", font=FONT_SM_BD,
+            text_color=C["accent_text"], font=FONT_SM_BD,
             command=self._confirm, state="disabled")
         self._btn_ok.pack(side="right", padx=4, pady=10)
 
@@ -1419,9 +1396,9 @@ class PreviewTable(ctk.CTkFrame):
             if not changed:
                 continue
 
-            bg = _STATE_BG.get(state) if state != "ok" else None
+            bg = C["state_bg"].get(state) if state != "ok" else None
             if bg is None:
-                bg = "#3d2020" if is_dup else (C["surface"] if idx % 2 == 0 else C["bg"])
+                bg = C["dup_bg"] if is_dup else (C["surface"] if idx % 2 == 0 else C["bg"])
             row_data["frame"].configure(fg_color=bg)
 
             arrow = row_data.get("arrow_widget")
@@ -1440,11 +1417,11 @@ class PreviewTable(ctk.CTkFrame):
             state_lbl = row_data.get("state_widget")
             if state_lbl is not None:
                 state_lbl.configure(text=STATE_LABELS.get(state, ""),
-                                    text_color=_STATE_FG.get(state, C["overlay"]))
+                                    text_color=C["state_fg"].get(state, C["overlay"]))
 
     # ── internos ──────────────────────────────────────────────────────────
     def _cancel_jobs(self) -> None:
-        for attr in ("_chunk_job", "_thumb_job"):
+        for attr in ("_chunk_job", "_thumb_job", "_filter_job"):
             _safe_cancel_after(self, getattr(self, attr, None))
             setattr(self, attr, None)
         self._pending = []
@@ -1485,13 +1462,13 @@ class PreviewTable(ctk.CTkFrame):
     @staticmethod
     def _arrow_color(state: str, is_dup: bool) -> str:
         if state != "ok":
-            return _STATE_FG.get(state, C["red"])
+            return C["state_fg"].get(state, C["red"])
         return C["red"] if is_dup else C["accent2"]
 
     @staticmethod
     def _new_color(state: str, is_dup: bool) -> str:
         if state != "ok":
-            return _STATE_FG.get(state, C["text"])
+            return C["state_fg"].get(state, C["text"])
         return C["red"] if is_dup else C["text"]
 
     def _load_chunk(self) -> None:
@@ -1514,9 +1491,9 @@ class PreviewTable(ctk.CTkFrame):
         is_dup = row_data.get("is_dup", False)
         state = row_data.get("state", "ok")
 
-        bg = _STATE_BG.get(state) if state != "ok" else None
+        bg = C["state_bg"].get(state) if state != "ok" else None
         if bg is None:
-            bg = "#3d2020" if is_dup else (C["surface"] if i % 2 == 0 else C["bg"])
+            bg = C["dup_bg"] if is_dup else (C["surface"] if i % 2 == 0 else C["bg"])
         row = ctk.CTkFrame(self, fg_color=bg, corner_radius=0, height=32)
         row.pack_propagate(False)
         self._configure_grid(row)
@@ -1570,7 +1547,7 @@ class PreviewTable(ctk.CTkFrame):
         # Columna Estado
         state_lbl = ctk.CTkLabel(row, text=STATE_LABELS.get(state, ""), width=1,
                                  anchor="w", font=FONT_SM,
-                                 text_color=_STATE_FG.get(state, C["overlay"]),
+                                 text_color=C["state_fg"].get(state, C["overlay"]),
                                  fg_color="transparent")
         state_lbl.grid(row=0, column=4, sticky="w", padx=8)
 
@@ -1691,7 +1668,7 @@ class ConfirmDialog(ctk.CTkToplevel):
                       command=self._cancel).pack(side="left", padx=8)
         ctk.CTkButton(btn_row, text="Confirmar", width=110, height=32,
                       **BTN_PRIMARY,
-                      text_color="#1e1e2e",
+                      text_color=C["accent_text"],
                       font=FONT_MD_BD,
                       command=self._ok).pack(side="left", padx=8)
 
@@ -1726,9 +1703,9 @@ class MainView(ctk.CTk):
 
     def __init__(self, controller: "AppController") -> None:
         super().__init__()
-        _init_fonts()
+        _init_fonts(self.winfo_screenwidth())
         self._ctrl = controller
-        self.title("Renombrador de Fotos  v4")
+        self.title("MetaTag v8.9 — Renombrador de Fotos")
         self.configure(fg_color=C["bg"])
 
         # FIX #3: tamaño adaptativo a la pantalla
@@ -1754,7 +1731,7 @@ class MainView(ctk.CTk):
         ctk.CTkLabel(hdr, text="🖼  Renombrador de Fotos",
                      font=FONT_TITLE,
                      text_color=C["text"]).pack(side="left", padx=22, pady=12)
-        ctk.CTkLabel(hdr, text="desde Excel · v4",
+        ctk.CTkLabel(hdr, text="desde Excel · integrado en MetaTag v8.9",
                      font=FONT_MD,
                      text_color=C["accent"]).pack(side="left")
 
@@ -1766,10 +1743,10 @@ class MainView(ctk.CTk):
             command=self._ctrl.on_undo, state="disabled")
         self._btn_undo.pack(side="right", padx=(0, 14))
 
-        self._theme_var = ctk.StringVar(value="dark")
+        self._theme_var = ctk.StringVar(value=CURRENT_THEME)
         _make_option_menu(
-            hdr, self._theme_var, ["dark", "light", "system", "highcontrast"],
-            width=110, height=30, fg=C["surface2"], btn_fg=C["surface3"],
+            hdr, self._theme_var, list(THEME_ORDER),
+            width=210, height=30, fg=C["surface2"], btn_fg=C["surface3"],
             command=self._ctrl.on_theme_change
         ).pack(side="right", padx=(0, 8))
 
@@ -1910,7 +1887,7 @@ class MainView(ctk.CTk):
             act, text="▶  Renombrar todo", width=165, height=36,
             font=FONT_MD_BD,
             **BTN_PRIMARY,
-            text_color="#1e1e2e",
+            text_color=C["accent_text"],
             command=self._ctrl.on_rename, state="disabled")
         self._btn_rename.pack(side="right")
 
@@ -1984,6 +1961,83 @@ class MainView(ctk.CTk):
             self._folder_sel._entry.focus_set()
         except Exception:
             pass
+
+    # ── cambio de tema: reconstrucción completa sin perder estado ─────────
+    def rebuild_theme(self) -> None:
+        """Destruye la UI y la reconstruye con el nuevo C, conservando el
+        estado visible del usuario (rutas, opciones, badges, botones, etc.)."""
+        state = self._capture_ui_state()
+        try:
+            self._preview._cancel_jobs()
+        except Exception:
+            pass
+        for w in self.winfo_children():
+            w.destroy()
+        self._build()
+        self._bind_shortcuts()
+        self._restore_ui_state(state)
+
+    def _capture_ui_state(self) -> dict:
+        return {
+            "folder": self._folder_sel.get(),
+            "excel": self._excel_sel.get(),
+            "sort": self._sort_var.get(),
+            "edit": self._edit_var.get(),
+            "copy": self._copy_var.get(),
+            "match": self._match_var.get(),
+            "filter": self._filter_var.get(),
+            "sheet_visible": self._sheet_frame.winfo_manager() == "grid",
+            "sheet_values": list(self._sheet_menu.cget("values") or []),
+            "sheet_value": self._sheet_var.get(),
+            "col_visible": self._col_frame.winfo_manager() == "grid",
+            "col_values": list(self._col_menu.cget("values") or []),
+            "col_value": self._col_var.get(),
+            "folder_badge": self._badge_folder._state,
+            "folder_msg": self._lbl_folder.cget("text"),
+            "excel_badge": self._badge_excel._state,
+            "excel_msg": self._lbl_excel.cget("text"),
+            "progress": self._progress.get(),
+            "progress_msg": self._lbl_prog.cget("text"),
+            "undo": (self._btn_undo.cget("state"), self._btn_undo.cget("text")),
+            "rename": (self._btn_rename.cget("state"), self._btn_rename.cget("text")),
+            "cancel": self._btn_cancel.cget("state"),
+            "log": self._btn_log.cget("state"),
+            "csv": self._btn_csv.cget("state"),
+        }
+
+    def _restore_ui_state(self, state: dict) -> None:
+        self._folder_sel.set(state["folder"])
+        self._excel_sel.set(state["excel"])
+        self._sort_var.set(state["sort"])
+        self._edit_var.set(state["edit"])
+        self._copy_var.set(state["copy"])
+        self._match_var.set(state["match"])
+        if state["sheet_visible"] and state["sheet_values"]:
+            self._sheet_menu.configure(values=state["sheet_values"])
+            if state["sheet_value"] in state["sheet_values"]:
+                self._sheet_var.set(state["sheet_value"])
+            else:
+                self._sheet_var.set(state["sheet_values"][0])
+            self._sheet_frame.grid()
+        if state["col_visible"] and state["col_values"]:
+            self._col_menu.configure(values=state["col_values"])
+            if state["col_value"] in state["col_values"]:
+                self._col_var.set(state["col_value"])
+            else:
+                self._col_var.set(state["col_values"][0])
+            self._col_frame.grid()
+        self._badge_folder.set_state(state["folder_badge"])
+        self._lbl_folder.configure(text=state["folder_msg"])
+        self._badge_excel.set_state(state["excel_badge"])
+        self._lbl_excel.configure(text=state["excel_msg"])
+        self._progress.set(state["progress"])
+        self._lbl_prog.configure(text=state["progress_msg"])
+        self._btn_undo.configure(state=state["undo"][0], text=state["undo"][1])
+        self._btn_rename.configure(state=state["rename"][0], text=state["rename"][1])
+        self._btn_cancel.configure(state=state["cancel"])
+        self._btn_log.configure(state=state["log"])
+        self._btn_csv.configure(state=state["csv"])
+        self._filter_var.set(state["filter"])
 
     # ── API para el Controller ─────────────────────────────────────────────
     def get_folder_path(self) -> str:   return self._folder_sel.get()
@@ -2141,7 +2195,6 @@ class AppController:
         if "theme" in state:
             try:
                 self._apply_theme(state["theme"])
-                self._view._theme_var.set(state["theme"])
             except Exception:
                 pass
         if "sort" in state:
@@ -2285,16 +2338,40 @@ class AppController:
             self._view.toast(f"Error: {exc}", "error")
 
     def _apply_theme(self, theme: str) -> None:
-        """Aplica tema (incluye bypass alto contraste). No guarda estado ni muestra toast."""
-        global C, _high_contrast
-        _high_contrast = (theme == "highcontrast")
-        ctk.set_appearance_mode("dark" if _high_contrast else theme)
-        C = _current_palette()
+        """Aplica un tema canónico de MetaTag y reconstruye la vista.
+
+        No guarda estado ni muestra toast. Si el nombre no es un tema
+        canónico (p. ej. un valor antiguo de un estado previo) se normaliza
+        al tema por defecto en vez de fallar.
+        """
+        global C, CURRENT_THEME
+        if theme not in THEME_ORDER:
+            theme = DEFAULT_THEME
+        CURRENT_THEME = theme
+        C = _THEME_ADAPTER.palette(theme)
+        _refresh_button_constants()
+        if self._dup_recalc_job:
+            try:
+                self._view.after_cancel(self._dup_recalc_job)
+            except Exception:
+                pass
+            self._dup_recalc_job = None
+        self._view.rebuild_theme()
+        self._resync_after_rebuild()
+
+    def _resync_after_rebuild(self) -> None:
+        """Re-renderiza la vista previa y el filtro tras reconstruir la UI."""
+        if self._last_pairs:
+            self._view.render_preview(self._last_pairs)
+            self._view.set_edit_mode(self._view.get_edit_mode())
+            query = self._view._filter_var.get()
+            if query:
+                self._view.filter_preview(query)
 
     def on_theme_change(self, theme: str) -> None:
         self._apply_theme(theme)
-        _save_state({"theme": theme})
-        self._view.toast(f"Tema cambiado a {theme}.", "ok")
+        _save_state({"theme": CURRENT_THEME})
+        self._view.toast(f"Tema cambiado a {CURRENT_THEME}.", "ok")
 
     # ── helpers ───────────────────────────────────────────────────────────
     _EXCEL_ERRORS = {

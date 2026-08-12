@@ -30,9 +30,11 @@
   │   ├── metatag_widgets.py        # ExcelGrid con viewport culling (~418 líneas)
   │   ├── Visor.py                  # Visor de metadatos / comparador / PDF (~2468 líneas)
   │   ├── renombrar_fotos_gui.py    # Renombrador de Fotos v4.0 (standalone, CustomTkinter)
+  │   ├── metatag_theme.py          # Fuente de verdad técnica de temas/fuentes (puro, sin toolkit)
   │   └── editor_casillas_backup.py # Respaldo del editor de casillas (~116 líneas)
   ├── tests/
-  │   └── test_renombrador_pytest.py# Suite pytest original del renombrador (46 tests)
+  │   ├── test_renombrador_pytest.py# Suite pytest original del renombrador (49 tests)
+  │   └── test_metatag_theme.py     # Paridad de temas/fuentes contra metatag_v8 (53 tests)
   ├── data/
   │   ├── metatag_config.json       # Configuración persistente de la sesión
   │   └── metatag_debug.log         # Log de errores (logging, nivel ERROR)
@@ -56,7 +58,7 @@
   | `src/editor_casillas_backup.py` | Respaldo de funciones del editor de casillas | `_open_editor`, `_populate_editor`, `toggle_lock`, `update_df` | Backup; no es el editor activo |
   | `src/renombrar_fotos_gui.py` | Renombrador de Fotos v4.0: herramienta independiente (CustomTkinter) lanzada como subproceso desde MetaTag | `RenameModel`, `MainView`, `AppController`, `_build_plan`/`_build_plan_matching` (modo "matching seguro" con `ImageMatcher`), `rename_all`, `undo_last` | Implementado y verificado (FASE A); integrado como lanzador en `metatag_v8.py` |
 
-  **Relaciones:** `metatag_v8.py` importa `show_stats` desde `metatag_graficas`, `ExcelGrid` desde `metatag_widgets`, y las funciones de escritura/divergencia desde `metatag_writer`. `metatag_v8.py` puede lanzar `Visor.py` (`launch_visor`) y `renombrar_fotos_gui.py` (`_launch_renombrador`, subproceso con `sys.executable`, sin withdraw ni callbacks). `src/renombrar_fotos_gui.py` importa `ImageMatcher` desde `metatag_matching` (mismo directorio; el bloque inserta `src/` en `sys.path`).
+  **Relaciones:** `metatag_v8.py` importa `show_stats` desde `metatag_graficas`, `ExcelGrid` desde `metatag_widgets`, las funciones de escritura/divergencia desde `metatag_writer`, y los tokens de tema/fuentes desde `metatag_theme`. `metatag_v8.py` puede lanzar `Visor.py` (`launch_visor`) y `renombrar_fotos_gui.py` (`_launch_renombrador`, subproceso con `sys.executable`, sin withdraw ni callbacks). `src/renombrar_fotos_gui.py` importa `ImageMatcher` desde `metatag_matching` (mismo directorio; el bloque inserta `src/` en `sys.path`) y consume los temas de MetaTag vía `metatag_theme.CustomTkinterThemeAdapter`.
 
   ---
 
@@ -75,7 +77,7 @@
   - **Divergencia de metadatos:** `_check_metadata_divergence` (~2754) delega en `metatag_writer`.
   - **Búsqueda:** diálogo de atajos y búsqueda (`_show_shortcuts`, `_focus_search`); autocompletado sobre el grid (`_apply_autocompletion`).
   - **Lupa:** `_show_loupe_window` (~1098) y renderizado de la lupa (`_render_loupe_img`), con zoom.
-  - **Temas:** diccionario `THEMES` con **3 temas** confirmados: `Arqueológico (Oscuro Refinado)` (por defecto), `Noche Total`, `Carbón` (~líneas 63–85). Motor de fuentes dinámico `set_font_scale` y `FONTS`.
+  - **Temas:** fuente de verdad técnica en `src/metatag_theme.py` (módulo puro, sin toolkit): diccionario `THEMES` con **3 temas** canónicos — `Arqueológico (Oscuro Refinado)` (por defecto), `Noche Total`, `Carbón` —, `THEME_ORDER`, `THEME_ICONS`, motor de fuentes dinámico (`compute_font_scale` = clamp(sw/1920, 0.82, 1.35); `font_specs` replica byte a byte `set_font_scale`) y adaptadores (`TkThemeAdapter` pasa los tokens canónicos tal cual; `CustomTkinterThemeAdapter` traduce al esquema del Renombrador derivando solo lo que el canónico no define). `metatag_v8.py` importa `THEMES`, `DEFAULT_THEME`, `THEME_ICONS`, `compute_font_scale`, `font_specs` y conserva `CURRENT_THEME`/`C`/`FONTS`/`set_font_scale` como API pública.
   - **Estadísticas:** `_show_stats` (~514) invoca `show_stats` externo.
   - **Persistencia:** `_save_config`, `_load_config_pre_build`, `_load_config_post_build` leen/escriben `data/metatag_config.json`.
   - **Lanzador del Renombrador (`_launch_renombrador`, ~988):** botón "🖼 Renombrador de Fotos" en la sección HERRAMIENTAS AVANZADAS del panel izquierdo; lanza `src/renombrar_fotos_gui.py` como subproceso independiente (`subprocess.Popen([sys.executable, ...])` con ruta construida desde `Path(__file__).resolve().parent`). **No** hace `withdraw()` ni polling: MetaTag sigue usable mientras el renombrador está abierto y no quedan callbacks huérfanos. Errores → `messagebox` + `logging` sin crashear.
@@ -550,13 +552,55 @@
 
   ---
 
+  ### 2026-08-11 — Fuente de verdad técnica de temas + Renombrador sobre temas de MetaTag
+
+  **Objetivo:** que MetaTag y el Renombrador compartan un único sistema de temas
+  (los 3 canónicos de MetaTag), con `metatag_theme.py` como **fuente de verdad
+  técnica** y la regla estricta de "cero diferencia visual" al migrar.
+
+  **Decisiones (aprobadas por el usuario):**
+  - Nuevo `src/metatag_theme.py` (módulo puro, sin tkinter/customtkinter): `THEMES`
+    (3 temas, valores **verbatim** de `metatag_v8.py`), `THEME_ORDER`,
+    `DEFAULT_THEME` = `Arqueológico (Oscuro Refinado)`, `THEME_ICONS`,
+    `ACCENT_TEXT` = `#FFF5E8`, motor de fuentes (misma referencia 1920, mismo rango
+    `(0.82, 1.35)`, misma fórmula `max(floor, int(base*scale))`), helpers de color
+    (`mix`, `relative_luminance`), `fit_to_screen`, y adaptadores:
+    `TkThemeAdapter` (tokens canónicos **sin transformación**) y
+    `CustomTkinterThemeAdapter` (traduce al esquema del Renombrador: mapeos 1:1
+    `subtext→text2`, `green→ok`, `red→err`, `yellow→warn`, `accent2→accent_hover`,
+    `surface2→btn_ghost_bg`; derivaciones deterministas documentadas `surface3`,
+    `dup_bg`, `accent_text`, `state_bg`/`state_fg`; nada se inventa).
+  - `metatag_v8.py`: importa los tokens desde `metatag_theme`; conserva
+    `CURRENT_THEME`/`C`/`FONTS`/`set_font_scale` como API pública. Se demostró
+    paridad **byte a byte** contra el archivo original de git HEAD (THEMES y
+    `set_font_scale` en escalas 0.82–1.35) y con tests de paridad.
+  - Renombrador: elimina `PALETTES`/`_current_palette`/modo claro/bypass de alto
+    contraste; dropdown con los **3 temas de MetaTag**; `_apply_theme` reconstruye
+    la vista completa (`MainView.rebuild_theme`) preservando estado del usuario
+    (rutas, opciones, badges, botones, filtro, preview) vía snapshot/restore;
+    fuentes con **bases propias del Renombrador (9–18) escaladas con la misma
+    lógica de MetaTag**; colores de estado derivados de `ok`/`err`/`warn`; títulos
+    "MetaTag v8.9 — Renombrador de Fotos" y subtítulo "desde Excel · integrado en
+    MetaTag v8.9". Tema antiguo del estado (`"dark"`) se normaliza al default.
+  - Tests: `tests/test_metatag_theme.py` (53: valores canónicos exactos, paridad de
+    fuentes contra `metatag_v8`, adaptadores deterministas/completos, migración sin
+    diferencias) y `tests/test_renombrador_pytest.py` actualizado (+3, ahora 49,
+    con `TestThemeChange`: cambio de tema reconstruye y preserva selecciones).
+
+  **Verificación:** 199 tests pytest + 277 subtests verdes; smoke GUI real (con
+  display) de arranque con estado antiguo, rebuild con datos/preview/filtro y
+  preservación de selecciones al cambiar entre los 3 temas + fallback; paridad
+  exacta de THEMES y motor de fuentes contra el original de git HEAD.
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
   MetaTag v8.9.
 
   ### Trabajo actual
-  **FASE 7 (2026-08-10) — Migración e integración del Renombrador en MetaTag** ✅ terminado: `src/renombrar_fotos_gui.py` como ubicación única (se eliminó `tools/renombrador/`), botón "🖼 Renombrador de Fotos" (HERRAMIENTAS AVANZADAS) que lanza la herramienta como subproceso independiente (sin withdraw, sin callbacks huérfanos), suite pytest en `tests/test_renombrador_pytest.py` (46), `requirements-renombrador.txt`, dependencia CustomTkinter aislada. Verificación: **97/97 proyecto + 46/46 pytest** verdes; smoke real con display (MetaTag sigue `normal` y responsivo; 0 callbacks pendientes); portabilidad desde cualquier cwd.
+  **FASE 8 (2026-08-11) — Fuente de verdad técnica de temas + Renombrador sobre temas de MetaTag** ✅ terminado: nuevo `src/metatag_theme.py` (módulo puro) con los 3 temas canónicos verbatim, motor de fuentes idéntico al de `metatag_v8` (paridad byte a byte contra git HEAD) y adaptadores Tk/CustomTkinter sin inventar colores. `metatag_v8.py` importa los tokens desde ahí (cero cambio visual). El Renombrador abandonó `PALETTES`/modo claro/bypass y usa los 3 temas de MetaTag con reconstrucción completa de la UI preservando estado; fuentes con bases propias (9–18) escaladas con la lógica de MetaTag; branding "MetaTag v8.9 — Renombrador de Fotos". Verificación: **199 pytest + 277 subtests** verdes; smoke GUI real (arranque con estado antiguo `"dark"`, rebuild con preview/filtro, preservación de selecciones entre los 3 temas + fallback).
 
   ### Trabajo próximo
   Completar la integración de configuración del renombrador dentro de `metatag_v8.py`: diálogo de configuración embebido (hoy se lanza la ventana completa de la herramienta), generación de correspondencias por matching desde la UI, simulación/dry-run, registro de operación y refinar conflictos a nivel de interfaz — sección 11.

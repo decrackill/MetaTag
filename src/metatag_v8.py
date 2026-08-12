@@ -209,45 +209,20 @@ logging.basicConfig(
 
 # ══════════════════════════════════════════════════════════════════
 #  TEMAS DE COLOR Y MOTOR DE FUENTES DINÁMICO
+#  (fuente de verdad técnica: metatag_theme.py)
 # ══════════════════════════════════════════════════════════════════
-THEMES = {
-    "Arqueológico (Oscuro Refinado)": {
-        "bg": "#121212", "surface": "#1E1E1E", "card": "#1A1A1A", "panel": "#2D2D30", "border": "#3E3E42", "border_light": "#252526",
-        "accent": "#A67C52", "accent_hover": "#D4A574", "accent_light": "#7A4F2D", "accent_pale": "#3D1F0A", "header_bg": "#2D2D30",
-        "header_fg": "#E0E0E0", "row_even": "#1E1E1E", "row_odd": "#1A1A1A", "sel_bg": "#3D1F0A", "sel_fg": "#E0E0E0", "col_sel": "#1A1A1A",
-        "text": "#E0E0E0", "text2": "#AAAAAA", "text3": "#707070", "ok": "#4EC9B0", "err": "#F44747", "warn": "#CB4B16", "grid_line": "#3E3E42",
-        "btn_ghost_bg": "#1A1A1A", "chart_colors": ["#A67C52", "#D4A574", "#7A4F2D", "#3D1F0A", "#B1A28F", "#5C3518"]
-    },
-    "Noche Total": {
-        "bg": "#0A0A0A", "surface": "#111111", "card": "#0A0A0A", "panel": "#141414", "border": "#2A2A2A", "border_light": "#1E1E1E",
-        "accent": "#BB86FC", "accent_hover": "#D0A8FF", "accent_light": "#6200EA", "accent_pale": "#1A0A2E", "header_bg": "#1A1A1A",
-        "header_fg": "#E8E8E8", "row_even": "#111111", "row_odd": "#161616", "sel_bg": "#3700B3", "sel_fg": "#FFFFFF", "col_sel": "#1A0A2E",
-        "text": "#E8E8E8", "text2": "#AAAAAA", "text3": "#666666", "ok": "#03DAC6", "err": "#CF6679", "warn": "#FF9800", "grid_line": "#1E1E1E",
-        "btn_ghost_bg": "#1E1E1E", "chart_colors": ["#BB86FC", "#6200EA", "#03DAC6", "#CF6679", "#018786", "#FF9800"]
-    },
-    "Carbón": {
-        "bg": "#1E1E1E", "surface": "#252526", "card": "#1E1E1E", "panel": "#252526", "border": "#3E3E42", "border_light": "#2D2D30",
-        "accent": "#569CD6", "accent_hover": "#79B8FF", "accent_light": "#264F78", "accent_pale": "#1E3A5F", "header_bg": "#007ACC",
-        "header_fg": "#FFFFFF", "row_even": "#252526", "row_odd": "#2D2D30", "sel_bg": "#264F78", "sel_fg": "#FFFFFF", "col_sel": "#1E3A5F",
-        "text": "#D4D4D4", "text2": "#9CDCFE", "text3": "#6A9955", "ok": "#4EC9B0", "err": "#F44747", "warn": "#D97706", "grid_line": "#3E3E42",
-        "btn_ghost_bg": "#2D2D30", "chart_colors": ["#569CD6", "#007ACC", "#4EC9B0", "#F44747", "#CE9178", "#9CDCFE"]
-    },
-}
+from metatag_theme import (
+    THEMES, DEFAULT_THEME, THEME_ICONS,
+    compute_font_scale, font_specs,
+)
 
-CURRENT_THEME = "Arqueológico (Oscuro Refinado)"
+CURRENT_THEME = DEFAULT_THEME
 C = dict(THEMES[CURRENT_THEME])
 
 FONTS = {}
 def set_font_scale(scale):
-    FONTS["TITLE"]   = ("Georgia",  max(8, int(15 * scale)), "bold")
-    FONTS["H2"]      = ("Georgia",  max(8, int(11 * scale)), "bold")
-    FONTS["LABEL"]   = ("Segoe UI", max(7, int(9  * scale)))
-    FONTS["LABEL_B"] = ("Segoe UI", max(7, int(9  * scale)), "bold")
-    FONTS["BODY"]    = ("Segoe UI", max(8, int(10 * scale)))
-    FONTS["MONO"]    = ("Consolas", max(7, int(9  * scale)))
-    FONTS["CELL"]    = ("Segoe UI", max(7, int(9  * scale)))
-    FONTS["HEAD"]    = ("Segoe UI", max(7, int(9  * scale)), "bold")
-    FONTS["TINY"]    = ("Segoe UI", max(6, int(8  * scale)))
+    FONTS.clear()
+    FONTS.update(font_specs(scale))
 
 set_font_scale(1.0)
 
@@ -442,8 +417,7 @@ class MetaTagApp(tk.Tk):
         # Se calcula contra una resolución de referencia de escritorio
         # (1920×1080) y se limita entre 0.82 y 1.35 para no deformar la UI
         # en extremos (netbooks muy chicos o monitores 4K muy grandes).
-        _ref_w = 1920
-        self.current_scale = max(0.82, min(1.35, sw / _ref_w))
+        self.current_scale = compute_font_scale(sw)
         set_font_scale(self.current_scale)
 
         win_w = int(sw * 0.85)
@@ -669,10 +643,6 @@ class MetaTagApp(tk.Tk):
     #  SELECTOR DE TEMA
     # ─────────────────────────────────────────────────────────────
     def _show_theme_menu(self):
-        THEME_ICONS = {
-            "Arqueológico (Oscuro Refinado)": "🏺",
-            "Noche Total": "🌑", "Carbón": "⬛"
-        }
         popup = tk.Toplevel(self)
         popup.overrideredirect(True)
         popup.configure(bg=C["border"])
@@ -851,7 +821,6 @@ class MetaTagApp(tk.Tk):
                                 fg=C["accent_light"] if dep_ok else "#FF9966")
         self.dep_lbl.pack(side="right", padx=20)
 
-        THEME_ICONS = {"Arqueológico (Oscuro Refinado)": "🏺", "Noche Total": "🌑", "Carbón": "⬛"}
         icon = THEME_ICONS.get(CURRENT_THEME, "🎨")
         theme_wrap = tk.Frame(bar, bg=C["accent_hover"], padx=1, pady=1)
         theme_wrap.pack(side="right", padx=(0, 14), pady=int(10*self.current_scale))

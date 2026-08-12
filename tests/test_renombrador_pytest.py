@@ -403,15 +403,30 @@ class TestUtilities:
         mod._safe_cancel_after(root, "invalid")
         root.destroy()
 
-    def test_themes_exist(self):
-        assert "dark" in mod.PALETTES
-        assert "light" in mod.PALETTES
-        assert "highcontrast" in mod.PALETTES
+    def test_themes_are_canonical_metatag(self):
+        # El Renombrador usa los 3 temas canónicos de MetaTag (sin modo claro).
+        assert mod.THEME_ORDER == [
+            "Arqueológico (Oscuro Refinado)", "Noche Total", "Carbón",
+        ]
+        assert mod.DEFAULT_THEME == "Arqueológico (Oscuro Refinado)"
+        assert set(mod.THEME_ORDER) == set(mod.mt.THEMES)
+
+    def test_C_is_default_theme_palette(self):
+        assert mod.CURRENT_THEME == mod.DEFAULT_THEME
+        assert mod.C == mod._THEME_ADAPTER.palette(mod.CURRENT_THEME)
+
+    def test_palette_has_ctk_schema(self):
+        p = mod._THEME_ADAPTER.palette(mod.DEFAULT_THEME)
+        for key in ("bg", "surface", "surface2", "surface3", "accent", "accent2",
+                    "green", "red", "yellow", "text", "subtext", "border",
+                    "overlay", "accent_text", "dup_bg", "state_bg", "state_fg"):
+            assert key in p, f"falta {key}"
 
     def test_button_constants(self):
         assert "fg_color" in mod.BTN_SECONDARY
         assert "hover_color" in mod.BTN_PRIMARY
         assert "fg_color" in mod.BTN_DANGER
+        assert mod.BTN_PRIMARY["fg_color"] == mod.C["accent"]
 
 
 class TestSortByDate:
@@ -430,30 +445,63 @@ class TestSortByDate:
         assert isinstance(result, float)
 
 
-class TestHighContrastBypass:
-    def test_bypass_returns_highcontrast_palette(self):
-        mod._high_contrast = True
-        try:
-            assert mod._current_palette() == mod.PALETTES["highcontrast"]
-        finally:
-            mod._high_contrast = False
-
-    def test_bypass_disabled_uses_ctk(self):
-        mod._high_contrast = False
-        palette = mod._current_palette()
-        assert palette in [mod.PALETTES["dark"], mod.PALETTES["light"]]
-
-    def test_apply_theme_sets_flag(self):
+class TestThemeChange:
+    def _make_ctrl(self):
         import tkinter as _tk
         root = _tk.Tk()
         root.withdraw()
-        ctrl = mod.AppController()
-        ctrl._apply_theme("highcontrast")
-        assert mod._high_contrast == True
-        ctrl._apply_theme("dark")
-        assert mod._high_contrast == False
-        ctrl._view.destroy()
-        root.destroy()
+        return root, mod.AppController()
+
+    def _other_theme(self):
+        return next(t for t in mod.THEME_ORDER if t != mod.CURRENT_THEME)
+
+    def test_apply_theme_switches_palette_and_rebuilds(self):
+        root, ctrl = self._make_ctrl()
+        try:
+            target = self._other_theme()
+            ctrl._apply_theme(target)
+            assert mod.CURRENT_THEME == target
+            assert mod.C == mod._THEME_ADAPTER.palette(target)
+            assert ctrl._view._theme_var.get() == target
+            assert mod.BTN_PRIMARY["fg_color"] == mod.C["accent"]
+        finally:
+            ctrl._view.destroy()
+            root.destroy()
+
+    def test_apply_theme_unknown_falls_back_to_default(self):
+        root, ctrl = self._make_ctrl()
+        try:
+            # "highcontrast" era el tema antiguo; ahora se normaliza al default.
+            ctrl._apply_theme("highcontrast")
+            assert mod.CURRENT_THEME == mod.DEFAULT_THEME
+            assert mod.C == mod._THEME_ADAPTER.palette(mod.DEFAULT_THEME)
+        finally:
+            ctrl._view.destroy()
+            root.destroy()
+
+    def test_apply_theme_preserves_preview_after_rebuild(self):
+        root, ctrl = self._make_ctrl()
+        try:
+            ctrl._last_pairs = [("a.jpg", "A.jpg", None, False, "ok")]
+            target = self._other_theme()
+            ctrl._apply_theme(target)
+            assert ctrl._view._preview._rows, "la vista previa debe re-renderizarse"
+        finally:
+            ctrl._view.destroy()
+            root.destroy()
+
+    def test_apply_theme_preserves_user_selections(self):
+        root, ctrl = self._make_ctrl()
+        try:
+            ctrl._view._folder_sel.set("/tmp/ejemplo")
+            ctrl._view._sort_var.set("Fecha creación ↑")
+            target = self._other_theme()
+            ctrl._apply_theme(target)
+            assert ctrl._view._folder_sel.get() == "/tmp/ejemplo"
+            assert ctrl._view._sort_var.get() == "Fecha creación ↑"
+        finally:
+            ctrl._view.destroy()
+            root.destroy()
 
 
 class TestDetectDrives:
