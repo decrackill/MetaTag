@@ -26,6 +26,7 @@ import shutil
 import string
 import subprocess
 import threading
+import tkinter as tk
 import traceback
 from collections import OrderedDict
 from datetime import datetime
@@ -1298,78 +1299,104 @@ class PathSelector(ctk.CTkFrame):
 # ===========================================================================
 class PreviewTable(ctk.CTkFrame):
     """
-    Tabla de vista previa con renderizado diferido por lotes.
+    Tabla de vista previa VIRTUALIZADA (FASE 3B.2).
 
-    Bug #4 corregido: antes se creaban TODOS los widgets de golpe en el
-    hilo principal → la UI se congelaba con listas grandes.
-    Solución: se renderizan en chunks de 30 filas con after(0) entre cada
-    batch, permitiendo que Tk procese eventos intermedios. Resultado: la
-    tabla aparece progresivamente sin congelar nada.
-    Miniaturas: se cargan en un thread de fondo y se insertan via after().
+    Reemplaza el render widget-per-row (chunks asíncronos) por un viewport
+    de altura FIJA con tk.Canvas + tk.Scrollbar vertical propios:
+
+        _all_pairs  → modelo (fuente de verdad, N dicts, intacto)
+        _filtered   → índices de _all_pairs que pasan el filtro
+        _first      → primera fila lógica materializada
+        pool (_rows)→ O(viewport) slots reutilizables sobre el canvas
+
+    El número de widgets vivos NO depende de N. El scroll desplaza el
+    canvas y recicla slots (solo ``configure``), sin destruir/crear filas.
+    La edición escribe en el modelo; el slot es solo un espejo. Rueda del
+    ratón sobre la tabla desplaza SOLO la tabla (devuelve ``"break"`` para
+    frenar el ``bind_all`` del SmoothScroller exterior).
+
+    API pública conservada: render, filter, _apply_filter, update_dup_states,
+    set_edit_mode, _cancel_jobs, _configure_grid, _build_header, _rows.
     """
 
-    CHUNK = 30
+    ROW_H = 32
+    BUFFER = 5
+    _MIN_H = 240
+    _MAX_H = 640
+
+    # Configuración de columnas maestra (sincronizada header ↔ filas)
+    _COL_NUM_W   = 36    # Columna # (índice)
+    _COL_ORIG_W  = None  # Columna Original (dinámica, weight=1)
+    _COL_ARROW_W = 24    # Columna → (flecha)
+    _COL_NEW_W   = None  # Columna Nuevo nombre (dinámica, weight=1)
+    _COL_THUMB_W = 52    # Columna Estado (ancho reservado)
 
     def __init__(self, master, on_name_change: Optional[Callable[[int, str, Path], None]] = None, **kw) -> None:
         super().__init__(master, fg_color=C["surface"], corner_radius=10, **kw)
         self._all_pairs: list[dict[str, object]] = []
-        self._rows: list[dict[str, object]] = []
-        self._pending: list[tuple[int, dict[str, object]]] = []
-        self._chunk_job: Optional[str] = None
-        self._thumb_q:   list[tuple[ctk.CTkLabel, Path]] = []
-        self._thumb_job: Optional[str] = None
-        self._thumb_run: int = 0
-        self._thumb_cancel: Optional[threading.Event] = None
+        self._filtered: list[int] = []
+        self._first: int = 0
+        self._rows: list[dict[str, object]] = []      # pool de slots
+        self._selected: set[int] = set()              # índices en _all_pairs
         self._edit_mode: bool = False
         self._on_name_change = on_name_change
         self._current_query: str = ""
         self._filter_job: Optional[str] = None
+        self._syncing: bool = False
+        self._hdr: Optional[ctk.CTkFrame] = None
+        self._cv: Optional[tk.Canvas] = None
+        self._sb: Optional[tk.Scrollbar] = None
+        self._tip: Optional[ctk.CTkToplevel] = None
+        self._tip_job: Optional[str] = None
+        self._hover_path: Optional[Path] = None
+
+        # Altura FIJA (independiente de N), razonable en pantallas pequeñas.
+        sh = master.winfo_screenheight()
+        h = max(self._MIN_H, min(self._MAX_H, int(sh * 0.45)))
+        self.pack_propagate(False)
+        self.configure(height=h)
 
         self._lbl_empty = ctk.CTkLabel(
             self, fg_color="transparent",
             text="Aquí aparecerá la vista previa.\n"
                  "Pasa el cursor sobre una fila para ver la miniatura.",
-            font=FONT_MD, text_color=C["subtext"],
-            justify="center")
+            font=FONT_MD, text_color=C["subtext"], justify="center")
         self._lbl_empty.pack(pady=28)
 
     # ── API pública ────────────────────────────────────────────────────────
     def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
-        """Reemplaza el contenido de la tabla de forma no-bloqueante."""
+        """Reemplaza el contenido de la tabla. Síncrono y acotado a O(viewport)."""
         self._cancel_jobs()
+        self._close_tip()
         self._current_query = ""
         self._all_pairs = [
             {
-                "orig": orig,
-                "new": new,
-                "photo_path": photo_path,
-                "photo_index": i,
-                "is_dup": is_dup,
-                "state": state,
+                "orig": orig, "new": new, "photo_path": photo_path,
+                "photo_index": i, "is_dup": is_dup, "state": state,
             }
             for i, (orig, new, photo_path, is_dup, state) in enumerate(pairs)
         ]
-        self._rows = []
-        for w in self.winfo_children():
-            w.destroy()
+        self._filtered = list(range(len(self._all_pairs)))
+        self._selected = {s for s in self._selected if s < len(self._all_pairs)}
+        self._first = 0
 
         if not self._all_pairs:
-            self._lbl_empty = ctk.CTkLabel(
-                self, fg_color="transparent",
-                text="Sin datos para mostrar.",
-                font=FONT_MD,
-                text_color=C["subtext"])
+            self._hide_table()
+            self._lbl_empty.configure(text="Sin datos para mostrar.")
             self._lbl_empty.pack(pady=24)
             return
 
-        self._build_header()
-        self._thumb_run += 1
-        self._pending = list(enumerate(self._all_pairs))
-        self._thumb_q = []
-        self._load_chunk()
+        self._show_table()
+        self._cv.delete("all")
+        self._build_pool()
+        self._cv.yview_moveto(0)
+        self._sync_scrollregion()
+        self._sync_viewport()
+        # Ajuste de seguridad tras el mapeo real del canvas (tamaño definitivo).
+        self.after_idle(self._sync_viewport)
 
     def filter(self, query: str) -> None:
-        """Aplica filtro de texto sobre los pares ya cargados."""
+        """Aplica filtro de texto sobre los pares ya cargados (debounced)."""
         _safe_cancel_after(self, self._filter_job)
         self._filter_job = self.after(100, lambda: self._apply_filter(query))
 
@@ -1377,67 +1404,78 @@ class PreviewTable(ctk.CTkFrame):
         self._filter_job = None
         q = query.lower().strip()
         self._current_query = q
-        for row in self._rows:
-            row["visible"] = not q or q in row["orig_text"] or q in row["new_text"]
-        self._refresh_visible_rows()
+        self._filtered = [
+            i for i, row in enumerate(self._all_pairs)
+            if not q or q in row["orig"].lower() or q in row.get("new", "").lower()
+        ]
+        # La selección se conserva; el viewport se reclampa a la nueva altura.
+        self._sync_scrollregion()
+        self._sync_viewport()
 
     def update_dup_states(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
-        """Recolorea solo filas cuyo estado o duplicado cambió. No destruye widgets."""
-        for row_data in self._rows:
-            idx = row_data["photo_index"]
-            if idx >= len(pairs):
-                continue
-            _, _, _, is_dup, state = pairs[idx]
-            changed = False
-            if row_data.get("is_dup") != is_dup:
-                row_data["is_dup"] = is_dup
+        """Refresca estados/duplicados en el MODELO. No destruye widgets."""
+        n = len(self._all_pairs)
+        changed = False
+        for i, (_, _, _, is_dup, state) in enumerate(pairs):
+            if i >= n:
+                break
+            row = self._all_pairs[i]
+            if row["is_dup"] != is_dup or row["state"] != state:
+                row["is_dup"] = is_dup
+                row["state"] = state
                 changed = True
-            if row_data.get("state") != state:
-                row_data["state"] = state
-                changed = True
-            if not changed:
-                continue
+        if changed:
+            for slot in self._rows:
+                slot["index"] = -1
+            self._sync_viewport()
 
-            bg = C["state_bg"].get(state) if state != "ok" else None
-            if bg is None:
-                bg = C["dup_bg"] if is_dup else (C["surface"] if idx % 2 == 0 else C["bg"])
-            row_data["frame"].configure(fg_color=bg)
+    def set_edit_mode(self, enabled: bool) -> None:
+        """Alterna edición inline SIN reconstruir la tabla (solo slots vivos)."""
+        if self._edit_mode == enabled:
+            return
+        self._edit_mode = enabled
+        if not self._all_pairs:
+            return
+        for slot in self._rows:
+            slot["index"] = -1
+        self._sync_viewport()
 
-            arrow = row_data.get("arrow_widget")
-            if arrow is not None:
-                arrow.configure(text_color=self._arrow_color(state, is_dup))
+    def _set_row_selected(self, pair_index: int, selected: bool) -> None:
+        """Selección por ÍNDICE LÓGICO (no por widget). La UI actual no la
+        dispara; queda disponible y sobrevive scroll/filtro/tema/recycling."""
+        if selected:
+            self._selected.add(pair_index)
+        else:
+            self._selected.discard(pair_index)
+        for slot in self._rows:
+            if slot["pair_index"] == pair_index:
+                slot["index"] = -1
+        self._sync_viewport()
 
-            new_widget = row_data.get("new_widget")
-            if new_widget is not None:
-                color = self._new_color(state, is_dup)
-                if isinstance(new_widget, ctk.CTkEntry):
-                    new_widget.configure(border_color=color if state != "ok" else C["border"],
-                                         text_color=color)
-                else:
-                    new_widget.configure(text_color=color)
+    def _scroll_by(self, dy: int) -> None:
+        """Desplaza el viewport dy píxeles y recicla los slots afectados."""
+        n = len(self._filtered)
+        if n == 0:
+            return
+        total = n * self.ROW_H
+        view_h = self._cv.winfo_height()
+        max_px = max(0, total - view_h)
+        new_px = max(0, min(max_px, self._pixel_offset() + dy))
+        if abs(new_px - self._pixel_offset()) < 1:
+            return
+        self._cv.yview_moveto(new_px / max_px if max_px else 0.0)
+        self._sync_viewport()
 
-            state_lbl = row_data.get("state_widget")
-            if state_lbl is not None:
-                state_lbl.configure(text=STATE_LABELS.get(state, ""),
-                                    text_color=C["state_fg"].get(state, C["overlay"]))
+    def _pixel_offset(self) -> int:
+        return int(self._cv.canvasy(0))
 
     # ── internos ──────────────────────────────────────────────────────────
     def _cancel_jobs(self) -> None:
-        for attr in ("_chunk_job", "_thumb_job", "_filter_job"):
+        for attr in ("_filter_job", "_tip_job"):
             _safe_cancel_after(self, getattr(self, attr, None))
             setattr(self, attr, None)
-        self._pending = []
-        self._thumb_q = []
-
-    # Configuración de columnas maestra (sincronizada header ↔ filas)
-    _COL_NUM_W   = 36    # Columna # (índice)
-    _COL_ORIG_W  = None  # Columna Original (dinámica, weight=1)
-    _COL_ARROW_W = 24    # Columna → (flecha)
-    _COL_NEW_W   = None  # Columna Nuevo nombre (dinámica, weight=1)
-    _COL_THUMB_W = 52    # Columna miniatura
 
     def _configure_grid(self, frame: ctk.CTkFrame) -> None:
-        """Aplica la misma configuración de grilla a header y filas."""
         frame.columnconfigure(0, minsize=self._COL_NUM_W)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, minsize=self._COL_ARROW_W)
@@ -1456,10 +1494,247 @@ class PreviewTable(ctk.CTkFrame):
             (4, "Estado",      "w",  8),
         ]
         for col, txt, sticky, padx in cols:
-            lbl = ctk.CTkLabel(hdr, text=txt, width=1,
-                               font=FONT_SM_BD, text_color=C["accent"],
-                               fg_color="transparent")
-            lbl.grid(row=0, column=col, sticky=sticky, padx=padx, pady=4)
+            ctk.CTkLabel(hdr, text=txt, width=1,
+                         font=FONT_SM_BD, text_color=C["accent"],
+                         fg_color="transparent").grid(row=0, column=col,
+                                                      sticky=sticky, padx=padx,
+                                                      pady=4)
+        self._hdr = hdr
+
+    def _show_table(self) -> None:
+        if self._lbl_empty.winfo_manager():
+            self._lbl_empty.pack_forget()
+        if self._hdr is None:
+            self._build_header()
+        if self._cv is None:
+            canvas = tk.Canvas(self, bg=C["surface"], highlightthickness=0,
+                               bd=0, yscrollincrement=self.ROW_H)
+            sb = tk.Scrollbar(self, orient="vertical", command=self._on_sb,
+                              troughcolor=C["surface2"], highlightthickness=0)
+            canvas.configure(yscrollcommand=sb.set)
+            canvas.bind("<MouseWheel>", self._on_wheel, add="+")
+            canvas.bind("<Button-4>", self._on_wheel, add="+")
+            canvas.bind("<Button-5>", self._on_wheel, add="+")
+            canvas.bind("<Configure>", self._on_canvas_resize, add="+")
+            canvas.bind("<Enter>", self._close_tip, add="+")
+            canvas.bind("<Leave>", self._close_tip, add="+")
+            canvas.bind("<Motion>", self._on_motion, add="+")
+            self._cv = canvas
+            self._sb = sb
+        # Repack en orden canónico (header → scrollbar → canvas).
+        for w in (self._hdr, self._sb, self._cv):
+            try:
+                w.pack_forget()
+            except Exception:
+                pass
+        self._hdr.pack(fill="x")
+        self._sb.pack(side="right", fill="y")
+        self._cv.pack(side="left", fill="both", expand=True)
+
+    def _hide_table(self) -> None:
+        for w in (self._cv, self._sb, self._hdr):
+            if w is not None:
+                try:
+                    w.pack_forget()
+                except Exception:
+                    pass
+
+    def _build_pool(self) -> None:
+        for slot in self._rows:
+            try:
+                slot["frame"].destroy()
+            except Exception:
+                pass
+        self._rows = []
+        for k in range(self._pool_size()):
+            slot = self._make_slot(k)
+            item = self._cv.create_window(
+                0, k * self.ROW_H, window=slot["frame"], anchor="nw",
+                height=self.ROW_H)
+            slot["item"] = item
+            self._rows.append(slot)
+
+    def _pool_size(self) -> int:
+        if self._cv is None:
+            return 0
+        view_h = self._cv.winfo_height()
+        if view_h < 2:
+            view_h = max(200, self.winfo_height() - 34)
+        visible = max(1, int(view_h // self.ROW_H))
+        return min(len(self._filtered), visible + 2 * self.BUFFER)
+
+    def _make_slot(self, k: int) -> dict[str, object]:
+        row = ctk.CTkFrame(self._cv, fg_color=C["surface"], corner_radius=0,
+                           height=self.ROW_H)
+        row.pack_propagate(False)
+        self._configure_grid(row)
+
+        num = ctk.CTkLabel(row, text="", width=1, font=FONT_SM,
+                           text_color=C["overlay"], fg_color="transparent")
+        num.grid(row=0, column=0, sticky="w", padx=4)
+        orig = ctk.CTkLabel(row, text="", width=1, anchor="w", font=FONT_SM,
+                            text_color=C["subtext"], fg_color="transparent")
+        orig.grid(row=0, column=1, sticky="w", padx=8)
+        arrow = ctk.CTkLabel(row, text="→", width=1, font=FONT_SM,
+                             text_color=C["accent2"], fg_color="transparent")
+        arrow.grid(row=0, column=2, sticky="w", padx=4)
+
+        var = ctk.StringVar()
+        new_lbl = ctk.CTkLabel(row, text="", width=1, anchor="w", font=FONT_SM,
+                               text_color=C["text"], fg_color="transparent")
+        new_lbl.grid(row=0, column=3, sticky="w", padx=8)
+        new_entry = ctk.CTkEntry(row, textvariable=var, width=1, height=28,
+                                 font=FONT_SM, fg_color=C["surface"],
+                                 border_color=C["border"], text_color=C["text"])
+        new_entry.grid(row=0, column=3, sticky="ew", padx=8)
+        new_entry.grid_remove()
+
+        state_lbl = ctk.CTkLabel(row, text="", width=1, anchor="w", font=FONT_SM,
+                                 text_color=C["overlay"], fg_color="transparent")
+        state_lbl.grid(row=0, column=4, sticky="w", padx=8)
+
+        slot = {
+            "frame": row, "num_widget": num, "orig_widget": orig,
+            "arrow_widget": arrow, "new_widget": new_lbl,
+            "new_entry": new_entry, "new_var": var, "state_widget": state_lbl,
+            "index": -1, "pair_index": -1, "item": None,
+        }
+        # La rueda sobre una fila también debe desplazar SOLO la tabla
+        # (las filas son hijas del canvas y capturan el evento).
+        row.bind("<MouseWheel>", self._on_wheel, add="+")
+        row.bind("<Button-4>", self._on_wheel, add="+")
+        row.bind("<Button-5>", self._on_wheel, add="+")
+        row.bind("<Enter>", self._close_tip, add="+")
+        row.bind("<Leave>", self._close_tip, add="+")
+        row.bind("<Motion>", self._on_slot_motion(slot), add="+")
+        var.trace_add("write", self._make_trace(slot))
+        return slot
+
+    def _make_trace(self, slot: dict[str, object]):
+        def _on_change(*_):
+            if self._syncing or slot["pair_index"] < 0:
+                return
+            value = slot["new_var"].get()
+            safe = Path(value).name if value else value
+            if safe != value:
+                slot["new_var"].set(safe)
+            self._write_model(slot, safe)
+        return _on_change
+
+    def _write_model(self, slot: dict[str, object], safe: str) -> None:
+        """Persiste un nombre sanitizado en el modelo y notifica al controlador."""
+        row_data = self._all_pairs[slot["pair_index"]]
+        row_data["new"] = safe
+        if self._on_name_change:
+            self._on_name_change(slot["pair_index"], safe, row_data["photo_path"])
+
+    def _commit_slot(self, slot: dict[str, object]) -> None:
+        """Persiste el valor pendiente del slot en su fila del modelo."""
+        pi = slot["pair_index"]
+        if pi < 0:
+            return
+        value = slot["new_var"].get()
+        row = self._all_pairs[pi]
+        if value != row["new"]:
+            safe = Path(value).name if value else value
+            row["new"] = safe
+            if self._on_name_change:
+                self._on_name_change(pi, safe, row["photo_path"])
+
+    def _sync_viewport(self) -> None:
+        n = len(self._filtered)
+        view_h = self._cv.winfo_height()
+        if view_h < 2:
+            view_h = max(200, self.winfo_height() - 34)
+        if n == 0:
+            for slot in self._rows:
+                self._hide_slot(slot)
+            return
+        total = n * self.ROW_H
+        max_px = max(0, total - view_h)
+        if self._pixel_offset() > max_px:
+            self._cv.yview_moveto(max_px / total if total else 0.0)
+        visible = max(1, int(view_h // self.ROW_H))
+        first = max(0, int(self._pixel_offset() // self.ROW_H) - self.BUFFER)
+        last = min(n, first + visible + 2 * self.BUFFER)
+        self._first = first
+        for k, slot in enumerate(self._rows):
+            logical = first + k
+            if logical < last:
+                if slot["index"] != logical:
+                    self._rebind_slot(slot, logical)
+                else:
+                    try:
+                        self._cv.itemconfigure(slot["item"], state="normal")
+                    except Exception:
+                        pass
+            else:
+                self._hide_slot(slot)
+
+    def _rebind_slot(self, slot: dict[str, object], logical: int) -> None:
+        self._commit_slot(slot)
+        i = self._filtered[logical]
+        row = self._all_pairs[i]
+        state = row.get("state", "ok")
+        is_dup = row.get("is_dup", False)
+
+        bg = C["state_bg"].get(state) if state != "ok" else None
+        if bg is None:
+            bg = C["dup_bg"] if is_dup else (C["surface"] if i % 2 == 0 else C["bg"])
+        if i in self._selected:
+            slot["frame"].configure(fg_color=bg, border_width=1, border_color=C["accent"])
+        else:
+            slot["frame"].configure(fg_color=bg, border_width=0)
+        slot["num_widget"].configure(text=f"{i+1:>3}.")
+        slot["orig_widget"].configure(text=row["orig"])
+        slot["arrow_widget"].configure(text_color=self._arrow_color(state, is_dup))
+        new_color = self._new_color(state, is_dup)
+        slot["new_widget"].configure(text=row["new"], text_color=new_color)
+        slot["new_entry"].configure(border_color=C["red"] if is_dup else C["border"],
+                                    text_color=new_color)
+        self._syncing = True
+        try:
+            slot["new_var"].set(row["new"])
+        finally:
+            self._syncing = False
+        slot["state_widget"].configure(text=STATE_LABELS.get(state, ""),
+                                       text_color=C["state_fg"].get(state, C["overlay"]))
+        slot["photo_path"] = row["photo_path"]
+        slot["index"] = logical
+        slot["pair_index"] = i
+        if self._edit_mode:
+            slot["new_entry"].grid()
+            slot["new_widget"].grid_remove()
+        else:
+            slot["new_widget"].grid()
+            slot["new_entry"].grid_remove()
+        try:
+            self._cv.itemconfigure(slot["item"], state="normal")
+        except Exception:
+            pass
+
+    def _hide_slot(self, slot: dict[str, object]) -> None:
+        self._commit_slot(slot)
+        slot["index"] = -1
+        slot["pair_index"] = -1
+        try:
+            self._cv.itemconfigure(slot["item"], state="hidden")
+        except Exception:
+            pass
+
+    def _sync_scrollregion(self) -> None:
+        n = len(self._filtered)
+        total = n * self.ROW_H
+        w = self._cv.winfo_width()
+        if w < 2:
+            w = 1
+        self._cv.configure(scrollregion=(0, 0, w, total))
+        view_h = self._cv.winfo_height()
+        if view_h < 2:
+            view_h = max(200, self.winfo_height() - 34)
+        max_px = max(0, total - view_h)
+        if self._pixel_offset() > max_px:
+            self._cv.yview_moveto(max_px / total if total else 0.0)
 
     @staticmethod
     def _arrow_color(state: str, is_dup: bool) -> str:
@@ -1473,175 +1748,105 @@ class PreviewTable(ctk.CTkFrame):
             return C["state_fg"].get(state, C["text"])
         return C["red"] if is_dup else C["text"]
 
-    def _load_chunk(self) -> None:
-        chunk, self._pending = self._pending[:self.CHUNK], self._pending[self.CHUNK:]
-        for _, row_data in chunk:
-            self._add_row(row_data)
-        if self._pending:
-            self._chunk_job = self.after(5, self._load_chunk)
-        else:
-            # iniciar carga de miniaturas en segundo plano
-            self._chunk_job = None
-            self._refresh_visible_rows()
-            self._schedule_thumbs()
+    # ── scroll / viewport ─────────────────────────────────────────────────
+    def _on_sb(self, *args) -> None:
+        self._cv.yview(*args)
+        self._sync_viewport()
 
-    def _add_row(self, row_data: dict[str, object]) -> None:
-        i = row_data["photo_index"]
-        orig = row_data["orig"]
-        new = row_data["new"]
-        photo_path = row_data["photo_path"]
-        is_dup = row_data.get("is_dup", False)
-        state = row_data.get("state", "ok")
+    def _on_wheel(self, event) -> str:
+        step = self.ROW_H * 3
+        if event.num == 4:
+            self._scroll_by(-step)
+        elif event.num == 5:
+            self._scroll_by(step)
+        elif event.delta:
+            self._scroll_by(-step if event.delta > 0 else step)
+        # "break": la rueda sobre la tabla NO debe desplazar la página.
+        return "break"
 
-        bg = C["state_bg"].get(state) if state != "ok" else None
-        if bg is None:
-            bg = C["dup_bg"] if is_dup else (C["surface"] if i % 2 == 0 else C["bg"])
-        row = ctk.CTkFrame(self, fg_color=bg, corner_radius=0, height=32)
-        row.pack_propagate(False)
-        self._configure_grid(row)
+    def _on_canvas_resize(self, event) -> None:
+        w = event.width if event.width > 1 else 1
+        for slot in self._rows:
+            try:
+                self._cv.itemconfigure(slot["item"], width=w)
+            except Exception:
+                pass
+        self._sync_scrollregion()
+        self._sync_viewport()
 
-        # Columna #
-        ctk.CTkLabel(row, text=f"{i+1:>3}.", width=1,
-                     font=FONT_SM, text_color=C["overlay"],
-                     fg_color="transparent").grid(row=0, column=0,
-                                                  sticky="w", padx=4)
-
-        # Columna Original
-        ctk.CTkLabel(row, text=orig, width=1, anchor="w",
-                     font=FONT_SM, text_color=C["subtext"],
-                     fg_color="transparent").grid(row=0, column=1,
-                                                  sticky="w", padx=8)
-
-        # Columna →
-        arrow_color = self._arrow_color(state, is_dup)
-        arrow_lbl = ctk.CTkLabel(row, text="→", width=1,
-                     font=FONT_SM, text_color=arrow_color,
-                     fg_color="transparent")
-        arrow_lbl.grid(row=0, column=2, sticky="w", padx=4)
-
-        # Columna Nuevo nombre
-        new_color = self._new_color(state, is_dup)
-        if self._edit_mode:
-            new_var = ctk.StringVar(value=new)
-            new_widget = ctk.CTkEntry(row, textvariable=new_var,
-                                      width=1, height=28, font=FONT_SM,
-                                      fg_color=C["surface"],
-                                      border_color=C["red"] if is_dup else C["border"],
-                                      text_color=new_color)
-            new_widget.grid(row=0, column=3, sticky="ew", padx=8)
-            def _on_change(*_):
-                value = new_var.get()
-                safe = Path(value).name if value else value
-                if safe != value:
-                    new_var.set(safe)
-                    return
-                row_data["new"] = safe
-                row_data["new_text"] = safe.lower()
-                if self._on_name_change:
-                    self._on_name_change(i, safe, photo_path)
-            new_var.trace_add("write", _on_change)
-        else:
-            new_widget = ctk.CTkLabel(row, text=new, width=1, anchor="w",
-                                      font=FONT_SM, text_color=new_color,
-                                      fg_color="transparent")
-            new_widget.grid(row=0, column=3, sticky="w", padx=8)
-
-        # Columna Estado
-        state_lbl = ctk.CTkLabel(row, text=STATE_LABELS.get(state, ""), width=1,
-                                 anchor="w", font=FONT_SM,
-                                 text_color=C["state_fg"].get(state, C["overlay"]),
-                                 fg_color="transparent")
-        state_lbl.grid(row=0, column=4, sticky="w", padx=8)
-
-        # Miniaturas: se muestran en el tooltip hover (ya no hay columna dedicada).
-
-        visible = not self._current_query or self._current_query in orig.lower() or self._current_query in row_data.get("new", "").lower()
-        row_data["visible"] = visible
-        self._rows.append({
-            "frame": row,
-            "orig_text": orig.lower(),
-            "new_text": row_data.get("new", "").lower(),
-            "photo_index": i,
-            "visible": visible,
-            "new_widget": new_widget,
-            "arrow_widget": arrow_lbl,
-            "state_widget": state_lbl,
-            "is_dup": is_dup,
-            "state": state,
-        })
-        if visible:
-            row.pack(fill="x")
-        if photo_path is not None:
-            row._tooltip_path = photo_path
-            row.bind("<Enter>", self._lazy_tooltip, add="+")
-
-
-
-    def _lazy_tooltip(self, event) -> None:
-        row = event.widget
-        if not hasattr(row, "_tooltip_path") or hasattr(row, "_tooltip"):
+    # ── tooltip por fila lógica (datos leídos del modelo, sin refs a slots) ─
+    def _on_motion(self, event) -> None:
+        n = len(self._filtered)
+        if n == 0:
+            self._close_tip()
+            self._hover_path = None
             return
-        row._tooltip = ImageTooltip(row, row._tooltip_path)
-        row._tooltip._schedule_show()
-
-    # ── miniaturas en segundo plano ────────────────────────────────────────
-    def _schedule_thumbs(self) -> None:
-        """Lanza un thread que pre-genera las miniaturas y las inserta via after()."""
-        if not self._thumb_q:
+        k = int(self._cv.canvasy(event.y) // self.ROW_H)
+        logical = self._first + k
+        if k < 0 or logical >= n:
+            self._close_tip()
+            self._hover_path = None
             return
-        if self._thumb_cancel:
-            self._thumb_cancel.set()
-        self._thumb_cancel = threading.Event()
-        cancel = self._thumb_cancel
-        run_id = self._thumb_run
-        queue = list(self._thumb_q)
-        self._thumb_q = []
+        path = self._all_pairs[self._filtered[logical]]["photo_path"]
+        self._set_hover(path)
 
-        def _worker():
-            for lbl, path in queue:
-                if cancel.is_set():
-                    return
-                img = _get_thumb(path, (52, 52))
-                if img:
-                    def _update(l=lbl, im=img, run=run_id):
-                        try:
-                            if run != self._thumb_run:
-                                return
-                            if l.winfo_exists():
-                                l.configure(image=im)
-                                l._thumb_image = im
-                        except Exception:
-                            pass
-                    try:
-                        self.after(0, _update)
-                    except Exception:
-                        pass
+    def _on_slot_motion(self, slot: dict[str, object]):
+        def _handler(_e=None):
+            logical = slot["index"]
+            if logical < 0 or logical >= len(self._filtered):
+                return
+            path = self._all_pairs[self._filtered[logical]]["photo_path"]
+            self._set_hover(path)
+        return _handler
 
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _refresh_visible_rows(self) -> None:
-        for row in self._rows:
-            row["frame"].pack_forget()
-        for row in self._rows:
-            if row["visible"]:
-                row["frame"].pack(fill="x")
-
-    def set_edit_mode(self, enabled: bool) -> None:
-        if self._edit_mode == enabled:
+    def _set_hover(self, path) -> None:
+        if path is None:
+            self._close_tip()
+            self._hover_path = None
             return
-        self._edit_mode = enabled
-        if not self._all_pairs:
+        if path == self._hover_path:
             return
-        query = self._current_query
-        self.render([
-            (row["orig"], row["new"], row["photo_path"], row.get("is_dup", False),
-             row.get("state", "ok"))
-            for row in self._all_pairs])
-        if query:
-            self.filter(query)
+        self._hover_path = path
+        self._close_tip()
+        if not path.exists():
+            return
+        _safe_cancel_after(self, self._tip_job)
+        self._tip_job = self.after(ImageTooltip.DELAY_MS, lambda: self._show_tip(path))
 
+    def _show_tip(self, path: Path) -> None:
+        self._tip_job = None
+        if path != self._hover_path or self._tip:
+            return
+        try:
+            ImageTooltip._close_active()
+            ctk_img = _get_thumb(path, (180, 180))
+            if not ctk_img:
+                return
+            tip = ctk.CTkToplevel(self.winfo_toplevel())
+            tip.wm_overrideredirect(True)
+            tip.configure(fg_color=C["surface"])
+            tip.attributes("-topmost", True)
+            ctk.CTkLabel(tip, image=ctk_img, text="", fg_color=C["surface"]).pack(padx=6, pady=6)
+            x = self._cv.winfo_rootx() + self._cv.winfo_width() + 10
+            y = self._cv.winfo_rooty()
+            tip.geometry(f"+{x}+{y}")
+            tip.protocol("WM_DELETE_WINDOW", self._close_tip)
+            self._tip = tip
+            ImageTooltip._ACTIVE.append(tip)
+        except Exception as exc:
+            log.debug("Tooltip error: %s", exc)
 
-# ===========================================================================
+    def _close_tip(self, _=None) -> None:
+        _safe_cancel_after(self, self._tip_job)
+        self._tip_job = None
+        if self._tip is not None:
+            try:
+                if self._tip in ImageTooltip._ACTIVE:
+                    ImageTooltip._ACTIVE.remove(self._tip)
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
 #  DIÁLOGO DE CONFIRMACIÓN INTEGRADO
 # ===========================================================================
 class ConfirmDialog(ctk.CTkToplevel):
