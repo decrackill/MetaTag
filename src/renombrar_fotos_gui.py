@@ -2591,6 +2591,14 @@ class AppController:
 #  ENTRYPOINT
 # ===========================================================================
 if __name__ == "__main__":
+    # Neutralizar XIM↔iBus ANTES de crear el primer Tk() (FASE 3B.1): el
+    # Renombrador se beneficia al lanzarse desde MetaTag por herencia de
+    # entorno, y también al ejecutarse de forma independiente.
+    try:
+        from metatag_xim import neutralize_xim_for_tk
+        neutralize_xim_for_tk()
+    except Exception:
+        pass
     try:
         app = AppController()
         app.run()

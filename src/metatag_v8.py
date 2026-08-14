@@ -3195,5 +3195,12 @@ class MetaTagApp(tk.Tk):
 
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    # Neutralizar XIM↔iBus ANTES de crear el primer Tk() (FASE 3B.1):
+    # elimina la penalización de ~20-90 ms por widget sin tocar el sistema.
+    try:
+        from metatag_xim import neutralize_xim_for_tk
+        neutralize_xim_for_tk()
+    except Exception:
+        pass
     app = MetaTagApp()
     app.mainloop()
