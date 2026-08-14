@@ -196,10 +196,12 @@ def _get_thumb(path: Path, size: tuple[int, int] = (56, 56)) -> Optional[ctk.CTk
         return None
 
 # ── utilidades ─────────────────────────────────────────────────────────────
+_RE_NATURAL_SPLIT = re.compile(r"(\d+)")
+
 def _natural_key(p: Path) -> list:
     """Ordenamiento natural: foto2 antes que foto10."""
     return [int(t) if t.isdigit() else t.lower()
-            for t in re.split(r"(\d+)", p.stem)]
+            for t in _RE_NATURAL_SPLIT.split(p.stem)]
 
 def _get_exif_date(p: Path) -> float:
     """Extrae fecha EXIF de una foto. Retorna 0 si no hay EXIF."""

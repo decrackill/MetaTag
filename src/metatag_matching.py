@@ -37,6 +37,14 @@ IMG_EXTS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp")
 # IMG_EXTS para que el port sea IDÉNTICO al algoritmo original).
 _STEM_EXTS = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"})
 
+# Patrones precompilados (FASE 3B.1b): literales idénticos a los originales;
+# solo se mueve la compilación fuera de los bucles, sin tocar la semántica.
+_RE_DUP_MARKER = re.compile(r"^(.*?)\s*\(\d+\)$")
+_RE_DIGITS = re.compile(r"\d+")
+_RE_LEADING_NUM = re.compile(r"^0*(\d+)")
+_RE_VIEW_SUFFIX = re.compile(r"[FRP]$")
+_RE_EDGE_SEP = re.compile(r"^[#\s\-_]+|[#\s\-_]+$")
+
 
 def _safe_stem(s: str) -> str:
     """Quita extensiones de imagen (incluso dobles) y marcadores '(N)'.
@@ -51,7 +59,7 @@ def _safe_stem(s: str) -> str:
             p = p.with_suffix("")
             changed = True
             continue
-        m = re.match(r"^(.*?)\s*\(\d+\)$", p.name)
+        m = _RE_DUP_MARKER.match(p.name)
         if m and m.group(1):
             p = p.with_name(m.group(1))
             changed = True
@@ -64,7 +72,7 @@ def _full_stem(s: str) -> str:
 
 def _normalize_numbers(s: str) -> str:
     """'0006_UM_C4_IX_00034_P' -> '6_UM_C4_IX_34_P' (quita ceros)."""
-    return re.sub(r"\d+", lambda m: str(int(m.group())), s)
+    return _RE_DIGITS.sub(lambda m: str(int(m.group())), s)
 
 
 def _extract_id_suffix(s: str) -> Optional[Tuple[str, str]]:
@@ -83,22 +91,22 @@ def _extract_id_suffix(s: str) -> Optional[Tuple[str, str]]:
             if s.lower().endswith(ext):
                 s = s[: -len(ext)]
                 changed = True
-        m_dup = re.match(r"^(.*?)\s*\(\d+\)$", s)
+        m_dup = _RE_DUP_MARKER.match(s)
         if m_dup and m_dup.group(1):
             s = m_dup.group(1)
             changed = True
     s = s.lstrip("#").strip("_-").upper()
-    m_num = re.match(r"^0*(\d+)", s)
+    m_num = _RE_LEADING_NUM.match(s)
     if not m_num:
         return None
     numero = m_num.group(1)
-    m_suf = re.search(r"[FRP]$", s)
+    m_suf = _RE_VIEW_SUFFIX.search(s)
     sufijo = m_suf.group(0) if m_suf else ""
     return (numero, sufijo)
 
 
 def _clean_stem(stem_key: str) -> str:
-    return re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", stem_key)
+    return _RE_EDGE_SEP.sub("", stem_key)
 
 
 class ImageMatcher:

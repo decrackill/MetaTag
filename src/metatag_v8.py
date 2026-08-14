@@ -227,6 +227,14 @@ def set_font_scale(scale):
 set_font_scale(1.0)
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
+
+# Patrones precompilados (FASE 3B.1b): literales idénticos a los originales;
+# solo se mueve la compilación fuera de los bucles, sin tocar la semántica.
+_RE_DUP_MARKER = re.compile(r"^(.*?)\s*\(\d+\)$")
+_RE_DIGITS = re.compile(r"\d+")
+_RE_LEADING_NUM = re.compile(r"^0*(\d+)")
+_RE_VIEW_SUFFIX = re.compile(r"[FRP]$")
+_RE_EDGE_SEP = re.compile(r"^[#\s\-_]+|[#\s\-_]+$")
 META_GROUPS = {
     "Ubicacion":   ["Sitio", "Corte", "Cuadrante", "Unidad", "Nivel", "Profundidad Cm"],
     "Descripcion": ["Vista", "Parte", "Perfil", "Labio"],
@@ -2495,7 +2503,7 @@ class MetaTagApp(tk.Tk):
             return sorted(files, key=exif_date)
         elif mode == "numeral":
             def extract_num(p):
-                nums = re.findall(r'\d+', p.stem)
+                nums = _RE_DIGITS.findall(p.stem)
                 return int(nums[0]) if nums else 0
             return sorted(files, key=extract_num)
         return sorted(files, key=lambda p: p.name.lower())
@@ -2750,7 +2758,7 @@ class MetaTagApp(tk.Tk):
             # Despoja marcadores de duplicado tipo "nombre (1)", "nombre(2)"
             # que quedaban pegados al stem impidiendo el emparejamiento
             # (ej: "0006_UM_C4_IX_00034_P.jpg (1).JPG").
-            m = re.match(r"^(.*?)\s*\(\d+\)$", p.name)
+            m = _RE_DUP_MARKER.match(p.name)
             if m and m.group(1):
                 p = p.with_name(m.group(1))
                 changed = True
@@ -2760,7 +2768,7 @@ class MetaTagApp(tk.Tk):
         return self._safe_stem(s)
 
     def _normalize_numbers(self, s: str) -> str:
-        return re.sub(r"\d+", lambda m: str(int(m.group())), s)
+        return _RE_DIGITS.sub(lambda m: str(int(m.group())), s)
 
     def _extract_id_suffix(self, s):  # -> Optional[tuple]
         """
@@ -2779,16 +2787,16 @@ class MetaTagApp(tk.Tk):
                 if s.lower().endswith(ext):
                     s = s[: -len(ext)]
                     changed = True
-            m_dup = re.match(r"^(.*?)\s*\(\d+\)$", s)
+            m_dup = _RE_DUP_MARKER.match(s)
             if m_dup and m_dup.group(1):
                 s = m_dup.group(1)
                 changed = True
         s = s.lstrip("#").strip("_-").upper()
-        m_num = re.match(r"^0*(\d+)", s)
+        m_num = _RE_LEADING_NUM.match(s)
         if not m_num:
             return None
         numero = m_num.group(1)
-        m_suf = re.search(r"[FRP]$", s)
+        m_suf = _RE_VIEW_SUFFIX.search(s)
         sufijo = m_suf.group(0) if m_suf else ""
         return (numero, sufijo)
 
@@ -2828,14 +2836,14 @@ class MetaTagApp(tk.Tk):
             fpath = self._img_cache[name_stem]
             return str(fpath), "ok", [str(fpath)]
 
-        name_clean = re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", name_stem)
+        name_clean = _RE_EDGE_SEP.sub("", name_stem)
         for stem_key, fpath in self._img_cache.items():
-            if re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", stem_key) == name_clean:
+            if _RE_EDGE_SEP.sub("", stem_key) == name_clean:
                 return str(fpath), "ok", [str(fpath)]
 
         name_normalized = self._normalize_numbers(name_clean)
         for stem_key, fpath in self._img_cache.items():
-            stem_clean = re.sub(r"^[#\s\-_]+|[#\s\-_]+$", "", stem_key)
+            stem_clean = _RE_EDGE_SEP.sub("", stem_key)
             if self._normalize_numbers(stem_clean) == name_normalized:
                 return str(fpath), "ok", [str(fpath)]
 
