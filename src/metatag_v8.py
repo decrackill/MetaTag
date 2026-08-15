@@ -882,7 +882,7 @@ class MetaTagApp(tk.Tk):
         section("HERRAMIENTAS AVANZADAS")
         self._btn(parent, "📊 Ver Estadísticas (Gráficos)",  self._show_stats,           primary=False)
         self._btn(parent, "🗂 Lote por Orden (Excel→Fotos)", self._batch_write_by_order, primary=False)
-        self._btn(parent, "🖼 Renombrador de Fotos",         self._launch_renombrador,   primary=False)
+        self._btn(parent, "Image Sync",                    self._launch_renombrador,   primary=False)
 
         section("SINCRONIZACIÓN DE ORDEN")
         self._btn(parent, "🔄 Reordenar imágenes según Excel",  self._sync_images_to_excel, primary=False)
@@ -1065,13 +1065,21 @@ class MetaTagApp(tk.Tk):
 
         def launch_visor():
             visor_path = None
-            for f in self.output_base.iterdir():
-                if f.name.lower() == "visor.py":
-                    visor_path = str(f)
+            current_dir = Path(__file__).resolve().parent
+            # Check src/ folder first, then output_base
+            for p in [current_dir, self.output_base]:
+                if not p.exists():
+                    continue
+                for f in p.iterdir():
+                    if f.name.lower() == "visor.py":
+                        visor_path = str(f)
+                        break
+                if visor_path:
                     break
+
             if not visor_path:
                 return messagebox.showerror("Error",
-                    f"No se encontró el archivo visor.py en:\n{self.output_base}")
+                    f"No se encontró el archivo visor.py en:\n{current_dir}\no en:\n{self.output_base}")
             self.withdraw()
             proc = subprocess.Popen([sys.executable, visor_path, "STANDALONE", CURRENT_THEME])
 

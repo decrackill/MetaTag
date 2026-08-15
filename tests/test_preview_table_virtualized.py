@@ -25,8 +25,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import renombrar_fotos_gui as mod
 from renombrar_fotos_gui import PreviewTable
 
-STATES = ["ok", "ya_correcto", "conflicto", "duplicado", "not_found", "ambiguo", "error"]
-assert len(STATES) == 7
+STATES = ["ok", "ya_correcto", "conflicto", "existe", "duplicado",
+          "not_found", "ambiguo", "error"]
+assert len(STATES) == 8
 
 
 def make_pairs(n: int, states: bool = False, with_paths: bool = False):
@@ -36,7 +37,7 @@ def make_pairs(n: int, states: bool = False, with_paths: bool = False):
         orig = f"{i+1:04d}_UM_C4_XII_{i+1:04d}_F.jpg.JPG"
         new = f"{i+1:04d}_UM_C4_XII_{i+1:04d}_F.jpg"
         path = Path("/tmp/opencode/nonexistent.jpg") if with_paths else None
-        pairs.append((orig, new, path, (i % 7) == 0, STATES[i % 7] if states else "ok"))
+        pairs.append((orig, new, path, (i % 7) == 0, STATES[i % len(STATES)] if states else "ok"))
     return pairs
 
 
@@ -115,28 +116,52 @@ class TestTamanos:
         preview.render(make_pairs(269))
         root.update()
         assert len(preview._all_pairs) == 269
-        assert len(preview._rows) <= 31
+        assert len(preview._rows) <= 40
         assert preview._first == 0
 
     def test_render_1000(self, root, preview):
         preview.render(make_pairs(1000))
         root.update()
         assert len(preview._all_pairs) == 1000
-        assert len(preview._rows) <= 31
+        assert len(preview._rows) <= 40
 
     def test_render_5000_sin_badalloc(self, root, preview):
         preview.render(make_pairs(5000))
         root.update()
         assert len(preview._all_pairs) == 5000
-        assert len(preview._rows) <= 31
+        assert len(preview._rows) <= 40
         assert preview._cv is not None
 
     def test_render_10000_sin_badalloc(self, root, preview):
         preview.render(make_pairs(10000))
         root.update()
         assert len(preview._all_pairs) == 10000
-        assert len(preview._rows) <= 31
+        assert len(preview._rows) <= 40
         assert preview._first == 0
+
+    def test_altura_adaptativa_contenido(self, root, preview):
+        """Con pocas filas la tabla se encoge; con muchas crece hasta _MAX_H
+        (en vez de mostrar siempre un viewport diminuto)."""
+        preview.render(make_pairs(5))
+        root.update()
+        assert preview._fixed_h == PreviewTable._MIN_H, preview._fixed_h
+        preview.render(make_pairs(10000))
+        root.update()
+        assert preview._fixed_h == PreviewTable._MAX_H, preview._fixed_h
+
+    def test_pool_cubre_todo_el_rango(self, root, preview):
+        """El pool (visible + buffer) debe alcanzar SIEMPRE la última fila:
+        al llegar al fondo todas las filas restantes quedan materializadas."""
+        preview.render(make_pairs(10000))
+        root.update()
+        n = len(preview._filtered)
+        preview._scroll_by(10 ** 9)
+        root.update()
+        alive = [s["index"] for s in preview._rows if s["index"] >= 0]
+        assert alive, "debe haber slots vivos al llegar al fondo"
+        assert max(alive) >= n - 1, f"la última fila debe ser alcanzable: {max(alive)} vs {n - 1}"
+        # y el pool es acotado aunque falten filas por el otro lado
+        assert len(preview._rows) <= 40
 
 
 # ── scroll ─────────────────────────────────────────────────────────────────
@@ -298,7 +323,7 @@ class TestEstados:
         preview.update_dup_states(pairs2)
         root.update()
         after = [r["state"] for r in preview._all_pairs]
-        assert after == [STATES[i % 7] for i in range(100)]
+        assert after == [STATES[i % 8] for i in range(100)]
         # el slot que muestra la fila 1 debe reflejar el nuevo color/estado
         slot = next(s for s in preview._rows if s["pair_index"] == 1)
         assert slot["state_widget"].cget("text") == mod.STATE_LABELS["ya_correcto"]

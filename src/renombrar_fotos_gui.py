@@ -1,5 +1,5 @@
 """
-renombrar_fotos_gui.py — Renombrador de Fotos v4.0
+renombrar_fotos_gui.py — Image Sync (Renombrador de Fotos v4.1)
 
 Aplicación de escritorio para renombrar fotos en lote usando nombres
 de un archivo Excel (.xlsx) o CSV. Construida con CustomTkinter.
@@ -28,6 +28,7 @@ import subprocess
 import threading
 import tkinter as tk
 import traceback
+import uuid
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -60,12 +61,23 @@ from metatag_theme import (
 )
 
 # Estados posibles de cada fila de la vista previa / plan de renombrado.
-PLAN_STATES = ("ok", "ya_correcto", "conflicto", "duplicado",
-               "not_found", "ambiguo", "error")
+#   ok          → se renombrará sin obstáculos.
+#   ya_correcto → el archivo ya tiene exactamente ese nombre.
+#   existe      → el destino es un archivo EXTERNO (no pertenece al lote) que
+#                 ya existe: jamás se sobreescribe (bloquea).
+#   conflicto   → colisión interna NO resoluble dentro del lote (bloquea).
+#   duplicado   → dos filas compiten por el mismo nombre destino (se omite).
+#   not_found   → matching: no se halló la fotografía de ese registro.
+#   sin_foto    → posicional: hay más registros que fotografías.
+#   ambiguo     → matching: varios archivos compiten por la misma clave.
+#   error       → fallo del motor de emparejamiento (sin tocar disco).
+PLAN_STATES = ("ok", "ya_correcto", "existe", "conflicto", "duplicado",
+               "not_found", "sin_foto", "ambiguo", "error")
 STATE_LABELS = {
-    "ok": "", "ya_correcto": "Ya correcto", "conflicto": "Conflicto",
-    "duplicado": "Duplicado", "not_found": "No encontrada",
-    "ambiguo": "Ambiguo", "error": "Error",
+    "ok": "✓ Correcto", "ya_correcto": "✓ Correcto", "existe": "⚠ Ya existe",
+    "conflicto": "⚠ Conflicto",
+    "duplicado": "⚠ Duplicado", "not_found": "✕ Sin foto",
+    "sin_foto": "✕ Sin foto", "ambiguo": "⚠ Ambiguo", "error": "✕ Error",
 }
 # Los colores por estado viven en el tema técnico (C["state_bg"] / C["state_fg"]),
 # derivados de los semánticos canónicos de MetaTag (ok / err / warn).
@@ -171,6 +183,38 @@ def _show_toplevel(dlg) -> None:
     except Exception:
         pass
 
+def _place_tip_near_pointer(tip, widget, offset: int = 18) -> None:
+    """Coloca un Toplevel flotante junto al CURSOR (no a la derecha del
+    widget), y lo ajusta para que nunca quede fuera de pantalla.
+
+    Se mide el tamaño real del tooltip y se decide el lado:
+    - abajo-derecha por defecto;
+    - si desborda la pantalla por la derecha → a la izquierda del cursor;
+    - si desborda por abajo → por arriba del cursor.
+    """
+    try:
+        tip.update_idletasks()
+        tw, th = tip.winfo_reqwidth(), tip.winfo_reqheight()
+        px = widget.winfo_pointerx()
+        py = widget.winfo_pointery()
+        sw = tip.winfo_screenwidth()
+        sh = tip.winfo_screenheight()
+    except Exception:
+        try:
+            tip.geometry(f"+10+10")
+        except Exception:
+            pass
+        return
+    x = px + offset
+    if x + tw > sw:
+        x = px - offset - tw
+    y = py + offset
+    if y + th > sh:
+        y = py - offset - th
+    x = max(0, min(x, sw - tw))
+    y = max(0, min(y, sh - th))
+    tip.geometry(f"+{x}+{y}")
+
 # ── caché de miniaturas (LRU, máx 150 entradas) ───────────────────────────
 _THUMB_CACHE: OrderedDict[str, ctk.CTkImage] = OrderedDict()
 _THUMB_MAX = 150
@@ -274,6 +318,26 @@ VALID_IMG_EXT: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".heic", ".avif"}
 )
 
+# Caracteres prohibidos en nombres de archivo (Windows y otros FS).
+_INVALID_FILENAME_CHARS: frozenset[str] = frozenset('\\/:*?"<>|')
+
+def _invalid_name_chars(name: str) -> list[str]:
+    """Devuelve la lista ordenada de caracteres inválidos presentes en `name`."""
+    return sorted({c for c in name if c in _INVALID_FILENAME_CHARS})
+
+# Pasos del flujo (indicador bajo la cabecera). Números U+2460…U+2465:
+# glifos ampliamente disponibles (verificado con fc-list), a diferencia de
+# los emojis de color U+1Fxxx que se rompen en Linux sin fuente de emoji.
+_STEP_NAMES: tuple[str, ...] = (
+    "Emparejar fotografías", "Validar correspondencias", "Vista previa",
+    "Renombrar", "Resultado",
+)
+_STEP_DIGITS: tuple[str, ...] = ("①", "②", "③", "④", "⑤")
+
+def _state_text_color(kind: str) -> str:
+    return {"ok": C["green"], "warn": C["yellow"], "error": C["red"]}.get(
+        kind, C["subtext"])
+
 
 # ===========================================================================
 #  MODEL
@@ -290,11 +354,18 @@ class RenameModel:
         # Posicional = primera foto ↔ primer nombre (compatibilidad standalone).
         # Matching seguro = cada nombre busca SU fotografía (recomendado).
         self.matching_mode: bool = False
+        # Opciones de renombrado (defaults idénticos a los checkboxes de la UI).
+        self.keep_extension: bool = True
         self._matcher      = None          # ImageMatcher (carga perezosa)
         self._photos:      list[Path]      = []
         self._names:       list[str]       = []
         self._plan:        list[dict]      = []   # último plan construido
         self.skipped_rows: list[int]       = []   # filas de Excel ignoradas (vacías/no leíbles) — FIX #6
+        # Caché del DataFrame del Excel: se lee UNA vez por (archivo, hoja) y
+        # se reutiliza al cambiar de columna, de orden o al reconstruir la UI
+        # (evita releer el .xlsx varias veces — ver FIX de rendimiento).
+        self._df:          Optional[pd.DataFrame] = None
+        self._df_key:      Optional[tuple]        = None
         # historial multinivel para deshacer: lista de lotes
         self._undo_stack:  list[tuple[list[tuple[Path, Path]], Optional[Path], bool]] = []
 
@@ -342,6 +413,10 @@ class RenameModel:
         """Escanea la carpeta y ordena las imágenes."""
         if not self.folder_path:
             raise ValueError("No se ha seleccionado ninguna carpeta.")
+        # FIX: el matcher cachea el índice de la carpeta; si las fotos
+        # cambiaron (p. ej. tras renombrar) la caché quedaría obsoleta.
+        if self._matcher is not None:
+            self._matcher._invalidate(str(self.folder_path))
         raw = [p for p in self.folder_path.iterdir()
                if p.is_file() and p.suffix.lower() in VALID_IMG_EXT]
         {
@@ -356,6 +431,7 @@ class RenameModel:
             "exif_desc": lambda: raw.sort(key=_get_exif_date, reverse=True),
         }.get(self.sort_mode, lambda: raw.sort(key=_natural_key))()
         self._photos = raw
+        self._plan = []
         return len(raw)
 
     def load_sheets(self) -> list[str]:
@@ -367,17 +443,72 @@ class RenameModel:
             return []
         return pd.ExcelFile(self.excel_path).sheet_names
 
-    def load_columns(self) -> list[str]:
-        """Retorna las columnas de la hoja activa o del CSV."""
+    def clear_excel_data(self) -> None:
+        """Invalida caché y datos derivados al cambiar de archivo/hoja."""
+        self._df = None
+        self._df_key = None
+        self._names = []
+        self.skipped_rows = []
+        self._plan = []
+
+    def _read_df(self) -> pd.DataFrame:
+        """
+        Lee el DataFrame completo del Excel/CSV UNA vez por (archivo, hoja) y
+        lo cachea. Las columnas, hojas y nombres se derivan de esta caché.
+        """
+        key = (str(self.excel_path), self.sheet_name or 0)
+        if self._df is not None and self._df_key == key:
+            return self._df
         if not self.excel_path:
             raise ValueError("No se ha seleccionado ningún archivo.")
         ext = self.excel_path.suffix.lower()
         if ext in (".csv", ".tsv", ".txt"):
             sep = "\t" if ext == ".tsv" else ","
-            df = pd.read_csv(self.excel_path, sep=sep, nrows=0, encoding="utf-8")
-            return list(df.columns)
-        sheet = self.sheet_name or 0
-        return list(pd.read_excel(self.excel_path, sheet_name=sheet, nrows=0).columns)
+            df = pd.read_csv(self.excel_path, sep=sep, keep_default_na=False,
+                             encoding="utf-8")
+        else:
+            sheet = self.sheet_name or 0
+            df = pd.read_excel(self.excel_path, sheet_name=sheet,
+                               keep_default_na=False)
+        self._df = df
+        self._df_key = key
+        return df
+
+    def load_columns(self) -> list[str]:
+        """Retorna las columnas de la hoja activa o del CSV."""
+        if not self.excel_path:
+            raise ValueError("No se ha seleccionado ningún archivo.")
+        return list(self._read_df().columns)
+
+    @staticmethod
+    def _normalize_excel_value(raw) -> Optional[str]:
+        """
+        Convierte un valor de celda a un nombre de archivo seguro.
+
+        Reglas:
+        - None / vacío / "nan" / "nat" / "none" → None (se omite la fila).
+        - Valores numéricos enteros (1, 1.0) → "1" (nunca "1.0").
+        - Se conservan los ceros iniciales legítimos tal como vienen en el
+          archivo ("001" permanece "001", nunca "1" ni "1.0").
+        """
+        if raw is None:
+            return None
+        if isinstance(raw, float):
+            try:
+                if raw != raw:      # NaN
+                    return None
+                text = str(int(raw)) if raw.is_integer() else str(raw)
+            except (ValueError, OverflowError):
+                text = str(raw)
+        else:
+            text = str(raw)
+        text = text.strip()
+        if text == "" or text.lower() in ("nan", "nat", "none"):
+            return None
+        # Flotante con formato entero legible: "1.0" → "1", "2.00" → "2".
+        if re.fullmatch(r"-?\d+\.0+", text):
+            text = text.split(".")[0]
+        return text
 
     def load_names(self) -> int:
         """
@@ -394,26 +525,25 @@ class RenameModel:
         Ahora:
           · se lee con keep_default_na=False, para no tratar como vacíos
             textos legítimos que coincidan con esa lista por casualidad,
+          · los valores se normalizan (nunca "1.0" ni "nan" ni espacios),
+            conservando ceros iniciales legítimos,
           · se guarda en self.skipped_rows el número REAL de fila de Excel
             de cualquier celda que sí haya quedado vacía, para poder
-            avisarle al usuario exactamente cuál revisar (en vez de un
-            misterioso "40 de 41").
+            avisarle al usuario exactamente cuál revisar.
         """
         if not (self.excel_path and self.column_name):
             raise ValueError("Archivo o columna no configurados.")
-        ext = self.excel_path.suffix.lower()
-        if ext in (".csv", ".tsv", ".txt"):
-            sep = "\t" if ext == ".tsv" else ","
-            df = pd.read_csv(self.excel_path, sep=sep, keep_default_na=False, encoding="utf-8")
-        else:
-            sheet = self.sheet_name or 0
-            df = pd.read_excel(self.excel_path, sheet_name=sheet, keep_default_na=False)
+        df = self._read_df()
+        if self.column_name not in df.columns:
+            raise ValueError(
+                f"La columna «{self.column_name}» no existe en la hoja "
+                f"«{self.sheet_name or 0}».")
 
         names: list[str] = []
         self.skipped_rows = []
         for i, raw in enumerate(df[self.column_name]):
-            text = "" if raw is None else str(raw).strip()
-            if text == "" or text.lower() in ("nan", "nat", "none"):
+            text = self._normalize_excel_value(raw)
+            if text is None:
                 self.skipped_rows.append(i + 2)   # +1 índice 0→1, +1 por la fila de encabezado
                 continue
             names.append(text)
@@ -485,11 +615,35 @@ class RenameModel:
         """
         Plan posicional (compatibilidad standalone): primera foto ↔ primer
         nombre. NO garantiza identidad de fotografías; se documenta en la UI.
+
+        Los nombres del Excel que se quedan SIN fotografía aparecen como
+        filas explícitas con estado "sin_foto" (NUNCA se descartan en
+        silencio): la vista previa y el resumen las muestran para que el
+        usuario sepa exactamente cuántos registros quedan sin imagen.
         """
         seen_dest: dict[str, int] = {}
         plan: list[dict] = []
-        for photo, name in zip(self._photos, self._names):
-            new_full = name + photo.suffix
+        for i, name in enumerate(self._names):
+            bad = _invalid_name_chars(name)
+            if bad:
+                bad_txt = " ".join(bad)
+                plan.append({
+                    "src": None, "new": name, "state": "error",
+                    "reason": f"el nombre contiene caracteres inválidos ({bad_txt})",
+                    "method": None, "candidates": [], "is_dup": False,
+                    "name": name, "row": i + 2,
+                })
+                continue
+            if i >= len(self._photos):
+                plan.append({
+                    "src": None, "new": name, "state": "sin_foto",
+                    "reason": "no hay fotografía para este registro",
+                    "method": None, "candidates": [], "is_dup": False,
+                    "name": name, "row": i + 2,
+                })
+                continue
+            photo = self._photos[i]
+            new_full = name + photo.suffix if self.keep_extension else name
             is_dup = seen_dest.get(new_full, 0) > 0
             seen_dest[new_full] = seen_dest.get(new_full, 0) + 1
             dest = photo.parent / new_full
@@ -504,9 +658,62 @@ class RenameModel:
             plan.append({
                 "src": photo, "new": new_full, "state": state, "reason": reason,
                 "method": None, "candidates": [], "is_dup": is_dup,
-                "name": name, "row": None,
+                "name": name, "row": i + 2,
             })
         self._plan = plan
+        return self._enable_batch_swaps(plan)
+
+    @staticmethod
+    def _enable_batch_swaps(plan: list[dict]) -> list[dict]:
+        """
+        Clasifica las colisiones de destino del lote:
+
+        - Destino es un archivo EXTERNO (ya existe y NO se renombra en este
+          lote) → estado "existe": jamás se sobreescribe (bloquea).
+        - Destino es un archivo del MISMO lote → se resuelve con el
+          renombrado en dos fases (FASE 1: temporales) → "ok".
+
+        Cada foto del lote aparece una sola vez (out-degree ≤ 1): el grafo
+        src→dest es un conjunto de cadenas y ciclos. Una cadena termina en
+        una fila "ok" (destino libre) o en un archivo externo (irresoluble);
+        un ciclo puro (A→B, B→A; A→B→C→A) es siempre resoluble con las dos
+        fases. Se recorre con memoización + detección de ciclo.
+        """
+        rows = [it for it in plan
+                if it["src"] and it["state"] in ("ok", "conflicto")]
+        by_src: dict[Path, dict] = {it["src"]: it for it in rows}
+        memo: dict[Path, bool] = {}
+
+        def movable(src: Path, path: frozenset) -> bool:
+            if src in memo:
+                return memo[src]
+            it = by_src.get(src)
+            if it is None:
+                memo[src] = True      # destino libre (no es un archivo del lote)
+                return True
+            if it["state"] == "ok":
+                memo[src] = True
+                return True
+            if src in path:
+                return True           # ciclo puro → resoluble en dos fases
+            dest = it["src"].parent / it["new"]
+            if dest not in by_src:
+                memo[src] = False     # archivo externo → no se toca
+                return False
+            val = movable(dest, path | {src})
+            memo[src] = val
+            return val
+
+        for it in rows:
+            if it["state"] != "conflicto":
+                continue
+            dest = it["src"].parent / it["new"]
+            if dest not in by_src and dest.exists():
+                it["state"] = "existe"
+                it["reason"] = "el destino ya existe y NO se renombra en este lote"
+            elif movable(it["src"], frozenset()):
+                it["state"] = "ok"
+                it["reason"] = "destino renombrado en el mismo lote (swap)"
         return plan
 
     def _build_plan_matching(self) -> list[dict]:
@@ -532,6 +739,16 @@ class RenameModel:
 
         for i, name in enumerate(self._names):
             row_no = i + 2   # +1 encabezado, +1 índice 0→1 (convención de load_names)
+            bad = _invalid_name_chars(name)
+            if bad:
+                bad_txt = " ".join(bad)
+                plan.append({
+                    "src": None, "new": name, "state": "error",
+                    "reason": f"el nombre contiene caracteres inválidos ({bad_txt})",
+                    "method": "invalid", "candidates": [], "is_dup": False,
+                    "name": name, "row": row_no,
+                })
+                continue
             try:
                 path, status, candidates = matcher.find_image_ex(name, str(folder))
             except Exception:
@@ -561,7 +778,7 @@ class RenameModel:
                 continue
             used.add(src_key)
 
-            new_full = name + src.suffix
+            new_full = name + src.suffix if self.keep_extension else name
             is_dup = seen_dest.get(new_full, 0) > 0
             seen_dest[new_full] = seen_dest.get(new_full, 0) + 1
             dest = src.parent / new_full
@@ -580,7 +797,7 @@ class RenameModel:
             })
 
         self._plan = plan
-        return plan
+        return self._enable_batch_swaps(plan)
 
     @staticmethod
     def _skip_text(item: dict) -> str:
@@ -590,6 +807,11 @@ class RenameModel:
         state = item["state"]
         if state == "not_found":
             return f"Omitida: no se encontró fotografía para «{item['name']}»"
+        if state == "sin_foto":
+            return f"Omitida (sin fotografía): «{item['name']}» no tiene imagen"
+        if state == "existe":
+            return (f"Omitida (ya existe): {src_name} → {item['new']} "
+                    f"({item.get('reason') or 'el destino ya existe y no se toca'})")
         if state == "ambiguo":
             cands = ", ".join(Path(c).name for c in item.get("candidates") or [])
             return (f"Omitida (ambigua): «{item['name']}» coincide con varios archivos "
@@ -602,7 +824,55 @@ class RenameModel:
             return f"Omitida (conflicto): {src_name} → {item['new']} ({item.get('reason') or 'el destino ya existe'})"
         return f"Omitida: {src_name} → {item['new']}"
 
+    # ── validación de bloqueo (única fuente para UI y on_rename) ──────────
+    _BLOCKING_STATES = ("existe", "conflicto", "duplicado", "not_found",
+                        "sin_foto", "ambiguo", "error")
+
+    def rename_blocked(self, plan: Optional[list[dict]] = None) -> tuple[bool, str]:
+        """
+        Devuelve (bloqueado, motivo). La UI deshabilita «Renombrar todo» y
+        on_rename vuelve a comprobar aquí (también cubre los atajos Ctrl+Enter).
+
+        - Modo posicional: bloquea si el conteo no cuadra O hay cualquier
+          fila en estado bloqueante (conflicto, duplicado, sin fotografía…).
+        - Modo matching seguro: bloquea solo si hay conflictos reales
+          (conflicto/duplicado/ambiguo/error); las filas "not_found" se
+          omiten sin bloquear (cada nombre busca SU foto, se renombra lo
+          que coincide con seguridad).
+
+        ``plan`` opcional: permite evaluar un plan recién calculado (p. ej.
+        desde un hilo de fondo) sin depender de ``self._plan``.
+        """
+        if not (self._photos and self._names):
+            return True, "No hay fotografías y nombres cargados."
+        if not self.matching_mode and len(self._photos) != len(self._names):
+            return True, (f"El conteo no coincide: {len(self._photos)} "
+                          f"fotografías vs {len(self._names)} registros.")
+        plan = plan if plan is not None else (self._plan if self._plan
+                                              else self._build_plan())
+        if not plan:
+            return True, "No hay correspondencias que renombrar."
+        if self.matching_mode:
+            bad = [p for p in plan if p["state"] in
+                   ("conflicto", "duplicado", "ambiguo", "error")]
+        else:
+            bad = [p for p in plan if p["state"] in self._BLOCKING_STATES]
+        if bad:
+            estados = ", ".join(sorted({p["state"] for p in bad}))
+            return True, (f"Existen {len(bad)} fila(s) con estado "
+                          f"bloqueante ({estados}).")
+        return False, ""
+
     # ── renombramiento ─────────────────────────────────────────────────────
+    @staticmethod
+    def _emit(on_log: Optional[Callable[[str], None]], line: str) -> None:
+        """Emite una línea al panel de registro si el callback está presente."""
+        if on_log:
+            try:
+                on_log(line)
+            except Exception:
+                pass
+
     def rename_all(
         self,
         on_progress: Callable[[int, int, str], None],
@@ -610,6 +880,7 @@ class RenameModel:
         cancel_ev: Optional[threading.Event] = None,
         copy_mode: bool = False,
         plan: Optional[list[dict]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Renombra (o copia) archivos en un hilo secundario.
 
@@ -617,8 +888,14 @@ class RenameModel:
         - "ya_correcto": el destino es EL MISMO archivo → no se toca, sin error.
         - "conflicto": el destino existe y es OTRO archivo → NO se sobreescribe,
           NO se elimina, NO se modifica (en ningún modo, incluido copia).
-        - "not_found" / "ambiguo" / "duplicado" / "error": se omiten, nunca se renombra.
-        - Re-chequeo TOCTOU justo antes de tocar disco.
+        - "not_found" / "ambiguo" / "duplicado" / "error" / "sin_foto": se
+          omiten, nunca se renombra.
+        - Renombrado en DOS FASES para evitar colisiones (a→b mientras
+          b→a): FASE 1 mueve/copia a nombres temporales únicos, FASE 2
+          convierte temporales en definitivos. Si algo falla a mitad de
+          camino, los temporales se revierten a su origen (jamás se dejan
+          huérfanos) y se registra exactamente lo que se ejecutó.
+        - Re-chequeo TOCTOU justo antes de cada toque a disco.
         """
         if plan is None:
             plan = self._build_plan()
@@ -637,6 +914,13 @@ class RenameModel:
                 on_done(0, [f"No se pudo crear carpeta de copias: {exc}"])
                 return
 
+        # ── pre-selección: qué filas se ejecutan de verdad ─────────────────
+        skip_states = self._BLOCKING_STATES
+        # Orígenes que se renombran en ESTE lote: sus destinos quedan libres
+        # en la FASE 1 (temporales), por lo que no son conflictos reales.
+        work_srcs = {item["src"] for item in plan
+                     if item["state"] == "ok" and item["src"]}
+        work: list[tuple[int, Path, Path, dict]] = []
         for i, item in enumerate(plan):
             if cancel_ev and cancel_ev.is_set():
                 errors.append("Cancelado por el usuario.")
@@ -645,65 +929,133 @@ class RenameModel:
             new_full = item["new"]
             state    = item["state"]
 
-            if state in ("not_found", "ambiguo", "duplicado", "conflicto",
-                         "error"):
+            if state in skip_states:
                 errors.append(self._skip_text(item))
+                self._emit(on_log, f"— {src.name if src else '—'} → {new_full}  [{state}]")
                 on_progress(i + 1, total, f"[{state}] {new_full}")
                 continue
 
             if state == "ya_correcto":
                 success += 1
+                self._emit(on_log, f"✓ {src.name}  (ya correcto)")
                 on_progress(i + 1, total, f"[ya correcto] {new_full}")
                 continue
 
             if src is None:
                 continue
 
-            new_name = new_full
-            if new_name in seen_dest:
-                seen_dest[new_name] += 1
-                errors.append(f"Saltado duplicado: {src.name} → {new_name} (nombre ya usado)")
-                log.warning("DUP  %s → %s (skip)", src.name, new_name)
-                on_progress(i + 1, total, f"[duplicado] {new_name}")
+            if new_full in seen_dest:
+                errors.append(f"Saltado duplicado: {src.name} → {new_full} (nombre ya usado)")
+                log.warning("DUP  %s → %s (skip)", src.name, new_full)
+                self._emit(on_log, f"— {src.name} → {new_full}  [duplicado]")
+                on_progress(i + 1, total, f"[duplicado] {new_full}")
                 continue
-            seen_dest[new_name] = 1
+            seen_dest[new_full] = 1
 
-            dest = (dest_folder / new_name) if copy_mode and dest_folder \
-                   else (src.parent / new_name)
+            dest = (dest_folder / new_full) if copy_mode and dest_folder \
+                   else (src.parent / new_full)
             if dest.exists():
                 if self._same_file(dest, src):
                     success += 1   # el destino es el propio origen → ya correcto
-                    on_progress(i + 1, total, f"[ya correcto] {new_name}")
+                    self._emit(on_log, f"✓ {src.name}  (ya correcto)")
+                    on_progress(i + 1, total, f"[ya correcto] {new_full}")
                     continue
-                errors.append(f"Saltado: {src.name} → {new_name} (el destino ya existe, no se sobreescribe)")
-                log.warning("CONFLICT  %s → %s (exists)", src.name, new_name)
-                on_progress(i + 1, total, f"[conflicto] {new_name}")
+                if dest in work_srcs:
+                    # El destino se renombra en este mismo lote: la FASE 1 lo
+                    # libera antes de la FASE 2 (swap A→B, B→C).
+                    log.info("SWAP  %s → %s (destino en lote)", src.name, new_full)
+                    work.append((i, src, dest, item))
+                    continue
+                errors.append(f"Saltado: {src.name} → {new_full} (el destino ya existe, no se sobreescribe)")
+                log.warning("CONFLICT  %s → %s (exists)", src.name, new_full)
+                self._emit(on_log, f"— {src.name} → {new_full}  [conflicto]")
+                on_progress(i + 1, total, f"[conflicto] {new_full}")
                 continue
+            work.append((i, src, dest, item))
+
+        # ── FASE 1: mover/copiar a nombres temporales únicos ───────────────
+        staged: list[tuple[int, Path, Path, Path, dict]] = []
+        for j, (plan_i, src, dest, item) in enumerate(work):
+            if cancel_ev and cancel_ev.is_set():
+                errors.append("Cancelado por el usuario.")
+                break
+            new_full = item["new"]
+            temp = dest.parent / f".metatag_tmp_{uuid.uuid4().hex[:10]}{dest.suffix}"
             try:
                 if copy_mode:
-                    shutil.copy2(src, dest)
+                    shutil.copy2(src, temp)
                 else:
-                    src.rename(dest)
+                    src.rename(temp)
+                staged.append((plan_i, temp, dest, src, item))
+            except PermissionError:
+                errors.append(f"{src.name} → {new_full}  (permiso denegado)")
+                log.error("PERM  %s", src.name)
+                self._emit(on_log, f"✕ No fue posible renombrar {src.name}")
+            except OSError as exc:
+                errors.append(f"{src.name} → {new_full}  ({exc})")
+                log.error("ERR %s", exc)
+                self._emit(on_log, f"✕ No fue posible renombrar {src.name}")
+            on_progress(plan_i + 1, total, new_full)
+
+        # ── FASE 2: temporales → definitivos ───────────────────────────────
+        for plan_i, temp, dest, src, item in staged:
+            new_full = item["new"]
+            if cancel_ev and cancel_ev.is_set():
+                self._rollback_temp(temp, src, copy_mode)
+                errors.append("Cancelado por el usuario.")
+                log.warning("ROLLBACK  %s (cancelado)", src.name)
+                self._emit(on_log, f"— {src.name} revertido (cancelado)")
+                on_progress(plan_i + 1, total, f"[cancelado] {new_full}")
+                continue
+            if dest.exists():
+                # Otro archivo ocupó la ruta tras la FASE 1: no se sobreescribe.
+                self._rollback_temp(temp, src, copy_mode)
+                errors.append(f"Saltado: {src.name} → {new_full} (el destino ya existe, no se sobreescribe)")
+                log.warning("CONFLICT  %s → %s (exists)", src.name, new_full)
+                self._emit(on_log, f"✕ No fue posible renombrar {src.name} (el destino ya existe)")
+                on_progress(plan_i + 1, total, f"[conflicto] {new_full}")
+                continue
+            try:
+                temp.rename(dest)
                 batch.append((dest, src))
                 success += 1
-                log.info("OK  %s → %s", src.name, new_name)
+                log.info("OK  %s → %s", src.name, new_full)
+                self._emit(on_log, f"✓ {src.name} → {new_full}")
             except PermissionError:
-                errors.append(f"{src.name} → {new_name}  (permiso denegado)")
+                self._rollback_temp(temp, src, copy_mode)
+                errors.append(f"{src.name} → {new_full}  (permiso denegado)")
                 log.error("PERM  %s", src.name)
+                self._emit(on_log, f"✕ No fue posible renombrar {src.name}")
             except OSError as exc:
-                errors.append(f"{src.name} → {new_name}  ({exc})")
+                self._rollback_temp(temp, src, copy_mode)
+                errors.append(f"{src.name} → {new_full}  ({exc})")
                 log.error("ERR %s", exc)
-            on_progress(i + 1, total, new_name)
+                self._emit(on_log, f"✕ No fue posible renombrar {src.name}")
+            on_progress(plan_i + 1, total, new_full)
 
         if batch:
             self._undo_stack.append((batch, dest_folder, copy_mode))
         on_done(success, errors)
+
+    @staticmethod
+    def _rollback_temp(temp: Path, src: Path, copy_mode: bool) -> None:
+        """Revierte un temporal a su origen (nunca deja archivos huérfanos)."""
+        try:
+            if copy_mode:
+                if temp.exists():
+                    temp.unlink()
+            else:
+                if temp.exists():
+                    temp.rename(src)
+        except OSError as exc:
+            log.error("Rollback fallido para %s: %s", temp, exc)
 
     # ── deshacer ───────────────────────────────────────────────────────────
     def undo_last(
         self,
         on_progress: Callable[[int, int, str], None],
         on_done: Callable[[int, list[str]], None],
+        on_log: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Revierte el último lote.
 
@@ -723,20 +1075,25 @@ class RenameModel:
             try:
                 if not current.exists():
                     errors.append(f"Archivo no encontrado: {current.name}")
+                    self._emit(on_log, f"— no se encontró {current.name}")
                 elif copy_mode:
                     current.unlink()
                     success += 1
+                    self._emit(on_log, f"↩ eliminada copia {current.name}")
                 else:
                     if original.exists():
                         if self._same_file(original, current):
                             success += 1   # ya restaurado (mismo archivo)
+                            self._emit(on_log, f"↩ {current.name} ya estaba restaurado")
                         else:
                             errors.append(
                                 f"Conflicto al deshacer: no se sobreescribe "
                                 f"{original.name} (hay otro archivo en esa ruta)")
+                            self._emit(on_log, f"✕ conflicto al restaurar {original.name}")
                     else:
                         current.rename(original)
                         success += 1
+                        self._emit(on_log, f"↩ {current.name} → {original.name}")
             except OSError as exc:
                 errors.append(f"{current.name} → {original.name}  ({exc})")
             on_progress(i + 1, total, original.name)
@@ -764,9 +1121,40 @@ class RenameModel:
     def export_preview_csv(self, pairs: list[tuple[str, str, Path, bool, str]], dest: Path) -> None:
         with dest.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["original", "nuevo_nombre", "duplicado", "estado"])
-            for orig, new, _, is_dup, state in pairs:
-                w.writerow([orig, new, "Sí" if is_dup else "", state])
+            w.writerow(["indice", "estado", "original", "nuevo_nombre",
+                        "ruta_original", "ruta_destino", "resultado"])
+            for i, (orig, new, path, is_dup, state) in enumerate(pairs, start=1):
+                ruta_orig = str(path) if path is not None else ""
+                ruta_dest = (str(path.parent / new) if path is not None else "")
+                resultado = ("Sí" if is_dup else
+                             ("✓" if state in ("ok", "ya_correcto") else state))
+                w.writerow([i, state, orig, new, ruta_orig, ruta_dest, resultado])
+
+    def write_backup(self, dest: Path, batch: list[tuple[Path, Path]],
+                     copy_mode: bool) -> None:
+        """Escribe el registro JSON de la última operación (original→nuevo).
+
+        ``batch`` es la tupla (destino, origen) del _undo_stack: aquí se
+        invierte a (original → nuevo) para que el registro sea legible.
+        """
+        entries = [
+            {
+                "original": src.name,
+                "nuevo": cur.name,
+                "ruta_original": str(src),
+                "ruta_destino": str(cur),
+                "modo": "copia" if copy_mode else "renombrado",
+            }
+            for cur, src in batch
+        ]
+        payload = {
+            "creado": datetime.now().isoformat(timespec="seconds"),
+            "carpeta": str(self.folder_path or ""),
+            "modo": "copia" if copy_mode else "renombrado",
+            "archivos": entries,
+        }
+        dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
 
 
 # ===========================================================================
@@ -903,9 +1291,7 @@ class ImageTooltip:
             tip.attributes("-topmost", True)
             ctk.CTkLabel(tip, image=ctk_img, text="",
                          fg_color=C["surface"]).pack(padx=6, pady=6)
-            x = self._widget.winfo_rootx() + self._widget.winfo_width() + 10
-            y = self._widget.winfo_rooty()
-            tip.geometry(f"+{x}+{y}")
+            _place_tip_near_pointer(tip, self._widget, offset=18)
             tip.protocol("WM_DELETE_WINDOW", self._destroy_tip)
             self._tip = tip
             ImageTooltip._ACTIVE.append(tip)
@@ -1164,7 +1550,7 @@ class FileBrowser(ctk.CTkToplevel):
             w.destroy()
 
         if self._mode == "folder":
-            self._add_row("📂  (esta carpeta)", path, is_dir=True, current=True)
+            self._add_row("▸  (esta carpeta)", path, is_dir=True, current=True)
 
         try:
             entries = sorted(path.iterdir(),
@@ -1183,7 +1569,7 @@ class FileBrowser(ctk.CTkToplevel):
     def _load_chunk(self) -> None:
         chunk, self._pending = self._pending[:self.CHUNK], self._pending[self.CHUNK:]
         for e in chunk:
-            label = f"📁  {e.name}" if e.is_dir() else f"📄  {e.name}"
+            label = f"▸  {e.name}" if e.is_dir() else f"   {e.name}"
             self._add_row(label, e, is_dir=e.is_dir())
         if self._pending:
             self._chunk_job = self.after(20, self._load_chunk)
@@ -1267,7 +1653,7 @@ class PathSelector(ctk.CTkFrame):
         self._entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self._entry.bind("<Return>", lambda _: self._notify())
 
-        ctk.CTkButton(self, text="📂  Explorar", width=118, height=38,
+        ctk.CTkButton(self, text="Explorar", width=118, height=38,
                       font=FONT_MD,
                       **BTN_SECONDARY,
                       command=self._browse).grid(row=0, column=1)
@@ -1322,16 +1708,16 @@ class PreviewTable(ctk.CTkFrame):
     ROW_H = 32
     BUFFER = 5
     _MIN_H = 240
-    _MAX_H = 640
+    _MAX_H = 900
 
     # Configuración de columnas maestra (sincronizada header ↔ filas)
     _COL_NUM_W   = 36    # Columna # (índice)
+    _COL_STATE_W = 96    # Columna Estado (ancho fijo)
     _COL_ORIG_W  = None  # Columna Original (dinámica, weight=1)
-    _COL_ARROW_W = 24    # Columna → (flecha)
     _COL_NEW_W   = None  # Columna Nuevo nombre (dinámica, weight=1)
-    _COL_THUMB_W = 52    # Columna Estado (ancho reservado)
 
-    def __init__(self, master, on_name_change: Optional[Callable[[int, str, Path], None]] = None, **kw) -> None:
+    def __init__(self, master, on_name_change: Optional[Callable[[int, str, Path], None]] = None,
+                 on_filter: Optional[Callable[[int], None]] = None, **kw) -> None:
         super().__init__(master, fg_color=C["surface"], corner_radius=10, **kw)
         self._all_pairs: list[dict[str, object]] = []
         self._filtered: list[int] = []
@@ -1340,6 +1726,7 @@ class PreviewTable(ctk.CTkFrame):
         self._selected: set[int] = set()              # índices en _all_pairs
         self._edit_mode: bool = False
         self._on_name_change = on_name_change
+        self._on_filter = on_filter
         self._current_query: str = ""
         self._filter_job: Optional[str] = None
         self._syncing: bool = False
@@ -1353,6 +1740,7 @@ class PreviewTable(ctk.CTkFrame):
         # Altura FIJA (independiente de N), razonable en pantallas pequeñas.
         sh = master.winfo_screenheight()
         h = max(self._MIN_H, min(self._MAX_H, int(sh * 0.45)))
+        self._fixed_h: int = h
         self.pack_propagate(False)
         self.configure(height=h)
 
@@ -1364,7 +1752,8 @@ class PreviewTable(ctk.CTkFrame):
         self._lbl_empty.pack(pady=28)
 
     # ── API pública ────────────────────────────────────────────────────────
-    def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
+    def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]],
+               empty_message: str = "Sin datos para mostrar.") -> None:
         """Reemplaza el contenido de la tabla. Síncrono y acotado a O(viewport)."""
         self._cancel_jobs()
         self._close_tip()
@@ -1379,12 +1768,20 @@ class PreviewTable(ctk.CTkFrame):
         self._filtered = list(range(len(self._all_pairs)))
         self._selected = {s for s in self._selected if s < len(self._all_pairs)}
         self._first = 0
+        self._notify_filter()
 
         if not self._all_pairs:
             self._hide_table()
-            self._lbl_empty.configure(text="Sin datos para mostrar.")
+            self._lbl_empty.configure(text=empty_message)
             self._lbl_empty.pack(pady=24)
             return
+
+        # Altura adaptativa: crece con el contenido (hasta _MAX_H) en vez de
+        # mostrar siempre un viewport pequeño con mucho espacio vacío abajo.
+        h2 = min(self._MAX_H, max(self._MIN_H, len(self._all_pairs) * self.ROW_H + 34))
+        if h2 != self._fixed_h:
+            self._fixed_h = h2
+            self.configure(height=h2)
 
         self._show_table()
         self._cv.delete("all")
@@ -1392,8 +1789,19 @@ class PreviewTable(ctk.CTkFrame):
         self._cv.yview_moveto(0)
         self._sync_scrollregion()
         self._sync_viewport()
-        # Ajuste de seguridad tras el mapeo real del canvas (tamaño definitivo).
-        self.after_idle(self._sync_viewport)
+
+        # Reconstruir el pool si el canvas aún no estaba mapeado cuando se
+        # construyó (winfo_height()=1 → pool fantasma): se reintenta tras el
+        # primer layout y de nuevo después de 80 ms por si <Configure> tardó.
+        def _check_pool() -> None:
+            real_size = self._pool_size()
+            if real_size != len(self._rows):
+                self._cv.delete("all")
+                self._build_pool()
+                self._sync_scrollregion()
+            self._sync_viewport()
+        self.after_idle(_check_pool)
+        self.after(80, _check_pool)
 
     def filter(self, query: str) -> None:
         """Aplica filtro de texto sobre los pares ya cargados (debounced)."""
@@ -1411,6 +1819,14 @@ class PreviewTable(ctk.CTkFrame):
         # La selección se conserva; el viewport se reclampa a la nueva altura.
         self._sync_scrollregion()
         self._sync_viewport()
+        self._notify_filter()
+
+    def _notify_filter(self) -> None:
+        if self._on_filter:
+            try:
+                self._on_filter(len(self._filtered))
+            except Exception:
+                pass
 
     def update_dup_states(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
         """Refresca estados/duplicados en el MODELO. No destruye widgets."""
@@ -1460,10 +1876,15 @@ class PreviewTable(ctk.CTkFrame):
         total = n * self.ROW_H
         view_h = self._cv.winfo_height()
         max_px = max(0, total - view_h)
-        new_px = max(0, min(max_px, self._pixel_offset() + dy))
-        if abs(new_px - self._pixel_offset()) < 1:
+        current_px = self._pixel_offset()
+        new_px = max(0, min(max_px, current_px + dy))
+        if new_px == current_px:
             return
         self._cv.yview_moveto(new_px / max_px if max_px else 0.0)
+        # Tras un scroll la fila bajo el cursor ya no es la misma: cerrar el
+        # tooltip evita que quede mostrando la foto de la fila ANTERIOR.
+        self._close_tip()
+        self._hover_path = None
         self._sync_viewport()
 
     def _pixel_offset(self) -> int:
@@ -1477,10 +1898,9 @@ class PreviewTable(ctk.CTkFrame):
 
     def _configure_grid(self, frame: ctk.CTkFrame) -> None:
         frame.columnconfigure(0, minsize=self._COL_NUM_W)
-        frame.columnconfigure(1, weight=1)
-        frame.columnconfigure(2, minsize=self._COL_ARROW_W)
+        frame.columnconfigure(1, minsize=self._COL_STATE_W)
+        frame.columnconfigure(2, weight=1)
         frame.columnconfigure(3, weight=1)
-        frame.columnconfigure(4, minsize=self._COL_THUMB_W)
 
     def _build_header(self) -> None:
         hdr = ctk.CTkFrame(self, fg_color=C["surface2"], corner_radius=0, height=30)
@@ -1488,10 +1908,9 @@ class PreviewTable(ctk.CTkFrame):
         self._configure_grid(hdr)
         cols = [
             (0, "#",           "w",  4),
-            (1, "Original",    "w",  8),
-            (2, "→",           "w",  4),
+            (1, "Estado",      "w",  8),
+            (2, "Original",    "w",  8),
             (3, "Nuevo nombre","w",  8),
-            (4, "Estado",      "w",  8),
         ]
         for col, txt, sticky, padx in cols:
             ctk.CTkLabel(hdr, text=txt, width=1,
@@ -1557,10 +1976,7 @@ class PreviewTable(ctk.CTkFrame):
     def _pool_size(self) -> int:
         if self._cv is None:
             return 0
-        view_h = self._cv.winfo_height()
-        if view_h < 2:
-            view_h = max(200, self.winfo_height() - 34)
-        visible = max(1, int(view_h // self.ROW_H))
+        visible = max(1, int(self._view_height() // self.ROW_H) + 2)  # +2 filas parciales
         return min(len(self._filtered), visible + 2 * self.BUFFER)
 
     def _make_slot(self, k: int) -> dict[str, object]:
@@ -1572,12 +1988,14 @@ class PreviewTable(ctk.CTkFrame):
         num = ctk.CTkLabel(row, text="", width=1, font=FONT_SM,
                            text_color=C["overlay"], fg_color="transparent")
         num.grid(row=0, column=0, sticky="w", padx=4)
+
+        state_lbl = ctk.CTkLabel(row, text="", width=1, anchor="w", font=FONT_SM,
+                                 text_color=C["overlay"], fg_color="transparent")
+        state_lbl.grid(row=0, column=1, sticky="w", padx=8)
+
         orig = ctk.CTkLabel(row, text="", width=1, anchor="w", font=FONT_SM,
                             text_color=C["subtext"], fg_color="transparent")
-        orig.grid(row=0, column=1, sticky="w", padx=8)
-        arrow = ctk.CTkLabel(row, text="→", width=1, font=FONT_SM,
-                             text_color=C["accent2"], fg_color="transparent")
-        arrow.grid(row=0, column=2, sticky="w", padx=4)
+        orig.grid(row=0, column=2, sticky="w", padx=8)
 
         var = ctk.StringVar()
         new_lbl = ctk.CTkLabel(row, text="", width=1, anchor="w", font=FONT_SM,
@@ -1589,13 +2007,9 @@ class PreviewTable(ctk.CTkFrame):
         new_entry.grid(row=0, column=3, sticky="ew", padx=8)
         new_entry.grid_remove()
 
-        state_lbl = ctk.CTkLabel(row, text="", width=1, anchor="w", font=FONT_SM,
-                                 text_color=C["overlay"], fg_color="transparent")
-        state_lbl.grid(row=0, column=4, sticky="w", padx=8)
-
         slot = {
             "frame": row, "num_widget": num, "orig_widget": orig,
-            "arrow_widget": arrow, "new_widget": new_lbl,
+            "new_widget": new_lbl,
             "new_entry": new_entry, "new_var": var, "state_widget": state_lbl,
             "index": -1, "pair_index": -1, "item": None,
         }
@@ -1642,10 +2056,10 @@ class PreviewTable(ctk.CTkFrame):
                 self._on_name_change(pi, safe, row["photo_path"])
 
     def _sync_viewport(self) -> None:
+        if self._cv is None:
+            return
         n = len(self._filtered)
-        view_h = self._cv.winfo_height()
-        if view_h < 2:
-            view_h = max(200, self.winfo_height() - 34)
+        view_h = self._view_height()
         if n == 0:
             for slot in self._rows:
                 self._hide_slot(slot)
@@ -1654,9 +2068,10 @@ class PreviewTable(ctk.CTkFrame):
         max_px = max(0, total - view_h)
         if self._pixel_offset() > max_px:
             self._cv.yview_moveto(max_px / total if total else 0.0)
-        visible = max(1, int(view_h // self.ROW_H))
         first = max(0, int(self._pixel_offset() // self.ROW_H) - self.BUFFER)
-        last = min(n, first + visible + 2 * self.BUFFER)
+        # El límite del pool es visible + 2 (+2 cubre filas parciales de
+        # pantalla); `last` usa el MISMO tamaño para no dejar slots muertos.
+        last = min(n, first + self._pool_size())
         self._first = first
         for k, slot in enumerate(self._rows):
             logical = first + k
@@ -1687,7 +2102,6 @@ class PreviewTable(ctk.CTkFrame):
             slot["frame"].configure(fg_color=bg, border_width=0)
         slot["num_widget"].configure(text=f"{i+1:>3}.")
         slot["orig_widget"].configure(text=row["orig"])
-        slot["arrow_widget"].configure(text_color=self._arrow_color(state, is_dup))
         new_color = self._new_color(state, is_dup)
         slot["new_widget"].configure(text=row["new"], text_color=new_color)
         slot["new_entry"].configure(border_color=C["red"] if is_dup else C["border"],
@@ -1708,6 +2122,14 @@ class PreviewTable(ctk.CTkFrame):
         else:
             slot["new_widget"].grid()
             slot["new_entry"].grid_remove()
+        # FIX: reposicionar la fila física en su coordenada lógica. El pool se
+        # construye en k*ROW_H (solo k=0 está en su sitio); sin este coords()
+        # las filas quedan todas encima de la primera y el scroll "mueve" los
+        # widgets pero la tabla parece no desplazarse.
+        try:
+            self._cv.coords(slot["item"], 0, logical * self.ROW_H)
+        except Exception:
+            pass
         try:
             self._cv.itemconfigure(slot["item"], state="normal")
         except Exception:
@@ -1722,25 +2144,28 @@ class PreviewTable(ctk.CTkFrame):
         except Exception:
             pass
 
+    def _view_height(self) -> int:
+        """Altura del viewport del canvas, estable incluso antes del primer
+        layout: si el canvas aún no está mapeado usa la altura FIJA de la
+        tabla (así el pool de slots no se construye con un tamaño fantasma)."""
+        view_h = self._cv.winfo_height()
+        if view_h < 2:
+            view_h = max(self._MIN_H, self._fixed_h - 34)
+        return view_h
+
     def _sync_scrollregion(self) -> None:
+        if self._cv is None:
+            return
         n = len(self._filtered)
         total = n * self.ROW_H
         w = self._cv.winfo_width()
         if w < 2:
             w = 1
         self._cv.configure(scrollregion=(0, 0, w, total))
-        view_h = self._cv.winfo_height()
-        if view_h < 2:
-            view_h = max(200, self.winfo_height() - 34)
+        view_h = self._view_height()
         max_px = max(0, total - view_h)
         if self._pixel_offset() > max_px:
             self._cv.yview_moveto(max_px / total if total else 0.0)
-
-    @staticmethod
-    def _arrow_color(state: str, is_dup: bool) -> str:
-        if state != "ok":
-            return C["state_fg"].get(state, C["red"])
-        return C["red"] if is_dup else C["accent2"]
 
     @staticmethod
     def _new_color(state: str, is_dup: bool) -> str:
@@ -1751,6 +2176,8 @@ class PreviewTable(ctk.CTkFrame):
     # ── scroll / viewport ─────────────────────────────────────────────────
     def _on_sb(self, *args) -> None:
         self._cv.yview(*args)
+        self._close_tip()
+        self._hover_path = None
         self._sync_viewport()
 
     def _on_wheel(self, event) -> str:
@@ -1771,6 +2198,12 @@ class PreviewTable(ctk.CTkFrame):
                 self._cv.itemconfigure(slot["item"], width=w)
             except Exception:
                 pass
+        # Si el canvas recién se mapeó, el pool pudo haberse construido con un
+        # tamaño fantasma (winfo_height=1): reconstruirlo con el tamaño real
+        # para que el viewport siempre tenga slots de sobra (visible + buffer).
+        if self._rows and len(self._rows) != self._pool_size():
+            self._cv.delete("all")
+            self._build_pool()
         self._sync_scrollregion()
         self._sync_viewport()
 
@@ -1781,9 +2214,11 @@ class PreviewTable(ctk.CTkFrame):
             self._close_tip()
             self._hover_path = None
             return
-        k = int(self._cv.canvasy(event.y) // self.ROW_H)
-        logical = self._first + k
-        if k < 0 or logical >= n:
+        # canvasy ya devuelve la coordenada ABSOLUTA del canvas (incluye el
+        # scroll). Dividir por ROW_H da el índice lógico directo: NO se debe
+        # sumar self._first (eso duplicaría el offset tras hacer scroll).
+        logical = int(self._cv.canvasy(event.y) // self.ROW_H)
+        if logical < 0 or logical >= n:
             self._close_tip()
             self._hover_path = None
             return
@@ -1792,10 +2227,14 @@ class PreviewTable(ctk.CTkFrame):
 
     def _on_slot_motion(self, slot: dict[str, object]):
         def _handler(_e=None):
-            logical = slot["index"]
-            if logical < 0 or logical >= len(self._filtered):
+            # pair_index apunta al elemento REAL del modelo (_all_pairs), es
+            # inmutable para esa fila y no depende del orden de _filtered ni
+            # del scroll. Leer slot["index"] aquí podía mostrar la imagen de
+            # la fila "anterior" del slot durante scroll rápido (reciclo).
+            pi = slot["pair_index"]
+            if pi < 0 or pi >= len(self._all_pairs):
                 return
-            path = self._all_pairs[self._filtered[logical]]["photo_path"]
+            path = self._all_pairs[pi]["photo_path"]
             self._set_hover(path)
         return _handler
 
@@ -1827,9 +2266,7 @@ class PreviewTable(ctk.CTkFrame):
             tip.configure(fg_color=C["surface"])
             tip.attributes("-topmost", True)
             ctk.CTkLabel(tip, image=ctk_img, text="", fg_color=C["surface"]).pack(padx=6, pady=6)
-            x = self._cv.winfo_rootx() + self._cv.winfo_width() + 10
-            y = self._cv.winfo_rooty()
-            tip.geometry(f"+{x}+{y}")
+            _place_tip_near_pointer(tip, self, offset=18)
             tip.protocol("WM_DELETE_WINDOW", self._close_tip)
             self._tip = tip
             ImageTooltip._ACTIVE.append(tip)
@@ -1852,7 +2289,8 @@ class PreviewTable(ctk.CTkFrame):
 class ConfirmDialog(ctk.CTkToplevel):
     """Reemplaza messagebox.askyesno con un diálogo dark estilizado."""
 
-    def __init__(self, master, title: str, message: str) -> None:
+    def __init__(self, master, title: str, message: str,
+                 ok_text: str = "Confirmar") -> None:
         super().__init__(master)
         self.transient(master)
         self.withdraw()
@@ -1873,7 +2311,7 @@ class ConfirmDialog(ctk.CTkToplevel):
                       **BTN_DANGER,
                       font=FONT_MD,
                       command=self._cancel).pack(side="left", padx=8)
-        ctk.CTkButton(btn_row, text="Confirmar", width=110, height=32,
+        ctk.CTkButton(btn_row, text=ok_text, width=110, height=32,
                       **BTN_PRIMARY,
                       text_color=C["accent_text"],
                       font=FONT_MD_BD,
@@ -1896,8 +2334,8 @@ class ConfirmDialog(ctk.CTkToplevel):
         self.destroy()
 
     @classmethod
-    def ask(cls, master, title: str, message: str) -> bool:
-        dlg = cls(master, title, message)
+    def ask(cls, master, title: str, message: str, ok_text: str = "Confirmar") -> bool:
+        dlg = cls(master, title, message, ok_text)
         dlg.wait_window()
         return dlg.result
 
@@ -1912,7 +2350,7 @@ class MainView(ctk.CTk):
         super().__init__()
         _init_fonts(self.winfo_screenwidth())
         self._ctrl = controller
-        self.title("MetaTag v8.9 — Renombrador de Fotos")
+        self.title("MetaTag v8.9 — Image Sync")
         self.configure(fg_color=C["bg"])
 
         # FIX #3: tamaño adaptativo a la pantalla
@@ -1932,15 +2370,19 @@ class MainView(ctk.CTk):
     # ── construcción ───────────────────────────────────────────────────────
     def _build(self) -> None:
         # header
-        hdr = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=0, height=56)
+        hdr = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=0, height=64)
         hdr.pack(fill="x"); hdr.pack_propagate(False)
 
-        ctk.CTkLabel(hdr, text="🖼  Renombrador de Fotos",
+        title_col = ctk.CTkFrame(hdr, fg_color="transparent")
+        title_col.pack(side="left", padx=22, pady=(8, 4))
+        ctk.CTkLabel(title_col, text="Image Sync",
                      font=FONT_TITLE,
-                     text_color=C["text"]).pack(side="left", padx=22, pady=12)
-        ctk.CTkLabel(hdr, text="desde Excel · integrado en MetaTag v8.9",
-                     font=FONT_MD,
-                     text_color=C["accent"]).pack(side="left")
+                     text_color=C["text"], anchor="w").pack(anchor="w")
+        ctk.CTkLabel(title_col,
+                     text="Sincroniza los nombres de las fotografías con los "
+                          "registros del Excel.",
+                     font=FONT_XS_SM,
+                     text_color=C["subtext"], anchor="w").pack(anchor="w")
 
         self._btn_undo = ctk.CTkButton(
             hdr, text="↩  Deshacer", width=120, height=32,
@@ -1957,6 +2399,27 @@ class MainView(ctk.CTk):
             command=self._ctrl.on_theme_change
         ).pack(side="right", padx=(0, 8))
 
+        # indicador de pasos (①…⑤)
+        self._steps = ctk.CTkFrame(self, fg_color=C["bg"], height=30)
+        self._steps.pack(fill="x"); self._steps.pack_propagate(False)
+        self._step_labels: list[ctk.CTkLabel] = []
+        self._steps_done = 0
+        for i, sname in enumerate(_STEP_NAMES, start=1):
+            lbl = ctk.CTkLabel(
+                self._steps, text=f"{_STEP_DIGITS[i - 1]} {sname}",
+                font=FONT_XS_SM, text_color=C["overlay"],
+                fg_color="transparent")
+            lbl.pack(side="left", pady=6)
+            if i < len(_STEP_NAMES):
+                ctk.CTkLabel(self._steps, text="→", font=FONT_XS_SM,
+                             text_color=C["border"],
+                             fg_color="transparent").pack(side="left",
+                                                          padx=(6, 6), pady=6)
+            else:
+                lbl.pack_configure(padx=(0, 4))
+            self._step_labels.append(lbl)
+        self.update_steps(0)
+
         # scroll principal
         self._scroll = ctk.CTkScrollableFrame(
             self, fg_color="transparent",
@@ -1971,7 +2434,7 @@ class MainView(ctk.CTk):
         self._sec(c, "1 · Carpeta de fotos", 0)
         self._folder_sel = PathSelector(
             c, placeholder="/home/usuario/Fotos  o  D:\\Fotos",
-            mode="folder", on_change=lambda _: None)
+            mode="folder", on_change=self._ctrl.on_folder_path_changed)
         self._folder_sel.grid(row=1, column=0, sticky="ew", pady=(0, 5))
 
         sort_row = ctk.CTkFrame(c, fg_color="transparent")
@@ -1982,7 +2445,7 @@ class MainView(ctk.CTk):
         self._sort_var = ctk.StringVar(value="Orden numérico")
         _make_option_menu(
             sort_row, self._sort_var, list(SORT_OPTIONS.keys()),
-            width=185
+            width=185, command=self._ctrl.on_sort_change
         ).pack(side="left", padx=8)
 
         i1 = ctk.CTkFrame(c, fg_color="transparent")
@@ -1991,10 +2454,12 @@ class MainView(ctk.CTk):
         self._lbl_folder = ctk.CTkLabel(i1, text="Selecciona una carpeta",
                                         font=FONT_SM,
                                         text_color=C["subtext"]); self._lbl_folder.pack(side="left", padx=7)
-        ctk.CTkButton(i1, text="Cargar fotos", width=108, height=26,
-                      font=FONT_SM,
-                      **BTN_SECONDARY,
-                      command=self._ctrl.on_load_photos).pack(side="right")
+        self._btn_load_folder = ctk.CTkButton(
+            i1, text="Cargar fotos", width=108, height=26,
+            font=FONT_SM,
+            **BTN_SECONDARY,
+            command=self._ctrl.on_load_photos)
+        self._btn_load_folder.pack(side="right")
 
         self._div(c, 4)
 
@@ -2002,7 +2467,8 @@ class MainView(ctk.CTk):
         self._sec(c, "2 · Archivo Excel", 5)
         self._excel_sel = PathSelector(
             c, placeholder="/home/usuario/nombres.xlsx  o  D:\\nombres.xlsx",
-            mode="file", filetypes=[".xlsx", ".csv", ".tsv", ".txt"], on_change=lambda _: None)
+            mode="file", filetypes=[".xlsx", ".csv", ".tsv", ".txt"],
+            on_change=self._ctrl.on_excel_path_changed)
         self._excel_sel.grid(row=6, column=0, sticky="ew", pady=(0, 5))
 
         i2 = ctk.CTkFrame(c, fg_color="transparent")
@@ -2011,10 +2477,12 @@ class MainView(ctk.CTk):
         self._lbl_excel = ctk.CTkLabel(i2, text="Selecciona el archivo Excel",
                                        font=FONT_SM,
                                        text_color=C["subtext"]); self._lbl_excel.pack(side="left", padx=7)
-        ctk.CTkButton(i2, text="Cargar Excel", width=108, height=26,
-                      font=FONT_SM,
-                      **BTN_SECONDARY,
-                      command=self._ctrl.on_load_excel).pack(side="right")
+        self._btn_load_excel = ctk.CTkButton(
+            i2, text="Cargar Excel", width=108, height=26,
+            font=FONT_SM,
+            **BTN_SECONDARY,
+            command=self._ctrl.on_load_excel)
+        self._btn_load_excel.pack(side="right")
 
         # selector hoja (oculto)
         self._sheet_frame = ctk.CTkFrame(c, fg_color="transparent")
@@ -2042,13 +2510,15 @@ class MainView(ctk.CTk):
         self._col_menu.pack(side="left", padx=7)
         self._col_frame.grid_remove()
 
-        self._div(c, 10)
+        self._build_summary(c, 10)
+
+        self._div(c, 11)
 
         # § 3 vista previa
-        self._sec(c, "3 · Vista previa", 11)
+        self._sec(c, "3 · Vista previa", 12)
 
         filter_row = ctk.CTkFrame(c, fg_color="transparent")
-        filter_row.grid(row=12, column=0, sticky="ew", pady=(0, 5))
+        filter_row.grid(row=13, column=0, sticky="ew", pady=(0, 5))
         ctk.CTkLabel(filter_row, text="Buscar:",
                      font=FONT_SM,
                      text_color=C["subtext"]).pack(side="left")
@@ -2068,21 +2538,66 @@ class MainView(ctk.CTk):
                         command=lambda: self._ctrl.on_edit_mode_change(self._edit_var.get())
                         ).pack(side="left", padx=(8, 0))
 
-        self._preview = PreviewTable(c, on_name_change=self._ctrl.on_preview_name_changed)
-        self._preview.grid(row=13, column=0, sticky="ew", pady=(2, 12))
+        self._lbl_filter_count = ctk.CTkLabel(
+            filter_row, text="0 resultados", font=FONT_SM,
+            text_color=C["subtext"])
+        self._lbl_filter_count.pack(side="right", padx=6)
 
-        self._div(c, 14)
+        self._preview = PreviewTable(
+            c, on_name_change=self._ctrl.on_preview_name_changed,
+            on_filter=self._set_filter_count)
+        self._preview.grid(row=14, column=0, sticky="ew", pady=(2, 12))
 
-        # § 4 renombrar
-        self._sec(c, "4 · Renombrar", 15)
+        self._div(c, 15)
+
+        # § 4 opciones
+        self._sec(c, "4 · Opciones", 16)
+        opt = ctk.CTkFrame(c, fg_color=C["surface"], corner_radius=10)
+        opt.grid(row=17, column=0, sticky="ew", pady=(2, 10))
+        pad = ctk.CTkFrame(opt, fg_color="transparent")
+        pad.pack(fill="x", padx=12, pady=10)
+
+        box_row = ctk.CTkFrame(pad, fg_color="transparent")
+        box_row.pack(fill="x", anchor="w")
+        self._keep_ext_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            box_row, text="Mantener extensión original",
+            variable=self._keep_ext_var, font=FONT_SM,
+            text_color=C["text"],
+            command=lambda: self._ctrl.on_keep_ext_change(self._keep_ext_var.get())
+        ).pack(side="left")
+        self._backup_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            box_row, text="Crear registro/backup de la operación",
+            variable=self._backup_var, font=FONT_SM,
+            text_color=C["text"],
+            command=lambda: self._ctrl.on_backup_change(self._backup_var.get())
+        ).pack(side="left", padx=(18, 0))
+        self._open_folder_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            box_row, text="Abrir carpeta al finalizar",
+            variable=self._open_folder_var, font=FONT_SM,
+            text_color=C["text"],
+            command=lambda: self._ctrl.on_open_folder_change(self._open_folder_var.get())
+        ).pack(side="left", padx=(18, 0))
+
+        self._lbl_sort_echo = ctk.CTkLabel(
+            pad, text="", font=FONT_SM, text_color=C["subtext"], anchor="w")
+        self._lbl_sort_echo.pack(fill="x", anchor="w", pady=(8, 0))
+        self.set_option_sort(self._sort_var.get())
+
+        self._div(c, 18)
+
+        # § 5 renombrar
+        self._sec(c, "5 · Renombrar", 19)
         self._progress = ctk.CTkProgressBar(c, height=9,
                                              fg_color=C["surface"],
                                              progress_color=C["accent"])
-        self._progress.grid(row=16, column=0, sticky="ew", pady=(3, 3))
+        self._progress.grid(row=20, column=0, sticky="ew", pady=(3, 3))
         self._progress.set(0)
 
         act = ctk.CTkFrame(c, fg_color="transparent")
-        act.grid(row=17, column=0, sticky="ew", pady=(0, 12))
+        act.grid(row=21, column=0, sticky="ew", pady=(0, 12))
 
         self._lbl_prog = ctk.CTkLabel(act, text="Listo para comenzar",
                                       font=FONT_SM,
@@ -2098,6 +2613,13 @@ class MainView(ctk.CTk):
             command=self._ctrl.on_rename, state="disabled")
         self._btn_rename.pack(side="right")
 
+        self._btn_sim = ctk.CTkButton(
+            act, text="Simular", width=90, height=36,
+            font=FONT_SM,
+            fg_color=C["surface2"], hover_color=C["accent2"],
+            command=self._ctrl.on_simulate, state="disabled")
+        self._btn_sim.pack(side="right", padx=(0, 6))
+
         self._btn_cancel = ctk.CTkButton(
             act, text="✖ Cancelar", width=100, height=36,
             font=FONT_SM,
@@ -2106,14 +2628,14 @@ class MainView(ctk.CTk):
         self._btn_cancel.pack(side="right", padx=(0, 6))
 
         self._btn_log = ctk.CTkButton(
-            act, text="💾 Log", width=80, height=36,
+            act, text="Guardar log", width=100, height=36,
             font=FONT_SM,
             fg_color=C["surface2"], hover_color=C["accent2"],
             command=self._ctrl.on_export_log, state="disabled")
         self._btn_log.pack(side="right", padx=(0, 6))
 
         self._btn_csv = ctk.CTkButton(
-            act, text="📤 CSV", width=80, height=36,
+            act, text="CSV", width=64, height=36,
             font=FONT_SM,
             fg_color=C["surface2"], hover_color=C["accent2"],
             command=self._ctrl.on_export_csv, state="disabled")
@@ -2136,6 +2658,29 @@ class MainView(ctk.CTk):
         if not self._ctrl.matching_available():
             self._btn_match.configure(state="disabled")
 
+        self._div(c, 22)
+
+        # § 6 registro
+        self._sec(c, "6 · Registro", 23)
+        log_frame = ctk.CTkFrame(c, fg_color=C["surface"], corner_radius=10)
+        log_frame.grid(row=24, column=0, sticky="ew", pady=(2, 4))
+        self._log_box = ctk.CTkTextbox(log_frame, height=110,
+                                       font=FONT_XS_SM,
+                                       fg_color=C["surface"],
+                                       text_color=C["subtext"],
+                                       border_spacing=6)
+        self._log_box.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        self._log_box.configure(state="disabled")
+        log_bar = ctk.CTkFrame(log_frame, fg_color="transparent")
+        log_bar.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(log_bar, text="Historial de la última operación",
+                     font=FONT_XS_SM,
+                     text_color=C["subtext"]).pack(side="left")
+        ctk.CTkButton(log_bar, text="Limpiar", width=70, height=26,
+                      font=FONT_SM,
+                      **BTN_SECONDARY,
+                      command=self.clear_log).pack(side="right")
+
         # footer
         ftr = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=0, height=26)
         ftr.pack(fill="x", side="bottom"); ftr.pack_propagate(False)
@@ -2154,6 +2699,49 @@ class MainView(ctk.CTk):
     def _div(self, p, row: int) -> None:
         ctk.CTkFrame(p, height=1, fg_color=C["border"]).grid(
             row=row, column=0, sticky="ew", pady=6)
+
+    def _build_summary(self, p, row: int) -> None:
+        """Panel de resumen en vivo: Fotografías / Registros / Correspondencias /
+        Conflictos / Estado. Cada celda tiene dos líneas: caption pequeña arriba
+        y valor en negrita abajo. Lo rellena `update_summary` desde el modelo."""
+        f = ctk.CTkFrame(p, fg_color="transparent")
+        f.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+        for col in range(5):
+            f.columnconfigure(col, weight=1, uniform="sum")
+
+        def _stat(col: int, caption: str) -> tuple[StatusBadge, ctk.CTkLabel]:
+            cell = ctk.CTkFrame(f, fg_color="transparent")
+            cell.grid(row=0, column=col, sticky="ew", padx=4)
+            ctk.CTkLabel(cell, text=caption, font=FONT_XS_SM,
+                         text_color=C["subtext"], anchor="w").pack(fill="x", anchor="w")
+            line = ctk.CTkFrame(cell, fg_color="transparent")
+            line.pack(fill="x", anchor="w")
+            b = StatusBadge(line); b.pack(side="left")
+            lbl = ctk.CTkLabel(line, text="—", font=FONT_MD_BD,
+                               text_color=C["text"])
+            lbl.pack(side="left", padx=5)
+            return b, lbl
+
+        self._sum_fotos, self._sum_fotos_lbl = _stat(0, "Fotografías")
+        self._sum_regs,  self._sum_regs_lbl  = _stat(1, "Registros")
+        self._sum_corr,  self._sum_corr_lbl  = _stat(2, "Correspondencias")
+        self._sum_conf,  self._sum_conf_lbl  = _stat(3, "Conflictos")
+        self._sum_state, self._sum_state_lbl = _stat(4, "Estado")
+        self.update_summary(None, None, None, None, "Sin datos", "idle")
+
+    def update_summary(self, fotos, registros, correspondencias, conflictos,
+                       estado: str, kind: str) -> None:
+        """kind ∈ {idle, ok, warn, error} controla el color del Estado."""
+        def _set(badge, lbl, val) -> None:
+            badge.set_state("ok" if val else "idle")
+            lbl.configure(text=("—" if val is None else str(val)))
+        _set(self._sum_fotos, self._sum_fotos_lbl, fotos)
+        _set(self._sum_regs,  self._sum_regs_lbl,  registros)
+        _set(self._sum_corr,  self._sum_corr_lbl,  correspondencias)
+        _set(self._sum_conf,  self._sum_conf_lbl,  conflictos)
+        self._sum_state.set_state(kind if kind in self._sum_state._S else "idle")
+        self._sum_state_lbl.configure(text=estado,
+                                      text_color=_state_text_color(kind))
 
     def _bind_shortcuts(self) -> None:
         self.bind_all("<Control-z>", lambda _: self._ctrl.on_undo())
@@ -2210,6 +2798,18 @@ class MainView(ctk.CTk):
             "cancel": self._btn_cancel.cget("state"),
             "log": self._btn_log.cget("state"),
             "csv": self._btn_csv.cget("state"),
+            "sim": self._btn_sim.cget("state"),
+            "sum_fotos": self._sum_fotos_lbl.cget("text"),
+            "sum_regs": self._sum_regs_lbl.cget("text"),
+            "sum_corr": self._sum_corr_lbl.cget("text"),
+            "sum_conf": self._sum_conf_lbl.cget("text"),
+            "sum_state": self._sum_state_lbl.cget("text"),
+            "sum_state_kind": self._sum_state._state,
+            "keep_ext": self._keep_ext_var.get(),
+            "backup": self._backup_var.get(),
+            "open_folder": self._open_folder_var.get(),
+            "steps": self._steps_done,
+            "log_text": self.get_log_text(),
         }
 
     def _restore_ui_state(self, state: dict) -> None:
@@ -2244,7 +2844,21 @@ class MainView(ctk.CTk):
         self._btn_cancel.configure(state=state["cancel"])
         self._btn_log.configure(state=state["log"])
         self._btn_csv.configure(state=state["csv"])
+        self._btn_sim.configure(state=state.get("sim", "disabled"))
+        self._sum_fotos_lbl.configure(text=state.get("sum_fotos", "—"))
+        self._sum_regs_lbl.configure(text=state.get("sum_regs", "—"))
+        self._sum_corr_lbl.configure(text=state.get("sum_corr", "—"))
+        self._sum_conf_lbl.configure(text=state.get("sum_conf", "—"))
+        self._sum_state_lbl.configure(text=state.get("sum_state", "—"))
+        self._sum_state.set_state(state.get("sum_state_kind", "idle"))
         self._filter_var.set(state["filter"])
+        self._keep_ext_var.set(state.get("keep_ext", True))
+        self._backup_var.set(state.get("backup", True))
+        self._open_folder_var.set(state.get("open_folder", True))
+        self.update_steps(state.get("steps", 0))
+        self.set_option_sort(self._sort_var.get())
+        if state.get("log_text"):
+            self.append_log_lines(state["log_text"].splitlines())
 
     # ── API para el Controller ─────────────────────────────────────────────
     def get_folder_path(self) -> str:   return self._folder_sel.get()
@@ -2254,6 +2868,75 @@ class MainView(ctk.CTk):
     def get_copy_mode(self) -> bool:    return self._copy_var.get()
     def get_matching_mode(self) -> bool: return self._match_var.get()
     def get_edit_mode(self) -> bool:    return self._edit_var.get()
+    def get_keep_ext_option(self) -> bool:  return self._keep_ext_var.get()
+    def get_backup_option(self) -> bool:    return self._backup_var.get()
+    def get_open_folder_option(self) -> bool: return self._open_folder_var.get()
+
+    def set_btn_folder_load(self, enabled: bool) -> None:
+        self._set_btn(self._btn_load_folder, enabled)
+
+    def set_btn_excel_load(self, enabled: bool) -> None:
+        self._set_btn(self._btn_load_excel, enabled)
+
+    def set_option_sort(self, text: str) -> None:
+        try:
+            self._lbl_sort_echo.configure(
+                text=f"Orden de emparejamiento: {text}")
+        except Exception:
+            pass
+
+    def update_steps(self, done: int) -> None:
+        """Colorea el indicador ①…⑤: completado (verde) / activo (acento) /
+        pendiente (apagado)."""
+        self._steps_done = max(0, min(len(self._step_labels), done))
+        for i, lbl in enumerate(self._step_labels, start=1):
+            if i <= self._steps_done:
+                color = C["green"]
+            elif i == self._steps_done + 1:
+                color = C["accent"]
+            else:
+                color = C["overlay"]
+            try:
+                lbl.configure(text_color=color)
+            except Exception:
+                pass
+
+    def get_steps_done(self) -> int:
+        return self._steps_done
+
+    def _set_filter_count(self, n: int) -> None:
+        try:
+            self._lbl_filter_count.configure(
+                text=f"{n} resultado{'s' if n != 1 else ''}")
+        except Exception:
+            pass
+
+    def append_log_line(self, line: str) -> None:
+        self.append_log_lines([line])
+
+    def append_log_lines(self, lines: list[str]) -> None:
+        try:
+            self._log_box.configure(state="normal")
+            for ln in lines:
+                self._log_box.insert("end", ln + "\n")
+            self._log_box.configure(state="disabled")
+            self._log_box.see("end")
+        except Exception:
+            pass
+
+    def clear_log(self) -> None:
+        try:
+            self._log_box.configure(state="normal")
+            self._log_box.delete("1.0", "end")
+            self._log_box.configure(state="disabled")
+        except Exception:
+            pass
+
+    def get_log_text(self) -> str:
+        try:
+            return self._log_box.get("1.0", "end")
+        except Exception:
+            return ""
 
     def set_folder_status(self, state: str, msg: str) -> None:
         self._set_section_status(self._badge_folder, self._lbl_folder, state, msg)
@@ -2284,8 +2967,9 @@ class MainView(ctk.CTk):
     def hide_columns(self) -> None:
         self._col_frame.grid_remove()
 
-    def render_preview(self, pairs: list[tuple[str, str, Optional[Path], bool, str]]) -> None:
-        self._preview.render(pairs)
+    def render_preview(self, pairs: list[tuple[str, str, Optional[Path], bool, str]],
+                       empty_message: str = "Sin datos para mostrar.") -> None:
+        self._preview.render(pairs, empty_message=empty_message)
 
     def filter_preview(self, query: str) -> None:
         self._preview.filter(query)
@@ -2318,11 +3002,14 @@ class MainView(ctk.CTk):
     def set_btn_csv(self, enabled: bool) -> None:
         self._set_btn(self._btn_csv, enabled)
 
+    def set_btn_sim(self, enabled: bool) -> None:
+        self._set_btn(self._btn_sim, enabled)
+
     def toast(self, msg: str, kind: str = "ok") -> None:
         Toast(self, msg, kind)
 
-    def confirm(self, title: str, msg: str) -> bool:
-        return ConfirmDialog.ask(self, title, msg)
+    def confirm(self, title: str, msg: str, ok_text: str = "Confirmar") -> bool:
+        return ConfirmDialog.ask(self, title, msg, ok_text)
 
     def ask_save_folder(self, default_name: str) -> Optional[str]:
         br = FileBrowser(self, mode="folder", title="Elige dónde guardar")
@@ -2366,7 +3053,7 @@ class MainView(ctk.CTk):
             self.clipboard_clear(); self.clipboard_append(details)
             self.toast("Detalles copiados al portapapeles.")
 
-        ctk.CTkButton(btn_row, text="📋 Copiar detalles", width=140,
+        ctk.CTkButton(btn_row, text="Copiar detalles", width=140,
                       command=_copy).pack(side="left", padx=8)
         ctk.CTkButton(btn_row, text="Cerrar", width=90,
                       command=dlg.destroy).pack(side="left", padx=8)
@@ -2390,6 +3077,18 @@ class AppController:
         self._last_pairs: list[tuple[str, str, Optional[Path], bool, str]] = []
         self._cancel_ev:  Optional[threading.Event] = None
         self._dup_recalc_job: Optional[str] = None
+        # Generación de la última recarga: descarta resultados obsoletos de
+        # hilos de fondo que terminaron DESPUÉS de un recálculo más nuevo.
+        self._sync_gen: int = 0
+        # Guardas contra cargas concurrentes (fotos/Excel) y buffer del panel
+        # de registro (líneas llegadas desde hilos de fondo).
+        self._loading_photos: bool = False
+        self._loading_excel: bool = False
+        self._pending_sort: bool = False
+        self._log_pending: list[str] = []
+        # Pin del indicador de pasos tras finalizar: evita que el recálculo
+        # de fondo posterior degrade el paso "Resultado" durante ~4 s.
+        self._step_pinned: bool = False
         self._restore_state()
 
     def run(self) -> None:
@@ -2425,6 +3124,9 @@ class AppController:
         return False
 
     def on_load_photos(self) -> None:
+        if self._loading_photos:
+            self._view.toast("Las fotos ya se están cargando…", "warn")
+            return
         raw = self._view.get_folder_path()
         if self._guard(not raw, "Selecciona primero una carpeta."): return
         path = Path(raw)
@@ -2434,11 +3136,15 @@ class AppController:
         self._model.folder_path = path
         self._model.sort_mode   = self._view.get_sort_mode()
         _save_state({"last_folder": str(path), "sort": self._model.sort_mode})
+        self._loading_photos = True
+        self._view.set_btn_folder_load(False)
         self._view.set_folder_status("loading", "Cargando fotos...")
         threading.Thread(target=self._load_photos_bg, daemon=True).start()
 
     def _load_photos_bg(self) -> None:
         def on_done(n, err):
+            self._loading_photos = False
+            self._view.set_btn_folder_load(True)
             if err:
                 self._view.set_folder_status("error", err)
                 return
@@ -2447,6 +3153,10 @@ class AppController:
             else:
                 sort_label = self._view._sort_var.get()
                 self._view.set_folder_status("ok", f"{n} imagen{'es' if n!=1 else ''}  ·  {sort_label}")
+            if self._pending_sort:
+                self._pending_sort = False
+                self._apply_sort()
+                return
             self._refresh_preview()
         def _work():
             try:
@@ -2457,6 +3167,9 @@ class AppController:
         self._run_safely(_work)
 
     def on_load_excel(self) -> None:
+        if self._loading_excel:
+            self._view.toast("El Excel ya se está cargando…", "warn")
+            return
         raw = self._view.get_excel_path()
         if self._guard(not raw, "Selecciona primero un archivo Excel."): return
         path = Path(raw)
@@ -2466,21 +3179,29 @@ class AppController:
 
         self._model.excel_path = path
         _save_state({"last_excel": str(path)})
-        sheets = self._call_model(self._model.load_sheets,
-                                  lambda s, m: self._view.set_excel_status(s, f"Error leyendo Excel: {m}"))
-        if sheets is None: return
+        self._loading_excel = True
+        self._view.set_btn_excel_load(False)
+        try:
+            sheets = self._call_model(self._model.load_sheets,
+                                      lambda s, m: self._view.set_excel_status(s, f"Error leyendo Excel: {m}"))
+            if sheets is None:
+                return
 
-        if len(sheets) > 1:
-            self._view.set_excel_status("ok", f"{len(sheets)} hojas — elige una.")
-            self._view.show_sheets(sheets)
-            self._model.sheet_name = sheets[0]
-        else:
-            self._model.sheet_name = sheets[0] if sheets else None
-            self._view.hide_sheets()
-        self._load_columns()
+            if len(sheets) > 1:
+                self._view.set_excel_status("ok", f"{len(sheets)} hojas — elige una.")
+                self._view.show_sheets(sheets)
+                self._model.sheet_name = sheets[0]
+            else:
+                self._model.sheet_name = sheets[0] if sheets else None
+                self._view.hide_sheets()
+            self._load_columns()
+        finally:
+            self._loading_excel = False
+            self._view.set_btn_excel_load(True)
 
     def on_sheet_selected(self, sheet: str) -> None:
         self._model.sheet_name = sheet
+        self._model.clear_excel_data()
         self._load_columns()
 
     def on_column_selected(self, column: str) -> None:
@@ -2490,21 +3211,128 @@ class AppController:
     def on_filter_change(self, query: str) -> None:
         self._view.filter_preview(query)
 
+    # ── handlers reactivos (ruta / orden / matching) ──────────────────────
+    def on_sort_change(self, _value: str) -> None:
+        """Reordena las fotos en vivo al cambiar el criterio de orden."""
+        if not self._model.folder_path:
+            return
+        if self._loading_photos:
+            self._pending_sort = True
+            self._view.toast("El nuevo orden se aplicará al terminar la carga…", "warn")
+            return
+        self._apply_sort()
+
+    def _apply_sort(self) -> None:
+        """Aplica el orden actual del menú a las fotos y refresca la UI."""
+        self._model.sort_mode = self._view.get_sort_mode()
+        _save_state({"sort": self._model.sort_mode})
+        self._view.set_option_sort(self._view._sort_var.get())
+        try:
+            n = self._model.load_photos()
+        except Exception as exc:
+            self._view.set_folder_status("error", str(exc))
+            return
+        self._view.set_folder_status(
+            "ok", f"{n} imagen{'es' if n != 1 else ''}  ·  {self._view._sort_var.get()}")
+        self._update_sync_state(notify=False)
+
+    def on_folder_path_changed(self, raw: str) -> None:
+        """El usuario escribió otra carpeta (Enter) o la eligió por el diálogo."""
+        path = Path(raw)
+        if not raw or not path.is_dir():
+            if raw:
+                self._view.set_folder_status("error", "La ruta no existe.")
+                self._update_sync_state(notify=False)
+            return
+        if self._model.folder_path == path:
+            return
+        if self._loading_photos:
+            self._view.toast("Espera: las fotos se están cargando…", "warn")
+            return
+        self._model.folder_path = path
+        self._model.sort_mode = self._view.get_sort_mode()
+        self._model._plan = []
+        _save_state({"last_folder": str(path), "sort": self._model.sort_mode})
+        self._loading_photos = True
+        self._view.set_btn_folder_load(False)
+        self._view.set_folder_status("loading", "Cargando fotos...")
+        threading.Thread(target=self._load_photos_bg, daemon=True).start()
+
+    def on_excel_path_changed(self, raw: str) -> None:
+        """El usuario escribió otro Excel (Enter) o lo eligió por el diálogo."""
+        path = Path(raw)
+        valid_exts = {".xlsx", ".csv", ".tsv", ".txt"}
+        if not raw or not path.is_file() or path.suffix.lower() not in valid_exts:
+            if raw:
+                self._view.set_excel_status("error", f"Archivo no válido: {path.suffix or 'sin extensión'}")
+                self._update_sync_state(notify=False)
+            return
+        if self._model.excel_path == path:
+            return
+        if self._loading_excel:
+            self._view.toast("Espera: el Excel se está cargando…", "warn")
+            return
+        self._model.excel_path = path
+        self._model.clear_excel_data()
+        _save_state({"last_excel": str(path)})
+        self._loading_excel = True
+        self._view.set_btn_excel_load(False)
+        try:
+            sheets = self._call_model(self._model.load_sheets,
+                                      lambda s, m: self._view.set_excel_status(s, f"Error leyendo Excel: {m}"))
+            if sheets is None:
+                return
+            if len(sheets) > 1:
+                self._view.set_excel_status("ok", f"{len(sheets)} hojas — elige una.")
+                self._view.show_sheets(sheets)
+                self._model.sheet_name = sheets[0]
+            else:
+                self._model.sheet_name = sheets[0] if sheets else None
+                self._view.hide_sheets()
+            self._load_columns()
+        finally:
+            self._loading_excel = False
+            self._view.set_btn_excel_load(True)
+
+    def on_simulate(self) -> None:
+        """Refresca el plan y el resumen SIN tocar ningún archivo."""
+        self._update_sync_state(notify=True)
+        self._view.toast("Simulación — no se modificó ningún archivo.", "ok")
+
     def on_rename(self) -> None:
         if self._guard(not (self._model.photos and self._model.names),
                        "Carga las fotos y el Excel primero."): return
 
-        n_ph = len(self._model.photos)
-        n_nm = len(self._model.names)
-        will = min(n_ph, n_nm)
-        msg  = f"Se renombrarán {will} foto{'s' if will!=1 else ''}."
-        if n_nm < n_ph:
-            msg += f"\n⚠ Hay {n_ph - n_nm} foto(s) sin nombre — solo se renombrarán las primeras {will}."
+        # Con la vista previa en segundo plano puede haber un recálculo en
+        # vuelo: no bloquear la UI reconstruyendo el plan aquí (atajo Ctrl+Enter).
+        if self._view._sum_state_lbl.cget("text").startswith("Calculando"):
+            self._view.toast("Espera: se está calculando la vista previa…", "warn")
+            return
 
-        if not self._view.confirm("¿Confirmar renombramiento?", msg):
+        blocked, reason = self._model.rename_blocked()
+        if blocked:
+            self._view.toast(f"Renombrado bloqueado: {reason}", "error")
+            self._update_sync_state(notify=False)
+            return
+
+        plan = self._model._plan
+        if plan:
+            will = sum(1 for it in plan if it["state"] == "ok")
+        else:
+            will = len(self._model.photos)
+        copy = self._view.get_copy_mode()
+        verb = "copiarán" if copy else "renombrarán"
+        msg  = (f"Se {verb} {will} fotografía{'s' if will != 1 else ''}.\n"
+                f"Esta operación modificará los nombres de los archivos.\n"
+                f"¿Desea continuar?")
+
+        if not self._view.confirm("¿Confirmar renombramiento?", msg,
+                                  ok_text="Renombrar"):
             return
 
         self._cancel_ev = threading.Event()
+        self._view.update_steps(4)
+        self._view.append_log_line(f"Iniciando renombrado de {will} archivo(s)…")
         self._view.set_btn_rename(False, "Renombrando…")
         self._view.set_btn_cancel(True)
         self._view.set_progress(0, "Iniciando…")
@@ -2606,8 +3434,14 @@ class AppController:
             self._view.set_excel_status("ok", f"Excel cargado · columna «{cols[0]}» auto-seleccionada.")
             self._load_names_and_preview()
         else:
+            # Auto-selección de la primera columna: `show_columns` fija el
+            # menú con var.set() (que NO dispara el command de CTkOptionMenu),
+            # por eso la selección se aplica aquí en el controlador.
+            self._model.column_name = cols[0]
             self._view.show_columns(cols)
-            self._view.set_excel_status("ok", f"{len(cols)} columnas — elige cuál tiene los nombres.")
+            self._view.set_excel_status(
+                "ok", f"{len(cols)} columnas — usando «{cols[0]}» (puedes cambiarla).")
+            self._load_names_and_preview()
 
     def _load_names_and_preview(self) -> None:
         n = self._call_model(self._model.load_names, self._view.set_excel_status)
@@ -2625,40 +3459,149 @@ class AppController:
                 f"Revísala(s): puede ser una celda vacía o una fórmula cuyo valor "
                 f"no quedó guardado al exportar el archivo.", "warn")
 
-        self._refresh_preview()
+        self._update_sync_state(notify=False)
 
-    def _refresh_preview(self) -> None:
-        if not (self._model.photos and self._model.names):
-            return
-        n_ph, n_nm = len(self._model.photos), len(self._model.names)
+    def _update_sync_state(self, notify: bool = False) -> None:
+        """ÚNICA ruta central de recálculo.
 
-        # FIX #6: verificación de desajuste (solo modo posicional: ahí sí el
-        # conteo debe cuadrar). En matching seguro cada nombre busca SU foto.
-        if not self._model.matching_mode and n_ph != n_nm:
-            diff = abs(n_ph - n_nm)
-            if n_ph > n_nm:
-                log.warning("Hay %d foto(s) sin nombre en el Excel.", diff)
-                self._view.toast(
-                    f"⚠ {n_ph} fotos pero solo {n_nm} nombres en el Excel.\n"
-                    f"Se renombrarán las primeras {min(n_ph,n_nm)}.", "warn")
+        Decide el estado completo de la interfaz a partir del modelo:
+        - vista previa (o mensaje de qué falta exactamente),
+        - panel de resumen (Fotografías / Registros / Correspondencias /
+          Conflictos / Estado),
+        - estado de los botones (renombrar / simular / csv / log).
+
+        Todos los handlers (columna, orden, ruta, matching, cargas…) terminan
+        aquí, por lo que cualquier cambio de datos se refleja de inmediato.
+
+        El cálculo del plan (build_preview, en especial el MATCHING seguro
+        que compara similitud fotos × nombres) corre en un HILO DE FONDO
+        para no congelar la interfaz; `_update_sync_state_finish` aplica el
+        resultado. Un contador de generación descarta resultados obsoletos.
+        """
+        m = self._model
+
+        # ── estado incompleto: aún no hay correspondencias que mostrar ─────
+        if not (m.photos and m.names and m.column_name):
+            # Invalida cualquier cálculo de fondo aún en vuelo.
+            self._sync_gen += 1
+            n_ph, n_nm = len(m.photos), len(m.names)
+            if n_ph and not n_nm:
+                empty_msg = ("Carga el archivo Excel y elige la columna con "
+                             "los nombres en la sección 2.")
+            elif n_nm and not n_ph:
+                empty_msg = "Carga la carpeta de fotografías (sección 1)."
             else:
-                log.warning("Hay %d nombre(s) en el Excel sin foto correspondiente.", diff)
-                self._view.toast(
-                    f"⚠ {n_nm} nombres pero solo {n_ph} fotos.\n"
-                    f"Se usarán los primeros {min(n_ph,n_nm)} nombres.", "warn")
+                empty_msg = ("Carga las fotografías y el archivo Excel para "
+                             "ver la vista previa.")
+            self._view.render_preview([], empty_message=empty_msg)
+            self._view.update_summary(
+                n_ph or None, n_nm or None, None, None,
+                "Sin correspondencias", "idle")
+            self._update_steps_if_allowed(0)
+            self._view.set_btn_rename(False, "▶  Renombrar todo")
+            self._view.set_btn_sim(False)
+            self._view.set_btn_log(False)
+            self._view.set_btn_csv(False)
+            self._last_pairs = []
+            return
 
-        pairs = self._model.build_preview()
+        # Nueva generación: los resultados de hilos anteriores quedan viejos.
+        self._sync_gen += 1
+        gen = self._sync_gen
+        self._view.render_preview([], empty_message="Calculando vista previa…")
+        self._view.update_summary(len(m.photos), len(m.names),
+                                  None, None, "Calculando…", "idle")
+        self._update_steps_if_allowed(1)
+        self._view.set_btn_rename(False, "Calculando…")
+        self._view.set_btn_sim(False)
+        self._view.set_btn_log(False)
+        self._view.set_btn_csv(False)
+
+        def _bg() -> None:
+            try:
+                plan = m._build_plan()
+            except Exception as exc:
+                # Sin cálculo nuevo: restaurar el último plan conocido para no
+                # dejar la UI atascada en "Calculando…".
+                plan_old = m._plan if m._plan is not None else []
+                pairs_old = list(self._last_pairs) if self._last_pairs else []
+                self._view.after(0, lambda: self._view.toast(str(exc), "error"))
+                self._view.after(0, lambda: self._update_sync_state_finish(
+                    plan_old, pairs_old, gen, notify))
+                return
+            pairs: list[tuple[str, str, Optional[Path], bool, str]] = []
+            for item in plan:
+                src = item["src"]
+                pairs.append((src.name if src else "—", item["new"], src,
+                              item["is_dup"], item["state"]))
+            self._view.after(0, lambda: self._update_sync_state_finish(
+                plan, pairs, gen, notify))
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _update_sync_state_finish(
+        self,
+        plan: list[dict],
+        pairs: list[tuple[str, str, Optional[Path], bool, str]],
+        gen: int,
+        notify: bool,
+    ) -> None:
+        """Aplica (en el hilo de la UI) el resultado de un cálculo de fondo.
+        Si ya se lanzó un recálculo más nuevo, se descarta este resultado."""
+        m = self._model
+        if gen != self._sync_gen:
+            return  # resultado obsoleto
+        m._plan = plan
         self._last_pairs = pairs
         self._view.render_preview(pairs)
-        self._view.set_btn_rename(True, "▶  Renombrar todo")
+
+        n_corr = sum(1 for _, _, src, _, _ in pairs if src is not None)
+        n_conf = sum(1 for _, _, _, _, s in pairs
+                     if s in ("existe", "conflicto", "duplicado", "ambiguo",
+                              "error"))
+        faltan = len(m.names) - n_corr
+        blocked, reason = m.rename_blocked(plan)
+        if n_conf:
+            kind = "warn"
+            estado = (f"⚠ {n_conf} conflicto(s) sin resolver"
+                      if not blocked else reason)
+        elif blocked:
+            if faltan > 0:
+                kind = "warn"
+                estado = (f"⚠ Correspondencia incompleta: faltan "
+                          f"{faltan} fotografías")
+            else:
+                kind = "error"
+                estado = reason
+        elif faltan > 0:
+            kind = "warn"
+            estado = f"⚠ {faltan} registros sin fotografía (se omitirán)"
+        else:
+            kind = "ok"
+            estado = "✓ Listo para renombrar"
+        self._view.update_summary(len(m.photos), len(m.names),
+                                  n_corr, n_conf, estado, kind)
+
+        can_act = not blocked
+        done = 1 if not pairs else (3 if can_act else 2)
+        self._update_steps_if_allowed(done)
+        self._view.set_btn_rename(can_act, "▶  Renombrar todo")
+        self._view.set_btn_sim(True)
         self._view.set_btn_log(True)
         self._view.set_btn_csv(True)
 
         dup_count = sum(1 for _, _, _, is_dup, _ in pairs if is_dup)
-        if dup_count > 0:
+        if notify and dup_count:
             self._view.toast(
-                f"⚠ {dup_count} nombre{'s' if dup_count != 1 else ''} duplicado{'s' if dup_count != 1 else ''} "
-                f"— se omitirán al renombrar.", "warn")
+                f"⚠ {dup_count} nombre{'s' if dup_count != 1 else ''} duplicado"
+                f"{'s' if dup_count != 1 else ''} — se omitirán al renombrar.",
+                "warn")
+        if notify and blocked:
+            self._view.toast(f"Renombrado bloqueado: {reason}", "warn")
+
+    def _refresh_preview(self) -> None:
+        """Compatibilidad: delegación a la ruta central (sin notificar)."""
+        self._update_sync_state(notify=False)
 
     # ── threads ───────────────────────────────────────────────────────────
     def _run_safely(self, fn: Callable[[], None]) -> None:
@@ -2680,6 +3623,11 @@ class AppController:
 
     def _unstick_ui(self) -> None:
         """Reactiva los controles si un hilo de fondo murió a mitad de camino."""
+        self._loading_photos = False
+        self._loading_excel = False
+        self._pending_sort = False
+        self._view.set_btn_folder_load(True)
+        self._view.set_btn_excel_load(True)
         self._view.set_btn_rename(True, "▶  Renombrar todo")
         self._view.set_btn_cancel(False)
         self._view.set_btn_undo(self._model.has_undo)
@@ -2713,15 +3661,77 @@ class AppController:
     # ── rename / undo ──────────────────────────────────────────────────────
     def _do_rename(self) -> None:
         plan = getattr(self._model, "_plan", None) or None
-        self._run_async(self._model.rename_all, "", self._finish_rename,
+        self._run_async(self._model.rename_all, "Renombrando fotografías  ",
+                        self._finish_rename,
                         cancel_ev=self._cancel_ev, copy_mode=self._view.get_copy_mode(),
-                        plan=plan)
+                        plan=plan, on_log=self._log_bg_line)
 
     def _do_undo(self) -> None:
-        self._run_async(self._model.undo_last, "Revirtiendo ", self._finish_undo)
+        self._run_async(self._model.undo_last, "Revirtiendo ", self._finish_undo,
+                        on_log=self._log_bg_line)
+
+    # ── panel de registro (buffer hilo de fondo → UI) ──────────────────────
+    def _log_bg_line(self, line: str) -> None:
+        """Acepta líneas desde hilos de fondo: se acumulan y se vuelcan a la UI
+        en lotes (evita inundar Tk con miles de after())."""
+        self._log_pending.append(line)
+        if len(self._log_pending) >= 20:
+            lines, self._log_pending = self._log_pending, []
+            self._view.after(0, self._view.append_log_lines, lines)
+
+    def _flush_log(self) -> None:
+        if self._log_pending:
+            lines, self._log_pending = self._log_pending, []
+            try:
+                self._view.append_log_lines(lines)
+            except Exception:
+                pass
+
+    # ── indicador de pasos ─────────────────────────────────────────────────
+    def _update_steps_if_allowed(self, done: int) -> None:
+        if not self._step_pinned:
+            self._view.update_steps(done)
+
+    def _unpin_steps(self) -> None:
+        self._step_pinned = False
+
+    # ── backup JSON de la última operación ─────────────────────────────────
+    def _write_backup(self) -> None:
+        try:
+            if not self._view.get_backup_option():
+                return
+            stack = getattr(self._model, "_undo_stack", None)
+            if not stack:
+                return
+            batch, _dest_folder, copy_mode = stack[-1]
+            if not batch:
+                return
+            folder = self._model.folder_path
+            if not folder or not folder.is_dir():
+                return
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = folder / f".metatag_backup_{ts}.json"
+            self._model.write_backup(dest, batch, copy_mode)
+            self._view.append_log_line(f"Backup: {dest.name}")
+        except Exception as exc:
+            log.warning("No se pudo escribir el backup: %s", exc)
 
     def on_edit_mode_change(self, enabled: bool) -> None:
         self._view.set_edit_mode(enabled)
+
+    def on_keep_ext_change(self, enabled: bool) -> None:
+        """Refleja «Mantener extensión original» en el modelo y recalcula."""
+        self._model.keep_extension = enabled
+        self._update_sync_state(notify=False)
+
+    def on_backup_change(self, enabled: bool) -> None:
+        """Nada que calcular: solo se consulta al finalizar una operación."""
+        if not enabled:
+            self._view.toast("Backup desactivado: no se creará el registro JSON.", "warn")
+
+    def on_open_folder_change(self, enabled: bool) -> None:
+        if not enabled:
+            self._view.toast("Al finalizar ya no se abrirá la carpeta.", "warn")
 
     def matching_available(self) -> bool:
         return self._model.matching_available
@@ -2739,8 +3749,7 @@ class AppController:
             self._view.toast(
                 "Modo posicional: la 1ª foto ↔ 1er nombre (puede no coincidir "
                 "la persona).", "warn")
-        if self._model.photos and self._model.names:
-            self._refresh_preview()
+        self._update_sync_state(notify=True)
 
     def on_preview_name_changed(self, index: int, new_name: str, photo_path: Path) -> None:
         if 0 <= index < len(self._model._names):
@@ -2768,6 +3777,12 @@ class AppController:
 
     def _finish_rename(self, ok: int, errors: list[str]) -> None:
         folder = self._model.folder_path
+        total = ok + len(errors)
+        if errors:
+            text = f"{ok}/{total} · {len(errors)} con error"
+        else:
+            text = f"{ok}/{total} · ✓ Renombrado completado"
+        self._write_backup()
         def btn_setup():
             self._view.set_btn_rename(True, "▶  Renombrar todo")
             self._view.set_btn_cancel(False)
@@ -2775,12 +3790,17 @@ class AppController:
         def toast_fn():
             if errors:
                 self._view.toast(f"⚠ {ok} OK · {len(errors)} con error.", "warn")
-            elif folder:
+            elif folder and self._view.get_open_folder_option():
                 self._view.toast(f"✓ {ok} foto{'s' if ok!=1 else ''} renombradas.", "ok")
                 self._open_folder(folder)
             else:
                 self._view.toast(f"✓ {ok} foto{'s' if ok!=1 else ''} renombradas.", "ok")
-        self._finish_operation(1.0, f"Completado · {ok} renombradas.", btn_setup, toast_fn)
+        self._step_pinned = True
+        self._view.update_steps(5)
+        self._view.after(4000, self._unpin_steps)
+        self._finish_operation(1.0, text, btn_setup, toast_fn)
+        self._flush_log()
+        self._view.append_log_line(f"{ok} correctos · {len(errors)} errores")
 
     def _finish_undo(self, ok: int, errors: list[str]) -> None:
         def btn_setup():
@@ -2791,7 +3811,11 @@ class AppController:
                 self._view.toast(f"↩ {ok} OK · {len(errors)} con error.", "warn")
             else:
                 self._view.toast(f"↩ {ok} revertida{'s' if ok!=1 else ''}.", "ok")
+        self._step_pinned = True
+        self._view.update_steps(3)
+        self._view.after(4000, self._unpin_steps)
         self._finish_operation(0, f"Deshacer completo · {ok} revertidas.", btn_setup, toast_fn)
+        self._flush_log()
 
 
 # ===========================================================================

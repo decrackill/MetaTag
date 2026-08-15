@@ -175,8 +175,10 @@ class CustomTkinterThemeAdapter:
     _STATE_TOKEN = {
         "ya_correcto": "ok",
         "conflicto":   "err",
+        "existe":      "warn",
         "duplicado":   "err",
         "not_found":   "err",
+        "sin_foto":    "warn",
         "ambiguo":     "warn",
         "error":       "err",
     }

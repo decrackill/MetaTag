@@ -83,8 +83,9 @@ class RenameEscenariosTestCase(RenameModelBaseTestCase):
         model = _make_model(self.folder, ["a.jpg", "b.jpg"],
                             ["uno", "dos", "tres"])
         ok, errors = self._run_rename(model)
-        self.assertEqual((ok, errors), (2, []),
-                         "se procesan min(fotos, nombres) parejas")
+        self.assertEqual(ok, 2)
+        self.assertTrue(any("sin fotografía" in e for e in errors),
+                        "el registro sin foto se omite explícitamente (no en silencio)")
         self.assertEqual(self._files(), ["dos.jpg", "uno.jpg"])
 
     def test_archivos_adicionales(self):

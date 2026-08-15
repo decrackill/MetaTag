@@ -123,8 +123,9 @@ class TestCustomTkinterAdapter:
         assert self.RENOMBRADOR_KEYS <= set(p)
         assert self.EXTRA_KEYS <= set(p)
         assert set(p["state_bg"]) == set(p["state_fg"])
-        assert set(p["state_bg"]) == {"ya_correcto", "conflicto", "duplicado",
-                                      "not_found", "ambiguo", "error"}
+        assert set(p["state_bg"]) == {"ya_correcto", "conflicto", "existe",
+                                      "duplicado", "not_found", "ambiguo",
+                                      "error", "sin_foto"}
 
     @pytest.mark.parametrize("name", mt.THEME_ORDER)
     def test_deterministic(self, name):
@@ -168,6 +169,8 @@ class TestCustomTkinterAdapter:
             str(t["surface"]), str(t["ok"]), mt.CustomTkinterThemeAdapter._STATE_TINT)
         assert p["state_bg"]["ambiguo"] == mt.mix(
             str(t["surface"]), str(t["warn"]), mt.CustomTkinterThemeAdapter._STATE_TINT)
+        assert p["state_bg"]["existe"] == mt.mix(
+            str(t["surface"]), str(t["warn"]), mt.CustomTkinterThemeAdapter._STATE_TINT)
 
     @pytest.mark.parametrize("name", mt.THEME_ORDER)
     def test_state_fg_follows_semantics(self, name):
@@ -177,6 +180,8 @@ class TestCustomTkinterAdapter:
         for state in ("conflicto", "duplicado", "not_found", "error"):
             assert p["state_fg"][state] == t["err"]
         assert p["state_fg"]["ambiguo"] == t["warn"]
+        assert p["state_fg"]["existe"] == t["warn"]
+        assert p["state_fg"]["sin_foto"] == t["warn"]
 
     @pytest.mark.parametrize("name", mt.THEME_ORDER)
     def test_all_values_are_valid_hex(self, name):

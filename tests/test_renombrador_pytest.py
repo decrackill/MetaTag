@@ -153,14 +153,15 @@ class TestRenameModel:
         assert ok == [1]
 
     def test_conflict_state_skipped(self, model, tmp_dir):
-        """Conflicto = el destino existe y es OTRO archivo → no se sobreescribe."""
+        """'existe' = el destino es un archivo EXTERNO que ya existe y NO
+        pertenece al lote → jamás se sobreescribe (bloquea)."""
         Path(tmp_dir, "a.jpg").touch()
         Path(tmp_dir, "X.jpg").write_bytes(b"otro contenido")
         model.folder_path = Path(tmp_dir)
         model.load_photos()
         model._names = ["X"]
         pairs = model.build_preview()
-        assert pairs[0][4] == "conflicto"
+        assert pairs[0][4] == "existe"
         errors = []
         model.rename_all(lambda c, t, n: None, lambda ok, e: errors.extend(e))
         assert any("existe" in e.lower() for e in errors)
@@ -228,7 +229,8 @@ class TestRenameModel:
         assert (Path(tmp_dir) / "X.jpg").exists()
 
     def test_plan_never_marks_ok_when_conflict(self, model, tmp_dir):
-        """El plan no puede mentir: conflicto visible en preview ANTES de ejecutar."""
+        """El plan no puede mentir: un destino externo que ya existe NO puede
+        marcarse "ok" — queda 'existe' (bloqueante) en la preview."""
         Path(tmp_dir, "a.jpg").touch()
         Path(tmp_dir, "X.jpg").touch()
         model.folder_path = Path(tmp_dir)
@@ -236,7 +238,7 @@ class TestRenameModel:
         model._names = ["X"]
         pairs = model.build_preview()
         state = pairs[0][4]
-        assert state == "conflicto"
+        assert state == "existe"
 
     def test_matching_mode_plan_states(self, model, tmp_dir):
         """Modo matching seguro: not_found / ya_correcto / ok coherentes."""
@@ -370,7 +372,8 @@ class TestExport:
         import csv
         with open(csv_path) as f:
             rows = list(csv.reader(f))
-        assert rows[0] == ["original", "nuevo_nombre", "duplicado", "estado"]
+        assert rows[0] == ["indice", "estado", "original", "nuevo_nombre",
+                           "ruta_original", "ruta_destino", "resultado"]
         assert len(rows) == 3
 
     def test_export_log(self, model, tmp_dir):
@@ -542,3 +545,254 @@ class TestUpdateDupStates:
         sig = inspect.signature(mod.PreviewTable.update_dup_states)
         params = list(sig.parameters.keys())
         assert "pairs" in params
+
+
+class TestNormalizeExcelValue:
+    def test_none_and_empty(self):
+        assert mod.RenameModel._normalize_excel_value(None) is None
+        assert mod.RenameModel._normalize_excel_value("") is None
+        assert mod.RenameModel._normalize_excel_value("  ") is None
+
+    def test_nan_variants(self):
+        assert mod.RenameModel._normalize_excel_value("nan") is None
+        assert mod.RenameModel._normalize_excel_value("NAT") is None
+        assert mod.RenameModel._normalize_excel_value("none") is None
+        assert mod.RenameModel._normalize_excel_value(float("nan")) is None
+
+    def test_floats_never_show_decimal(self):
+        assert mod.RenameModel._normalize_excel_value(1.0) == "1"
+        assert mod.RenameModel._normalize_excel_value("2.00") == "2"
+
+    def test_keeps_leading_zeros(self):
+        assert mod.RenameModel._normalize_excel_value("001") == "001"
+        assert mod.RenameModel._normalize_excel_value("0006") == "0006"
+
+
+class TestLoadNamesNormalization:
+    def _make_excel(self, tmp_dir, values):
+        import pandas as pd
+        df = pd.DataFrame({"Nombre": values})
+        path = Path(tmp_dir) / "nombres.xlsx"
+        df.to_excel(path, index=False)
+        return path
+
+    def test_load_names_keeps_zeros_and_skips_empties(self, model, tmp_dir):
+        model.excel_path = self._make_excel(
+            tmp_dir, ["001", "", "0006", 1.0, None, "002"])
+        model.column_name = "Nombre"
+        n = model.load_names()
+        assert n == 4
+        assert model.names == ["001", "0006", "1", "002"]
+        assert model.skipped_rows == [3, 6]
+
+    def test_cache_reads_excel_once(self, model, tmp_dir):
+        import pandas as pd
+        df = pd.DataFrame({"Nombre": ["a", "b"]})
+        path = Path(tmp_dir) / "nombres.xlsx"
+        df.to_excel(path, index=False)
+        model.excel_path = path
+        model.column_name = "Nombre"
+        model.load_names()
+        assert model._df is not None
+        key = (str(model.excel_path), model.sheet_name or 0)
+        assert model._df_key == key
+        n = model.load_names()
+        assert n == 2
+
+
+class TestSinFotoPreview:
+    def test_build_preview_marks_sin_foto(self, model, tmp_dir):
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["uno", "dos"]
+        pairs = model.build_preview()
+        assert len(pairs) == 2
+        states = [p[4] for p in pairs]
+        assert states[0] == "ok"
+        assert states[1] == "sin_foto"
+        # la fila sin foto tiene src None y deja la foto intacta
+        assert pairs[1][2] is None
+        assert (Path(tmp_dir) / "a.jpg").exists()
+
+    def test_rename_skips_sin_foto_without_touching(self, model, tmp_dir):
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["uno", "dos"]
+        errors = []
+        ok = []
+        model.rename_all(lambda c, t, n: None, lambda k, e: (ok.append(k), errors.extend(e)))
+        assert ok == [1]
+        assert any("sin fotografía" in e for e in errors)
+        assert sorted(f.name for f in Path(tmp_dir).iterdir()) == ["uno.jpg"]
+
+
+class TestTwoPhaseSwap:
+    def test_swap_a_b_b_c(self, model, tmp_dir):
+        """A→B mientras B→C: la FASE 1 (temporales) libera B antes de la FASE 2."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "b.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["b", "c"]
+        pairs = model.build_preview()
+        states = [p[4] for p in pairs]
+        assert states == ["ok", "ok"], states
+        ok = []
+        errors = []
+        model.rename_all(lambda c, t, n: None, lambda k, e: (ok.append(k), errors.extend(e)))
+        assert ok == [2]
+        assert errors == [], errors
+        files = sorted(f.name for f in Path(tmp_dir).iterdir())
+        assert files == ["b.jpg", "c.jpg"]
+        # no quedan temporales huérfanos
+        assert not [f for f in Path(tmp_dir).iterdir() if f.name.startswith(".metatag_tmp_")]
+
+    def test_swap_undo_restores(self, model, tmp_dir):
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "b.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["b", "c"]
+        model.rename_all(lambda c, t, n: None, lambda ok, e: None)
+        model.undo_last(lambda c, t, n: None, lambda ok, e: None)
+        files = sorted(f.name for f in Path(tmp_dir).iterdir())
+        assert files == ["a.jpg", "b.jpg"]
+
+    def test_cadena_larga_toda_resoluble(self, model, tmp_dir):
+        """A→B, B→C, C→D, D→E con E libre: toda la cadena se resuelve
+        en el mismo lote (la FASE 1 libera los destinos en cascada)."""
+        for f in ("a", "b", "c", "d", "e"):
+            Path(tmp_dir, f"{f}.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["b", "c", "d", "e", "f"]  # f.jpg no existe → libre
+        pairs = model.build_preview()
+        states = [p[4] for p in pairs]
+        # ninguna fila puede quedar bloqueada: es una cadena pura que
+        # termina en un destino libre.
+        assert states == ["ok"] * 5, states
+        ok = []
+        model.rename_all(lambda c, t, n: None, lambda k, e: ok.append(k))
+        assert ok == [5]
+        files = sorted(f.name for f in Path(tmp_dir).iterdir())
+        assert files == ["b.jpg", "c.jpg", "d.jpg", "e.jpg", "f.jpg"]
+
+    def test_ciclo_a_b_y_b_a_resoluble(self, model, tmp_dir):
+        """A→B y B→A: ciclo puro, ambas son 'ok' (renombrado en dos fases)."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "b.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["b", "a"]
+        pairs = model.build_preview()
+        assert [p[4] for p in pairs] == ["ok", "ok"], pairs
+
+    def test_ciclo_a_b_c_a_resoluble(self, model, tmp_dir):
+        """A→B, B→C, C→A: ciclo de 3 nodos, todas 'ok'."""
+        for f in ("a", "b", "c"):
+            Path(tmp_dir, f"{f}.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["b", "c", "a"]
+        pairs = model.build_preview()
+        assert [p[4] for p in pairs] == ["ok", "ok", "ok"], pairs
+
+    def test_cadena_hacia_externo_queda_existe(self, model, tmp_dir):
+        """A→B y B→X donde X es un archivo EXTERNO (no se renombra): la
+        cadena NO es resoluble; B→X es 'existe' y A→B queda 'conflicto'
+        (su destino B no se moverá). Ninguno se marca 'ok'."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "b.jpg").touch()
+        Path(tmp_dir, "x.jpg").write_bytes(b"externo")
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["b", "x"]
+        pairs = model.build_preview()
+        assert [p[4] for p in pairs] == ["conflicto", "existe"], pairs
+        errors = []
+        model.rename_all(lambda c, t, n: None, lambda k, e: errors.extend(e))
+        # nada se renombra ni se toca el archivo externo
+        assert (Path(tmp_dir) / "x.jpg").read_bytes() == b"externo"
+        assert any("ya existe" in e.lower() for e in errors)
+        assert any("conflicto" in e.lower() for e in errors)
+
+    def test_destino_externo_aislado_existe(self, model, tmp_dir):
+        """Un único destino externo existente → 'existe' (bloquea)."""
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "x.jpg").write_bytes(b"externo")
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["x"]
+        pairs = model.build_preview()
+        assert pairs[0][4] == "existe"
+
+    def test_ya_correcto_nunca_existe(self, model, tmp_dir):
+        """src == destino → 'ya_correcto', jamás 'existe' (no es colisión)."""
+        Path(tmp_dir, "foto.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["foto"]
+        pairs = model.build_preview()
+        assert pairs[0][4] == "ya_correcto"
+
+
+class TestRenameBlocked:
+    def test_blocked_when_count_mismatch_posicional(self, model, tmp_dir):
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["uno", "dos"]
+        blocked, reason = model.rename_blocked()
+        assert blocked is True
+        assert "conteo" in reason
+
+    def test_blocked_on_conflict(self, model, tmp_dir):
+        Path(tmp_dir, "a.jpg").touch()
+        Path(tmp_dir, "X.jpg").write_bytes(b"otro")
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model._photos = [Path(tmp_dir, "a.jpg")]   # conteo 1↔1, solo a.jpg
+        model._names = ["X"]
+        blocked, reason = model.rename_blocked()
+        assert blocked is True
+        assert "existe" in reason
+
+    def test_not_blocked_when_ok(self, model, tmp_dir):
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model._names = ["uno"]
+        blocked, reason = model.rename_blocked()
+        assert blocked is False
+        assert reason == ""
+
+    def test_matching_not_found_does_not_block(self, model, tmp_dir):
+        """Matching seguro: sin coincidencia → se omite, no bloquea."""
+        Path(tmp_dir, "a.jpg").touch()
+        model.folder_path = Path(tmp_dir)
+        model.sort_mode = "natural"
+        model.load_photos()
+        model.matching_mode = True
+        model._names = ["inexistente"]
+        blocked, reason = model.rename_blocked()
+        assert blocked is False
+        assert reason == ""
+
+    def test_blocked_when_no_data(self, model):
+        blocked, reason = model.rename_blocked()
+        assert blocked is True
+        assert "fotografías" in reason or "nombres" in reason
