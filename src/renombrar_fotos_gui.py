@@ -1766,6 +1766,11 @@ class PreviewTable(ctk.CTkFrame):
         for _ev in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
             tk.Frame.bind(self, _ev, self._on_wheel, add="+")
 
+    def _bind_wheel(self, widget) -> None:
+        """Vincula la rueda del ratón también en un sub-widget (label, entry)."""
+        for _ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(_ev, self._on_wheel, add="+")
+
     # ── API pública ────────────────────────────────────────────────────────
     def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]],
                empty_message: str = "Sin datos para mostrar.") -> None:
@@ -1928,11 +1933,11 @@ class PreviewTable(ctk.CTkFrame):
             (3, "Nuevo nombre","w",  8),
         ]
         for col, txt, sticky, padx in cols:
-            ctk.CTkLabel(hdr, text=txt, width=1,
+            lbl = ctk.CTkLabel(hdr, text=txt, width=1,
                          font=FONT_SM_BD, text_color=C["accent"],
-                         fg_color="transparent").grid(row=0, column=col,
-                                                      sticky=sticky, padx=padx,
-                                                      pady=4)
+                         fg_color="transparent")
+            lbl.grid(row=0, column=col, sticky=sticky, padx=padx, pady=4)
+            self._bind_wheel(lbl)
         self._hdr = hdr
 
     def _show_table(self) -> None:
@@ -2036,6 +2041,8 @@ class PreviewTable(ctk.CTkFrame):
         row.bind("<Enter>", self._close_tip, add="+")
         row.bind("<Leave>", self._close_tip, add="+")
         row.bind("<Motion>", self._on_slot_motion(slot), add="+")
+        for w in (num, state_lbl, orig, new_lbl, new_entry):
+            self._bind_wheel(w)
         var.trace_add("write", self._make_trace(slot))
         return slot
 

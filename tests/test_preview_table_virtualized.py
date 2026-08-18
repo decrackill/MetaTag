@@ -207,9 +207,12 @@ class TestScroll:
     def test_wheel_devuelve_break(self, root, preview):
         self._render(preview, root)
         from types import SimpleNamespace
+        # Scroll down (not at bottom) → "break"
         assert preview._on_wheel(SimpleNamespace(num=5, delta=None)) == "break"
-        assert preview._on_wheel(SimpleNamespace(num=4, delta=None)) == "break"
-        assert preview._on_wheel(SimpleNamespace(num=0, delta=120)) == "break"
+        # Scroll up from top → None (scroll chaining to outer frame)
+        assert preview._on_wheel(SimpleNamespace(num=4, delta=None)) is None
+        # Scroll up via mousewheel from top → None (scroll chaining)
+        assert preview._on_wheel(SimpleNamespace(num=0, delta=120)) is None
 
 
 # ── filtro ─────────────────────────────────────────────────────────────────
