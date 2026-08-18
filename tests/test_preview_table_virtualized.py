@@ -140,14 +140,13 @@ class TestTamanos:
         assert preview._first == 0
 
     def test_altura_adaptativa_contenido(self, root, preview):
-        """Con pocas filas la tabla se encoge; con muchas crece hasta _MAX_H
-        (en vez de mostrar siempre un viewport diminuto)."""
+        """Con pocas filas la tabla calcula altura baja; con muchas crece hasta _MAX_H."""
         preview.render(make_pairs(5))
         root.update()
-        assert preview._fixed_h == PreviewTable._MIN_H, preview._fixed_h
+        assert preview._adaptive_height == PreviewTable._MIN_H, preview._adaptive_height
         preview.render(make_pairs(10000))
         root.update()
-        assert preview._fixed_h == PreviewTable._MAX_H, preview._fixed_h
+        assert preview._adaptive_height == PreviewTable._MAX_H, preview._adaptive_height
 
     def test_pool_cubre_todo_el_rango(self, root, preview):
         """El pool (visible + buffer) debe alcanzar SIEMPRE la última fila:

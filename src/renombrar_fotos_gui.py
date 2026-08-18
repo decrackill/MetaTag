@@ -27,6 +27,7 @@ import string
 import subprocess
 import threading
 import tkinter as tk
+from tkinter import ttk
 import traceback
 import uuid
 from collections import Counter, OrderedDict
@@ -1686,7 +1687,7 @@ class PathSelector(ctk.CTkFrame):
 # ===========================================================================
 class PreviewTable(ctk.CTkFrame):
     """
-    Tabla de vista previa VIRTUALIZADA (FASE 3B.2).
+    Tabla de vista previa VIRTUALIZADA.
 
     Reemplaza el render widget-per-row (chunks asíncronos) por un viewport
     de altura FIJA con tk.Canvas + tk.Scrollbar vertical propios:
@@ -1738,10 +1739,11 @@ class PreviewTable(ctk.CTkFrame):
         self._tip_job: Optional[str] = None
         self._hover_path: Optional[Path] = None
 
-        # Altura FIJA (independiente de N), razonable en pantallas pequeñas.
+        # La altura la controla el padre (CTkScrollableFrame o similar).
+        # En modo CTkScrollableFrame, calculamos altura desde la pantalla.
         sh = master.winfo_screenheight()
         h = max(self._MIN_H, min(self._MAX_H, int(sh * 0.45)))
-        self._fixed_h: int = h
+        self._adaptive_height: int = h
         self.pack_propagate(False)
         self.configure(height=h)
 
@@ -1751,6 +1753,8 @@ class PreviewTable(ctk.CTkFrame):
                  "Pasa el cursor sobre una fila para ver la miniatura.",
             font=FONT_MD, text_color=C["subtext"], justify="center")
         self._lbl_empty.pack(pady=28)
+
+        self.bind("<Configure>", self._on_frame_configure)
 
     # ── API pública ────────────────────────────────────────────────────────
     def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]],
@@ -1780,8 +1784,8 @@ class PreviewTable(ctk.CTkFrame):
         # Altura adaptativa: crece con el contenido (hasta _MAX_H) en vez de
         # mostrar siempre un viewport pequeño con mucho espacio vacío abajo.
         h2 = min(self._MAX_H, max(self._MIN_H, len(self._all_pairs) * self.ROW_H + 34))
-        if h2 != self._fixed_h:
-            self._fixed_h = h2
+        if h2 != self._adaptive_height:
+            self._adaptive_height = h2
             self.configure(height=h2)
 
         self._show_table()
@@ -2151,7 +2155,7 @@ class PreviewTable(ctk.CTkFrame):
         tabla (así el pool de slots no se construye con un tamaño fantasma)."""
         view_h = self._cv.winfo_height()
         if view_h < 2:
-            view_h = max(self._MIN_H, self._fixed_h - 34)
+            view_h = max(self._MIN_H, self._adaptive_height - 34)
         return view_h
 
     def _sync_scrollregion(self) -> None:
@@ -2189,8 +2193,25 @@ class PreviewTable(ctk.CTkFrame):
             self._scroll_by(step)
         elif event.delta:
             self._scroll_by(-step if event.delta > 0 else step)
-        # "break": la rueda sobre la tabla NO debe desplazar la página.
+        # "break": la rueda sobre la tabla NO debe afectar widgets externos.
         return "break"
+
+    def _on_frame_configure(self, event) -> None:
+        """Adaptar canvas y pool cuando el PanedWindow redimensiona este frame."""
+        if event.widget is not self:
+            return
+        new_h = event.height
+        if new_h < 2:
+            return
+        self._adaptive_height = new_h
+        if self._cv is not None:
+            old_pool = len(self._rows)
+            new_pool = self._pool_size()
+            if new_pool != old_pool:
+                self._cv.delete("all")
+                self._build_pool()
+            self._sync_scrollregion()
+            self._sync_viewport()
 
     def _on_canvas_resize(self, event) -> None:
         w = event.width if event.width > 1 else 1
