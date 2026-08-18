@@ -2195,7 +2195,7 @@ class PreviewTable(ctk.CTkFrame):
         self._hover_path = None
         self._sync_viewport()
 
-    def _on_wheel(self, event) -> str:
+    def _on_wheel(self, event) -> Optional[str]:
         step = self.ROW_H * 3
         if event.num == 4:
             self._scroll_by(-step)
@@ -2203,7 +2203,19 @@ class PreviewTable(ctk.CTkFrame):
             self._scroll_by(step)
         elif event.delta:
             self._scroll_by(-step if event.delta > 0 else step)
-        # "break": la rueda sobre la tabla NO debe afectar widgets externos.
+        # Scroll chaining: solo devolver "break" si la tabla tiene contenido
+        # scrollable.  Si está vacía o ya no puede scrollear en la dirección
+        # pedida, devolver None para que el evento llegue al CTkScrollableFrame
+        # exterior (el usuario puede seguir bajando/subiendo la página).
+        if not self._all_pairs:
+            return None
+        top, bot = self._cv.yview()
+        scrolling_up = (event.num == 4) or (event.delta and event.delta > 0)
+        scrolling_down = (event.num == 5) or (event.delta and event.delta < 0)
+        at_top = top <= 0.0
+        at_bottom = bot >= 1.0
+        if (scrolling_up and at_top) or (scrolling_down and at_bottom):
+            return None
         return "break"
 
     def _on_frame_configure(self, event) -> None:

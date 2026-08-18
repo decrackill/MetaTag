@@ -149,56 +149,67 @@ class TestScrollIsolation:
         pt.destroy()
 
     def test_frame_scroll_returns_break(self, root):
-        """Scroll event on the PreviewTable frame itself must return 'break'."""
+        """Scroll event on the PreviewTable frame returns 'break' when content is scrollable."""
         pt = PreviewTable(root)
         pt.pack(fill="both", expand=True)
         root.update()
-        pt.render(make_pairs(10))
+        pt.render(make_pairs(200))
         root.update()
         event = tk.Event()
         event.num = 5
         event.delta = 0
         result = pt._on_wheel(event)
-        assert result == "break"
+        assert result == "break", \
+            "Scroll down in middle of content should return 'break'"
         pt.destroy()
 
-    def test_on_wheel_returns_break(self, root):
+    def test_frame_scroll_chaining_at_bottom(self, root):
+        """At bottom of content, scroll down should return None (pass to outer frame)."""
         pt = PreviewTable(root)
         pt.pack(fill="both", expand=True)
         root.update()
-        pt.render(make_pairs(50))
+        pt.render(make_pairs(200))
+        root.update()
+        # Scroll all the way down
+        pt._scroll_by(10 ** 9)
         root.update()
         event = tk.Event()
         event.num = 5
         event.delta = 0
         result = pt._on_wheel(event)
-        assert result == "break"
+        assert result is None, \
+            "Scroll down at bottom should return None (chaining to outer frame)"
         pt.destroy()
 
-    def test_on_wheel_button4(self, root):
+    def test_frame_scroll_chaining_at_top(self, root):
+        """At top of content, scroll up should return None (pass to outer frame)."""
         pt = PreviewTable(root)
         pt.pack(fill="both", expand=True)
         root.update()
-        pt.render(make_pairs(50))
+        pt.render(make_pairs(200))
         root.update()
+        # Already at top
         event = tk.Event()
         event.num = 4
         event.delta = 0
         result = pt._on_wheel(event)
-        assert result == "break"
+        assert result is None, \
+            "Scroll up at top should return None (chaining to outer frame)"
         pt.destroy()
 
-    def test_on_wheel_mousewheel(self, root):
+    def test_frame_scroll_chaining_empty(self, root):
+        """Empty table should return None (no content to scroll)."""
         pt = PreviewTable(root)
         pt.pack(fill="both", expand=True)
         root.update()
-        pt.render(make_pairs(50))
+        pt.render([])
         root.update()
         event = tk.Event()
-        event.num = 0
-        event.delta = 120
+        event.num = 5
+        event.delta = 0
         result = pt._on_wheel(event)
-        assert result == "break"
+        assert result is None, \
+            "Scroll on empty table should return None"
         pt.destroy()
 
     def test_canvas_has_local_bindings(self, root):
