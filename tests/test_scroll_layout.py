@@ -135,6 +135,33 @@ class TestPreviewTableHeight:
 
 # ── Scroll isolation ──────────────────────────────────────────────
 class TestScrollIsolation:
+    def test_frame_captures_scroll(self, root):
+        """PreviewTable frame itself must bind Button-4/5/MouseWheel to prevent
+        double-scroll via CTkScrollableFrame's bind_all.
+        Uses tk.Frame.bind() because CTkFrame.bind() routes to internal canvas."""
+        pt = PreviewTable(root)
+        pt.pack(fill="both", expand=True)
+        root.update()
+        frame_bindings = str(tk.Frame.bind(pt))
+        for ev in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            assert ev in frame_bindings, \
+                f"PreviewTable frame must bind {ev} to prevent double-scroll"
+        pt.destroy()
+
+    def test_frame_scroll_returns_break(self, root):
+        """Scroll event on the PreviewTable frame itself must return 'break'."""
+        pt = PreviewTable(root)
+        pt.pack(fill="both", expand=True)
+        root.update()
+        pt.render(make_pairs(10))
+        root.update()
+        event = tk.Event()
+        event.num = 5
+        event.delta = 0
+        result = pt._on_wheel(event)
+        assert result == "break"
+        pt.destroy()
+
     def test_on_wheel_returns_break(self, root):
         pt = PreviewTable(root)
         pt.pack(fill="both", expand=True)

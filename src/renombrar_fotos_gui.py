@@ -1756,6 +1756,16 @@ class PreviewTable(ctk.CTkFrame):
 
         self.bind("<Configure>", self._on_frame_configure)
 
+        # Capturar TODOS los eventos de scroll DENTRO de PreviewTable.
+        # Sin esto, los bind_all de CTkScrollableFrame y SmoothScroller
+        # capturan scroll sobre widgets sin binding propio (_lbl_empty, _hdr,
+        # etc.) causando doble scroll.  "break" detiene la cadena antes de
+        # que llegue a bind_all.
+        # NOTA: usamos tk.Frame.bind() en lugar de self.bind() porque
+        # CTkFrame.bind() redirige a su _canvas interno, no al frame.
+        for _ev in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            tk.Frame.bind(self, _ev, self._on_wheel, add="+")
+
     # ── API pública ────────────────────────────────────────────────────────
     def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]],
                empty_message: str = "Sin datos para mostrar.") -> None:
@@ -2197,7 +2207,7 @@ class PreviewTable(ctk.CTkFrame):
         return "break"
 
     def _on_frame_configure(self, event) -> None:
-        """Adaptar canvas y pool cuando el PanedWindow redimensiona este frame."""
+        """Adaptar canvas y pool cuando el padre redimensiona este frame."""
         if event.widget is not self:
             return
         new_h = event.height
