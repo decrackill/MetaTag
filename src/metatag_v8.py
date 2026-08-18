@@ -215,6 +215,7 @@ from metatag_theme import (
     THEMES, DEFAULT_THEME, THEME_ICONS,
     compute_font_scale, font_specs,
 )
+from metatag_responsive import PROFILE
 
 CURRENT_THEME = DEFAULT_THEME
 C = dict(THEMES[CURRENT_THEME])
@@ -419,6 +420,7 @@ class MetaTagApp(tk.Tk):
 
         self.update_idletasks()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        PROFILE.init_from_tk(self)
         # current_scale antes quedaba fijo en 1.0 sin importar la pantalla,
         # así que en un laptop pequeño (ej. 1366×768) la UI se veía grande/
         # apretada, y en un monitor grande (ej. 2560×1440+) se veía chica.
@@ -431,7 +433,7 @@ class MetaTagApp(tk.Tk):
         win_w = int(sw * 0.85)
         win_h = int(sh * 0.85)
         self.geometry(f"{win_w}x{win_h}+{(sw-win_w)//2}+{(sh-win_h)//2}")
-        self.minsize(860, 520)
+        self.minsize(PROFILE.min_w, PROFILE.min_h)
         self.configure(bg=C["bg"])
 
         self.original_df    = None
@@ -799,7 +801,7 @@ class MetaTagApp(tk.Tk):
 
         self._build_control_panel(left_inner)
         _bind_scroll_recursive(left_inner)
-        self.paned_window.add(self.left, minsize=int(220*self.current_scale))
+        self.paned_window.add(self.left, minsize=PROFILE.panel_left_w)
 
         center = tk.Frame(self.paned_window, bg=C["bg"])
         self._build_center(center)
@@ -807,13 +809,13 @@ class MetaTagApp(tk.Tk):
 
         right = tk.Frame(self.paned_window, bg=C["panel"])
         self._build_right(right)
-        self.paned_window.add(right, minsize=int(260*self.current_scale))
+        self.paned_window.add(right, minsize=PROFILE.panel_right_w)
 
         self._build_statusbar()
         self.update_idletasks()
         total_w = self.winfo_width()
         if total_w > 10:
-            self.paned_window.paneconfigure(self.left,   width=int(total_w * 0.20))
+            self.paned_window.paneconfigure(self.left,   width=PROFILE.panel_left_w)
             self.paned_window.paneconfigure(center,      width=int(total_w * 0.55))
 
     def _build_topbar(self):
@@ -1930,7 +1932,7 @@ class MetaTagApp(tk.Tk):
                      fg=C["text3"] if is_bullet else C["text2"],
                      font=FONTS["TINY"] if is_bullet else FONTS["BODY"],
                      anchor="w", justify="left",
-                     wraplength=390).pack(fill="x", pady=(0, 2))
+                     wraplength=int(390 * self.current_scale)).pack(fill="x", pady=(0, 2))
 
         # ── Separador ─────────────────────────────────────────────
         tk.Frame(dlg, bg=C["border"], height=1).pack(fill="x")

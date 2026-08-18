@@ -18,6 +18,10 @@ import logging
 import gc
 from pathlib import Path
 
+_PROJECT_SRC = Path(__file__).resolve().parent
+if str(_PROJECT_SRC) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_SRC))
+
 if sys.platform == "win32":
     try:
         import ctypes
@@ -56,6 +60,8 @@ try:
 except ImportError:
     REPORTLAB_OK = False
 
+from metatag_responsive import PROFILE
+from metatag_theme import compute_font_scale, scaled_size
 
 # ══════════════════════════════════════════════════════════════════
 #  TEMAS PREMIUM
@@ -243,13 +249,26 @@ def _format_file_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
     return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
-# Tipografía del programa
-F_TITLE = ("Segoe UI", 14, "bold")
-F_H2    = ("Segoe UI", 11, "bold")
-F_BODY  = ("Segoe UI", 9)
-F_BOLD  = ("Segoe UI", 9, "bold")
-F_TINY  = ("Segoe UI", 8)
-F_MICRO = ("Segoe UI", 7)
+# Tipografía del programa (valores iniciales; se recalculan en _recalc_fonts)
+_vs = compute_font_scale(PROFILE.win_w)
+F_TITLE = ("Segoe UI", scaled_size(14, _vs, 11), "bold")
+F_H2    = ("Segoe UI", scaled_size(11, _vs, 9), "bold")
+F_BODY  = ("Segoe UI", scaled_size(9, _vs, 7))
+F_BOLD  = ("Segoe UI", scaled_size(9, _vs, 7), "bold")
+F_TINY  = ("Segoe UI", scaled_size(8, _vs, 6))
+F_MICRO = ("Segoe UI", scaled_size(7, _vs, 6))
+
+
+def _recalc_fonts() -> None:
+    """Recalcula las fuentes F_* según PROFILE (llamar tras init_from_tk)."""
+    global F_TITLE, F_H2, F_BODY, F_BOLD, F_TINY, F_MICRO
+    vs = compute_font_scale(PROFILE.win_w)
+    F_TITLE = ("Segoe UI", scaled_size(14, vs, 11), "bold")
+    F_H2    = ("Segoe UI", scaled_size(11, vs, 9), "bold")
+    F_BODY  = ("Segoe UI", scaled_size(9, vs, 7))
+    F_BOLD  = ("Segoe UI", scaled_size(9, vs, 7), "bold")
+    F_TINY  = ("Segoe UI", scaled_size(8, vs, 6))
+    F_MICRO = ("Segoe UI", scaled_size(7, vs, 6))
 
 # Constantes del Zoom
 ZOOM_MIN = 0.05
@@ -289,17 +308,20 @@ class VisorApp(tk.Tk):
     def __init__(self, initial_image=None):
         super().__init__()
 
+        PROFILE.init_from_tk(self)
+        _recalc_fonts()
+
         # Configuración de la ventana principal
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        window_width = min(int(screen_width * 0.90), 1380)
-        window_height = min(int(screen_height * 0.90), 860)
+        window_width = min(int(screen_width * 0.90), PROFILE.win_w)
+        window_height = min(int(screen_height * 0.90), PROFILE.win_h)
         
         pos_x = (screen_width - window_width) // 2
         pos_y = (screen_height - window_height) // 2
         
         self.geometry(f"{window_width}x{window_height}+{pos_x}+{pos_y}")
-        self.minsize(860, 520)
+        self.minsize(PROFILE.min_w, PROFILE.min_h)
         self.configure(bg=C["bg"])
         self.title("MetaTag Visor v9.0 — Inspector Arqueológico")
 
@@ -423,7 +445,7 @@ class VisorApp(tk.Tk):
             background=C["surface"], 
             foreground=C["text"], 
             fieldbackground=C["surface"], 
-            rowheight=32, 
+            rowheight=PROFILE.table_row_h, 
             font=F_BODY, 
             borderwidth=0
         )
@@ -488,21 +510,21 @@ class VisorApp(tk.Tk):
             cursor="arrow",
             sashcursor="sb_v_double_arrow"
         )
-        self.main_paned.add(self.left_paned, minsize=320, width=400)
+        self.main_paned.add(self.left_paned, minsize=PROFILE.panel_left_w, width=PROFILE.panel_left_w)
 
         # Sección Superior Izquierda (Visor de Imagen)
         self.left_top = tk.Frame(self.left_paned, bg=C["panel"])
-        self.left_paned.add(self.left_top, minsize=320)
+        self.left_paned.add(self.left_top, minsize=PROFILE.panel_left_w)
         self._build_left_top(self.left_top)
 
         # Sección Inferior Izquierda (Explorador de Archivos)
         self.left_bottom = tk.Frame(self.left_paned, bg=C["panel"])
-        self.left_paned.add(self.left_bottom, minsize=180)
+        self.left_paned.add(self.left_bottom, minsize=120)
         self._build_left_bottom(self.left_bottom)
 
         # ── PANEL DERECHO (Tabla de Metadatos) ──
         self.right_frame = tk.Frame(self.main_paned, bg=C["bg"])
-        self.main_paned.add(self.right_frame, minsize=480)
+        self.main_paned.add(self.right_frame, minsize=PROFILE.panel_right_w)
         self._build_right(self.right_frame)
 
         # Pantalla de Bienvenida (Superpuesta al inicio)
@@ -625,7 +647,7 @@ class VisorApp(tk.Tk):
         
         self.lbl_info = tk.Label(
             self.info_card, text="Sin selección.", bg=C["panel2"], 
-            fg=C["text2"], font=F_BODY, justify="left", wraplength=340
+            fg=C["text2"], font=F_BODY, justify="left", wraplength=int(340 * PROFILE.font_scale)
         )
         self.lbl_info.pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -651,7 +673,7 @@ class VisorApp(tk.Tk):
 
         self._path_label = tk.Label(
             path_frame, textvariable=self._path_var, bg=C["panel2"],
-            fg=C["text2"], font=F_MICRO, anchor="w", wraplength=280)
+            fg=C["text2"], font=F_MICRO, anchor="w", wraplength=int(280 * PROFILE.font_scale))
         self._path_label.pack(side="left", fill="x", expand=True, ipady=4, padx=6)
 
         # Barra de búsqueda
@@ -748,7 +770,7 @@ class VisorApp(tk.Tk):
     def _show_explorer_pane(self):
         """Muestra el panel inferior izquierdo."""
         if str(self.left_bottom) not in self.left_paned.panes():
-            self.left_paned.add(self.left_bottom, minsize=150)
+            self.left_paned.add(self.left_bottom, minsize=120)
 
     def _show_welcome(self):
         """Muestra la pantalla de inicio sobre la tabla vacía."""

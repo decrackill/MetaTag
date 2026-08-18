@@ -29,7 +29,7 @@ import threading
 import tkinter as tk
 import traceback
 import uuid
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -59,6 +59,7 @@ from metatag_theme import (
     CustomTkinterThemeAdapter, compute_font_scale, scaled_size,
     DEFAULT_THEME, THEME_ORDER,
 )
+from metatag_responsive import PROFILE
 
 # Estados posibles de cada fila de la vista previa / plan de renombrado.
 #   ok          → se renombrará sin obstáculos.
@@ -1705,7 +1706,7 @@ class PreviewTable(ctk.CTkFrame):
     set_edit_mode, _cancel_jobs, _configure_grid, _build_header, _rows.
     """
 
-    ROW_H = 32
+    ROW_H = PROFILE.table_row_h
     BUFFER = 5
     _MIN_H = 240
     _MAX_H = 900
@@ -2361,7 +2362,7 @@ class MainView(ctk.CTk):
         px = (sw - w) // 2
         py = (sh - h) // 2
         self.geometry(f"{w}x{h}+{px}+{py}")
-        self.minsize(700, 540)
+        self.minsize(PROFILE.min_w, PROFILE.min_h)
 
         self.report_callback_exception = self._tk_error_handler
         self._build()
@@ -2703,7 +2704,14 @@ class MainView(ctk.CTk):
     def _build_summary(self, p, row: int) -> None:
         """Panel de resumen en vivo: Fotografías / Registros / Correspondencias /
         Conflictos / Estado. Cada celda tiene dos líneas: caption pequeña arriba
-        y valor en negrita abajo. Lo rellena `update_summary` desde el modelo."""
+        y valor en negrita abajo. Lo rellena `update_summary` desde el modelo.
+
+        Definiciones formales de los contadores (fuente única: el plan):
+          Fotografías    = archivos de imagen válidos en la carpeta.
+          Registros      = nombres válidos extraídos del Excel/CSV.
+          Correspondencias = registros con foto asociada (src != None).
+          Conflictos     = correspondencias en estado bloqueante.
+        """
         f = ctk.CTkFrame(p, fg_color="transparent")
         f.grid(row=row, column=0, sticky="ew", pady=(0, 6))
         for col in range(5):
@@ -3040,7 +3048,7 @@ class MainView(ctk.CTk):
                      wraplength=480, justify="center").pack(padx=20, pady=(0, 8))
 
         tb_box = ctk.CTkTextbox(dlg, width=520, height=180,
-                                font=ctk.CTkFont("Courier New", 10),
+                                font=ctk.CTkFont("Courier New", scaled_size(10, _s, 8)),
                                 fg_color=C["surface"], text_color=C["subtext"])
         tb_box.pack(padx=18, pady=(0, 10), fill="both", expand=True)
         tb_box.insert("end", details[:3000])
@@ -3555,10 +3563,24 @@ class AppController:
         self._last_pairs = pairs
         self._view.render_preview(pairs)
 
-        n_corr = sum(1 for _, _, src, _, _ in pairs if src is not None)
-        n_conf = sum(1 for _, _, _, _, s in pairs
-                     if s in ("existe", "conflicto", "duplicado", "ambiguo",
-                              "error"))
+        # ── Modelo único de contadores ──────────────────────────────────
+        # TODOS los contadores derivan de UNA sola pasada sobre el plan.
+        # Definiciones formales:
+        #
+        # Fotografías   = archivos de imagen válidos en la carpeta.
+        # Registros     = nombres válidos extraídos del Excel/CSV.
+        # Correspondencias = registros con una foto asociada (src != None),
+        #   sin importar si se renombrarán o no. Equivale a:
+        #   ok + ya_correcto + existe + conflicto + duplicado.
+        # Conflictos     = correspondencias en estado bloqueante:
+        #   existe + conflicto + duplicado + ambiguo + error.
+        #
+        # Invariante: Registros == Correspondencias + (not_found + sin_foto
+        #   + ambiguo + error).  Los estados son mutuamente excluyentes.
+        _BLOCKING = ("existe", "conflicto", "duplicado", "ambiguo", "error")
+        state_counter = Counter(item["state"] for item in plan)
+        n_corr = sum(1 for item in plan if item["src"] is not None)
+        n_conf = sum(state_counter[s] for s in _BLOCKING)
         faltan = len(m.names) - n_corr
         blocked, reason = m.rename_blocked(plan)
         if n_conf:

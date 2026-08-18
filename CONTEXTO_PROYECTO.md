@@ -24,17 +24,22 @@
   ```
   MetaTag_v8.9/
   ├── src/
-  │   ├── metatag_v8.py             # Aplicación principal (~3212 líneas)
+  │   ├── metatag_v8.py             # Aplicación principal (~3222 líneas)
   │   ├── metatag_writer.py         # Escritura EXIF/IPTC pura (~145 líneas)
   │   ├── metatag_graficas.py       # Estadísticas y gráficas (~694 líneas)
   │   ├── metatag_widgets.py        # ExcelGrid con viewport culling (~418 líneas)
   │   ├── Visor.py                  # Visor de metadatos / comparador / PDF (~2468 líneas)
-  │   ├── renombrar_fotos_gui.py    # Renombrador de Fotos v4.0 (standalone, CustomTkinter)
+  │   ├── renombrar_fotos_gui.py    # Image Sync (Renombrador de Fotos v4.1) standalone CustomTkinter (~3859 líneas)
   │   ├── metatag_theme.py          # Fuente de verdad técnica de temas/fuentes (puro, sin toolkit)
+  │   ├── metatag_matching.py       # Motor de emparejamiento seguro puro
+  │   ├── metatag_xim.py            # Neutralización XIM↔iBus por-proceso
   │   └── editor_casillas_backup.py # Respaldo del editor de casillas (~116 líneas)
   ├── tests/
-  │   ├── test_renombrador_pytest.py# Suite pytest original del renombrador (49 tests)
-  │   └── test_metatag_theme.py     # Paridad de temas/fuentes contra metatag_v8 (53 tests)
+   │   ├── test_renombrador_pytest.py# Suite pytest del Image Sync (70 tests)
+   │   ├── test_reconciliacion.py   # Diagnóstico + integridad de contadores (20 tests)
+   │   ├── test_sinteticos_reconciliacion.py # Fixtures sintéticos de reconciliación (39 tests)
+   │   ├── test_rename_real_seguro.py # Renombrado real + rollback en tmp (7 tests)
+  │   └── test_metatag_theme.py     # Paridad de temas/fuentes contra metatag_v8 (53+ tests)
   ├── data/
   │   ├── metatag_config.json       # Configuración persistente de la sesión
   │   └── metatag_debug.log         # Log de errores (logging, nivel ERROR)
@@ -56,15 +61,15 @@
   | `src/metatag_widgets.py` | Grid Excel sobre Canvas con viewport culling | Clase `ExcelGrid`: `load`, `redraw`, selección de filas/columnas, `get_row_metadata`, `get_selected_metadata` | Implementado |
   | `src/Visor.py` | Visor independiente de metadatos EXIF/JSON/GPS, comparador, zoom y export PDF | `VisorApp`, `_extract_exif`, `_extract_gps`, `_extract_json`, `_open_image_comparison`, `_export_pdf`, `_generate_pdf_document` | Implementado |
   | `src/editor_casillas_backup.py` | Respaldo de funciones del editor de casillas | `_open_editor`, `_populate_editor`, `toggle_lock`, `update_df` | Backup; no es el editor activo |
-  | `src/renombrar_fotos_gui.py` | Renombrador de Fotos v4.0: herramienta independiente (CustomTkinter) lanzada como subproceso desde MetaTag | `RenameModel`, `MainView`, `AppController`, `_build_plan`/`_build_plan_matching` (modo "matching seguro" con `ImageMatcher`), `rename_all`, `undo_last` | Implementado y verificado (FASE A); integrado como lanzador en `metatag_v8.py` |
+  | `src/renombrar_fotos_gui.py` | **Image Sync (Renombrador de Fotos v4.1)**: herramienta independiente (CustomTkinter) lanzada como subproceso desde MetaTag | `RenameModel` (9 estados de plan, `_normalize_excel_value`, `rename_blocked`, `rename_all`/`undo_last` con `on_log`, `write_backup`), `PreviewTable` virtualizada (FASE 3B.2), `FileBrowser` multi-disco, `AppController` (guardas contra cargas concurrentes + log en vivo + indicador ①…⑤), `_build_plan`/`_build_plan_matching` (modo "matching seguro") | Implementado y verificado (Image Sync v4.1, 2026-08-14); integrado como lanzador en `metatag_v8.py` |
 
-  **Relaciones:** `metatag_v8.py` importa `show_stats` desde `metatag_graficas`, `ExcelGrid` desde `metatag_widgets`, las funciones de escritura/divergencia desde `metatag_writer`, y los tokens de tema/fuentes desde `metatag_theme`. `metatag_v8.py` puede lanzar `Visor.py` (`launch_visor`) y `renombrar_fotos_gui.py` (`_launch_renombrador`, subproceso con `sys.executable`, sin withdraw ni callbacks). `src/renombrar_fotos_gui.py` importa `ImageMatcher` desde `metatag_matching` (mismo directorio; el bloque inserta `src/` en `sys.path`) y consume los temas de MetaTag vía `metatag_theme.CustomTkinterThemeAdapter`.
+  **Relaciones:** `metatag_v8.py` importa `show_stats` desde `metatag_graficas`, `ExcelGrid` desde `metatag_widgets`, las funciones de escritura/divergencia desde `metatag_writer`, y los tokens de tema/fuentes desde `metatag_theme`. `metatag_v8.py` puede lanzar `Visor.py` (`launch_visor`) y `renombrar_fotos_gui.py` (`_launch_renombrador`, subproceso con `sys.executable`, sin withdraw ni callbacks). `src/renombrar_fotos_gui.py` importa `ImageMatcher` desde `metatag_matching` (mismo directorio; el bloque inserta `src/` en `sys.path`), consume los temas de MetaTag vía `metatag_theme.CustomTkinterThemeAdapter` y llama a `metatag_xim.neutralize_xim_for_tk()` antes del primer `Tk()` (FASE 3B.1). Se auto-titula **"MetaTag v8.9 — Image Sync"** (antes "Renombrador de Fotos").
 
   ---
 
   ## 3. Arquitectura de metatag_v8
 
-  Archivo único de ~3068 líneas que concentra la mayor parte de la lógica y la UI.
+  Archivo único de ~3222 líneas que concentra la mayor parte de la lógica y la UI.
 
   ### Componentes principales
 
@@ -220,10 +225,10 @@
   | Exportación PDF (visor/comparador) | IMPLEMENTADO |
   | Respaldo del editor de casillas | IMPLEMENTADO (archivo backup) |
   | Divergencia de metadatos (aviso previo) | IMPLEMENTADO |
-  | Renombrador de Fotos (herramienta standalone en `src/renombrar_fotos_gui.py`) | IMPLEMENTADO y VERIFICADO (46/46 pytest + 11 unittest); lanzado desde MetaTag como subproceso independiente (botón HERRAMIENTAS AVANZADAS) |
-  | Exportación CSV | NO IMPLEMENTADO (solo lectura de CSV/Excel) |
-  | Modo simulación / dry-run | NO IMPLEMENTADO |
-  | Sistema de backup/respaldo para renombrado | NO IMPLEMENTADO |
+  | Image Sync / Renombrador de Fotos (standalone en `src/renombrar_fotos_gui.py`) | IMPLEMENTADO y VERIFICADO (70/70 pytest v4.1 + 12 unittest); lanzado desde MetaTag como subproceso independiente (botón HERRAMIENTAS AVANZADAS → "Image Sync") |
+  | Exportación CSV de la vista previa (dentro de Image Sync: guardar "CSV") | IMPLEMENTADO (solo dentro de la herramienta Image Sync; la app principal de metadatos sigue sin exportar) |
+  | Simulación / dry-run del renombrado (solo calcula el plan con el botón "Simular", no toca archivos) | IMPLEMENTADO (simulación de correspondencias; NO es un dry-run de renombrado completo ni está integrado en la app principal) |
+  | Registro/backup JSON de la operación (`.metatag_backup_*.json` + panel "Registro") | IMPLEMENTADO (checkbox "Crear registro/backup de la operación" + `write_backup`) |
 
   ---
 
@@ -231,41 +236,56 @@
 
   Confirmadas como NO implementadas en el código actual:
 
-  - **Exportación CSV** del módulo correspondiente (no hay `to_csv`/export; solo carga de `.csv`).
-  - **Dry-run / modo simulación**, donde aplique (no encontrado en el proceso por lote).
-  - **Sistema de backup/respaldo para renombrado**, donde aplique.
+  - **Exportación CSV en la app principal de metadatos** (`metatag_v8.py`): no hay `to_csv`/export del grid; solo carga de `.csv`. (La herramienta Image Sync sí exporta CSV de su vista previa, pero es parte separada.)
+  - **Dry-run / modo simulación en la app principal**, donde aplique (no encontrado en el proceso por lote ni en la inyección manual).
+  - **Simulación de renombrado "real"** en Image Sync: el botón "Simular" recalcula el plan y el resumen **sin tocar archivos**, pero no aplica el cambio en disco (no es un dry-run completo del renombramiento).
   - **Mejoras futuras del módulo de estadísticas** (incluida una posible mayor separación).
 
-  > **Importante:** no confundir las funcionalidades existentes de Image Sync (reordenación del orden) con las del nuevo módulo de renombramiento que está en desarrollo (sección 11).
+  > **Importante (nomenclatura tras el commit `13d28cc`):** la **aplicación principal** de MetaTag mantiene una funcionalidad interna llamada **"Image Sync" que reordena** Excel ↔ fotos (solo orden, no renombra — sección 5); por otro lado, la **herramienta standalone** (`src/renombrar_fotos_gui.py`) también se llamó **"Image Sync" (Renombrador de Fotos v4.1)** y esta SÍ **renombra/copia** archivos a nombres del Excel (sección 11). Son dos módulos distintos que comparten nombre por decisión de producto; a nivel de código no hay colisión (una está en `metatag_v8.py`, la otra en `renombrar_fotos_gui.py`). Conviene distinguirlos al hablar de "Image Sync".
 
   ---
 
-  ## 11. Herramienta: Renombrador de Fotos
+  ## 11. Herramienta: Image Sync (Renombrador de Fotos v4.1)
 
-  Estado actual: **INTEGRADO COMO LANZADOR** (2026-08-10). La herramienta vive en
-  `src/renombrar_fotos_gui.py` (migrada desde `tools/renombrador/`, ya eliminado),
-  usa CustomTkinter (dependencia **aislada** de la herramienta, ver sección 8) y se
-  lanza desde MetaTag mediante el botón **"🖼 Renombrador de Fotos"** de la sección
-  HERRAMIENTAS AVANZADAS del panel izquierdo. Verificado: **97/97 tests de proyecto
-  + 46/46 pytest del renombrador** (`tests/test_renombrador_pytest.py`) verdes;
-  smoke real con display: MetaTag permanece `normal` (nunca se retira), el
-  subproceso del renombrador arranca, MetaTag sigue responsivo y sin callbacks
-  `after` huérfanos al cerrar el renombrador; funciona desde cualquier cwd.
+  Estado actual: **REBAUTIZADA A "IMAGE SYNC" v4.1** (2026-08-14, commit `13d28cc`).
+  La herramienta vive en `src/renombrar_fotos_gui.py` (~3859 líneas) y se lanza desde
+  MetaTag mediante el botón **"Image Sync"** de la sección HERRAMIENTAS AVANZADAS del
+  panel izquierdo (antes se llamaba "🖼 Renombrador de Fotos"). La ventana se auto-titula
+  **"MetaTag v8.9 — Image Sync"** (título) / **"Image Sync"** (cabecera) con subtítulo
+  "Sincroniza los nombres de las fotografías con los registros del Excel". El nombre
+  de archivo (`renombrar_fotos_gui.py`) y la clase (`RenameModel`, `AppController`,
+  `MainView`) se conservan por compatibilidad, pero la denominación de producto es
+  **Image Sync**. Verificado: **70/70 pytest** (`tests/test_renombrador_pytest.py`,
+  v4.1) + **12 unittest** (`tests/test_renombrador.py`) + **277 subtests** del resto
+  del proyecto verdes.
+
+  **Motivo del rebautizo:** eliminar la ambigüedad entre el otro "Image Sync" de la
+  app principal (reordenación de orden, sección 5) y esta herramienta de renombrado
+  de nombres de fotos. Ahora la herramienta de renombrado ES "Image Sync".
 
   **Método de lanzamiento:** `subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "renombrar_fotos_gui.py")])`
-  (`_launch_renombrador` en `metatag_v8.py`). A diferencia del patrón `launch_visor`
-  (que hace `withdraw()` + polling), el lanzador del renombrador **NO** retira MetaTag
-  ni registra callbacks; cada lanzamiento crea un proceso independiente cuyo ciclo de
-  vida no afecta a la app principal. Si el proceso no puede arrancar (p. ej. falta
-  CustomTkinter), se muestra `messagebox` + log sin crashear. La ruta se construye
-  desde `__file__` (independiente del cwd de invocación).
+  (`_launch_renombrador` en `metatag_v8.py`, botón "Image Sync" en línea ~885). A
+  diferencia del patrón `launch_visor` (que hace `withdraw()` + polling), el lanzador
+  **NO** retira MetaTag ni registra callbacks; cada lanzamiento crea un proceso
+  independiente cuyo ciclo de vida no afecta a la app principal. Si el proceso no
+  puede arrancar (p. ej. falta CustomTkinter), se muestra `messagebox` + log sin
+  crashear. La ruta se construye desde `__file__` (independiente del cwd).
 
-  Nota de nomenclatura: la herramienta se auto-titula **"Renombrador de Fotos v4.0"**
-  (no "Image Sync"). En modo copia crea la subcarpeta `Renombradas/`. El flujo por
-  defecto es **posicional** (foto 1 ↔ fila 1 de la columna del Excel); con el modo
-  "matching seguro" ON cada nombre busca SU foto y el fallback posicional queda
-  PROHIBIDO (estado `error`, FASE A). Procesa `min(fotos, nombres)` parejas y
-  conserva la extensión original.
+  **El flujo por defecto** es **posicional** (foto 1 ↔ fila 1 de la columna del Excel);
+  con el modo "matching seguro" ON cada nombre busca SU foto y el fallback posicional
+  queda PROHIBIDO (estado `error`). Procesa `min(fotos, nombres)` parejas en posicional
+  y conserva la extensión original (archivos de 9 formatos: jpg/jpeg/png/webp/bmp/gif/
+  tiff/heic/avif).
+
+  **Estados de plan (9):** `ok / ya_correcto / existe / conflicto / duplicado /
+  not_found / sin_foto / ambiguo / error`:
+  - `existe` → el destino es un archivo **externo** (ya existe y NO se renombra en este lote): jamás se sobreescribe (bloquea). Es distinguible de `conflicto` (colisión interna resoluble con renombrado en dos fases).
+  - `conflicto` → colisión interna **no resoluble** dentro del lote (bloquea).
+  - `duplicado` → dos filas compiten por el mismo nombre destino (se omite).
+  - `not_found` → matching: no se halló la fotografía de ese registro (se omite).
+  - `sin_foto` → posicional: hay más registros que fotografías (se omite).
+  - `ambiguo` → matching: varios archivos compiten por la misma clave (se omite).
+  - `ya_correcto` → el archivo ya tiene exactamente ese nombre (no se toca).
 
   **Concepto funcional:**
 
@@ -274,15 +294,32 @@
   Fotografías  → nombres actuales
   ```
 
-  La herramienta establece correspondencias entre fotografías y registros del Excel y, posteriormente, **renombra** las imágenes de acuerdo con una columna del Excel.
-
-  **Interfaz:** se auto-presenta como **"Renombrador de Fotos"** con subtítulo **"Renombra fotos desde Excel"**.
+  La herramienta establece correspondencias entre fotografías y registros del Excel y, posteriormente, **renombra** (o copia) las imágenes de acuerdo con una columna del Excel. Incluye **renombrado en DOS FASES** (temporales únicos con `uuid`) para resolver colisiones/rotaciones dentro del lote sin dejar huérfanos, y **`undo_last` multinivel** que verifica antes de restaurar que la ruta original no esté ocupada por OTRO archivo.
 
   **Estado de funcionalidades (distinguir claramente):**
 
-  - IMPLEMENTADO EN `src/renombrar_fotos_gui.py` (2026-08-10): selección de carpeta de fotografías, carga de Excel/CSV con selección de hoja y columna, ordenamiento de fotografías, vista previa con detección de duplicados, renombramiento real (con reemplazo de destino existente), deshacer de la última operación, modo copia a `Renombradas/` y **modo "matching seguro"** (cada nombre busca SU foto). FASE A (2026-08-10): el motor es un port puro del `_find_image_ex` validado (`src/metatag_matching.py`), sin fallback posicional silencioso (estado `error` si no hay motor/carpeta) y con 7 estados coherentes `ok / ya_correcto / conflicto / duplicado / not_found / ambiguo / error`.
-  - IMPLEMENTADO (migración, 2026-08-10): ubicación definitiva `src/renombrar_fotos_gui.py`, import de `ImageMatcher` con `sys.path` apuntando al propio `src/`, botón lanzador en `metatag_v8.py`, suite pytest en `tests/test_renombrador_pytest.py`, dependencia documentada en `requirements-renombrador.txt` (customtkinter/pandas/openpyxl/pillow), `tools/renombrador/` eliminado.
-  - PENDIENTE (integración de configuración dentro de MetaTag): diálogo de configuración del renombrador embebido en la app (hoy se lanza la ventana completa de la herramienta), generación de correspondencias por matching desde la UI de MetaTag, simulación/dry-run, registro de operación, y refinar la detección de conflictos a nivel de interfaz.
+  - IMPLEMENTADO (histórico, 2026-08-10): selección de carpeta, Excel/CSV con hoja y columna, orden, vista previa con duplicados, renombrado real, deshacer, modo copia a `Renombradas/` y modo "matching seguro" (port puro `src/metatag_matching.py`, sin fallback posicional). Estados en aquel momento: 7 sin `existe`/`sin_foto`.
+  - IMPLEMENTADO (FASE 3B.1/B.2, 2026-08-13): virtualización de `PreviewTable` (viewport `tk.Canvas` + pool de slots O(viewport)) y regex precompiladas; neutralización XIM↔iBus (vía `metatag_xim`). Detalle en secciones 16/17.
+  - IMPLEMENTADO (commit `13d28cc`, 2026-08-14 — Image Sync v4.1):
+    - **Nuevo estado `existe`** (destino externo bloquea) + **nuevo estado `sin_foto`** (posicional: registros sin imagen), sumando 9 estados.
+    - **`rename_blocked(plan)`**: única fuente para UI y `on_rename` (también cubre atajos Ctrl+Enter). En posicional bloquea si el conteo no cuadra o hay fila bloqueante; en matching seguro bloquea solo por conflictos reales y deja pasar `not_found`.
+    - **Panel "6 · Registro"** (sección 6 de la UI): `CTkTextbox` de log en vivo; `rename_all`/`undo_last` aceptan `on_log` y `RenameModel._emit` lo vuelca (con buffer de 20 líneas en `AppController._log_bg_line` para no inundar Tk). Botón "Limpiar".
+    - **Indicador de pasos ①…⑤** (`_STEP_NAMES`, glifos U+2460…) con pin de 4 s tras finalizar (`_step_pinned`).
+    - **Panel de resumen de 5 celdas**: Fotografías / Registros / Correspondencias / Conflictos / Estado (✓ Listo para renombrar / ⚠ …), actualizado en vivo desde el modelo.
+    - **Validación de nombres**: `_INVALID_FILENAME_CHARS` (`\\/:*?"<>|`), `_invalid_name_chars` → estado `error` si el nombre del Excel contiene caracteres inválidos.
+    - **Normalización de valores Excel robusta** (`_normalize_excel_value`): con `keep_default_na=False`, convierte `1.0`→`1`, conserva ceros iniciales, y registra en `self.skipped_rows` el nº REAL de fila vacía/no leíble para avisar exactamente cuál revisar (toast FIX #6).
+    - **Backup JSON**: `RenameModel.write_backup` escribe `.metatag_backup_{ts}.json` en la carpeta de fotos (checkbox "Crear registro/backup de la operación", activado por defecto) + `AppController._write_backup`.
+    - **Guardas contra cargas concurrentes**: `_loading_photos`/`_loading_excel`/`_pending_sort`/`_sync_gen`+`_step_pinned`; el recálculo del plan (incluido matching) corre en hilo de fondo con generación para descartar resultados obsoletos.
+    - **Fix #3 (resolución adaptativa)**: `MainView` tamaño/minsize adaptados a pantalla (`max(780,min(1100,0.68·sw))`, `minsize(700,540)`).
+    - **Fix #5**: manejador global `report_callback_exception` + `_run_safely` para excepciones no controladas en hilos de fondo (diálogo de error con copiar detalle, sin colgar la app).
+    - **`SmoothScroller`**: scroll con inercia para `CTkScrollableFrame`, activo solo con el cursor dentro.
+    - **`show_sheets`/`show_columns`** ocultos/visibles según número de opciones; auto-selección de la primera columna sin disparar el command del menú.
+  - IMPLEMENTADO (commit `13d28cc`, 2026-08-14 — 3 fixes en `metatag_theme.py` y `metatag_v8.py`):
+    1. **Tokens de estado `existe`/`sin_foto`** en `CustomTkinterThemeAdapter` (`state_bg`/`state_fg`), derivados de los semánticos canónicos, para que los 9 estados de plan tengan color en la tabla virtualizada.
+    2. **Fix del lanzador Visor** en `metatag_v8.py`: se corrigió el lanzamiento de `Visor.py` para que no deje la ventana oculta/argumentos incorrectos (ver sección 16).
+    3. **`coords()` en `PreviewTable._rebind_slot`**: el pool de slots se construía en `k*ROW_H` (solo k=0 en su sitio); sin reposicionar la fila física en su coordenada lógica, todas quedaban encima de la primera y el scroll parecía no desplazar la tabla.
+    - Además, `RenameModel.load_photos` invoca `_matcher._invalidate(folder)` para que la caché del índice de archivos no quede obsoleta tras un renombrado (FIX de caché).
+  - PENDIENTE (integración completa dentro de MetaTag): diálogo de configuración embebido (hoy se lanza la ventana completa de la herramienta), generación de correspondencias por matching desde la UI principal, un dry-run real que aplique cambios en disco, y refinar la detección de conflictos a nivel de interfaz principal.
 
   ---
 
@@ -408,6 +445,53 @@
   - **Ruta del import de `ImageMatcher`:** el bloque que insertaba `Path(__file__).resolve().parents[2] / "src"` en `sys.path` asumía vivir en `tools/renombrador/`; ahora el script está en `src/`, junto a `metatag_matching.py`, y usa `Path(__file__).resolve().parent`. No depende del cwd de invocación (verificado lanzando desde la raíz y desde `/tmp`).
   - **Archivo de estado:** `_STATE_FILE` sigue siendo `Path(__file__).parent / ".renombrador_state.json"`; con la migración su ruta pasó de `tools/renombrador/` a `src/`. Es estado local de la herramienta (preferencias/última carpeta), sin impacto funcional; no se versiona.
   - **Launchers `.sh`/`.bat` de `tools/renombrador/`:** se eliminaron (creaban un `.venv` local obsoleto); el lanzamiento oficial es el botón de MetaTag. Lanzamiento directo: `.venv/bin/python src/renombrar_fotos_gui.py`.
+
+  ### Re-bautizo a "Image Sync" + tres fixes y panel de registro (2026-08-14, commit `13d28cc`)
+
+  - **Rebautizo:** la herramienta pasó de "Renombrador de Fotos v4.0" a **"Image Sync" (Renombrador de Fotos v4.1)**, con la ventana titulada **"MetaTag v8.9 — Image Sync"**. El nombre del archivo y las clases se conservan. Se aplicó el rebautizo también al botón lanzador de `metatag_v8.py` ("🖼 Renombrador de Fotos" → "Image Sync").
+  - **Nuevos estados de plan en `renombrar_fotos_gui.py`:**
+    - `existe`: el destino es un archivo **EXTERNO** (ya existe y NO se renombra en este lote) → nunca se sobreescribe; distinto del `conflicto` (colisión interna resoluble con renombrado en dos fases / swaps). Detectado por `_enable_batch_swaps`.
+    - `sin_foto`: en modo posicional, si hay más registros que fotografías la fila extra queda visible con estado `sin_foto` (nunca se descarta en silencio) y bloquea.
+  - **`rename_blocked(plan)`** como fuente única (UI + `on_rename` + atajos Ctrl+Enter). En matching seguro `not_found` no bloquea (se omite); en posicional sí (conteo + filas bloqueantes).
+  - **Panel "6 · Registro"** con log en vivo: `RenameModel._emit(on_log, line)`; `AppController._log_bg_line` bufera 20 líneas por lote hacia la UI. `rename_all`/`undo_last` aceptan `on_log`.
+  - **Indicador de pasos ①…⑤** con `_step_pinned` (4 s tras finalizar renombrado/undo).
+  - **Validación de caracteres inválidos** (`_INVALID_FILENAME_CHARS` = `\ / : * ? " < > |`): si el nombre del Excel los contiene se marca estado `error` (nunca se renombra).
+  - **`_normalize_excel_value` robusto + `skipped_rows`**: con `keep_default_na=False` evita tratar texto legítimo como vacío; `1.0`→`1`; conserva ceros iniciales; las celdas vacías/no leíbles se guardan en `skipped_rows` (nº real de fila de Excel) y la UI avisa exactamente cuáles revisar (FIX bug #6).
+  - **Backup JSON** de la operación: `RenameModel.write_backup` → `.metatag_backup_{ts}.json` en la carpeta de fotos (checkbox "Crear registro/backup de la operación", ON por defecto) + `AppController._write_backup`.
+  - **Guardas contra cargas concurrentes** y recálculo del plan en hilo de fondo con `_sync_gen` (descarta resultados obsoletos).
+  - **Fix del lanzador Visor en `metatag_v8.py`:** `launch_visor` antes solo buscaba `visor.py` dentro de `self.output_base` (configurable en el JSON); si esa ruta no existía/contenía el archivo, el visor no se encontraba (`messagebox` de error) o se abría el equivocado. Ahora recorre `[Path(__file__).resolve().parent, self.output_base]` (busca primero en `src/`, luego en `output_base`) y rompe al encontrar el primero. Corrige que `src/Visor.py` se encontrara de forma fiable sin depender de la configuración.
+  - **Tokens `existe`/`sin_foto` en `metatag_theme.py`:** `CustomTkinterThemeAdapter` recibe `state_bg`/`state_fg` para los nuevos estados (derivados de los semánticos canónicos `ok`/`err`/`warn`), de modo que la tabla virtualizada colorea los 9 estados.
+  - **`coords()` en `PreviewTable._rebind_slot` (`src/renombrar_fotos_gui.py`):** el pool de slots se construía en `k*ROW_H` (solo k=0 en su sitio); sin `self._cv.coords(item, 0, logical*ROW_H)` todas las filas quedaban encima de la primera y el scroll parecía no desplazar la tabla.
+  - **`ImageMatcher._invalidate(folder)`** llamado desde `RenameModel.load_photos` cuando ya hay matcher: evita que la caché del índice de archivos quede obsoleta tras un renombrado.
+  - **Fix de responsividad (#3)** en `MainView`: tamaño y minsize adaptados a la pantalla (`max(780,min(1100,0.68·sw))`, `minsize(700,540)`).
+  - **Fix de robustez (#5):** `report_callback_exception` + `_run_safely` detectan excepciones no controladas en hilos de fondo y muestran un diálogo de error con "Copiar detalles" sin colgar la app.
+   - **Verificación del commit `13d28cc`:** la suite pytest de la herramienta (`tests/test_renombrador_pytest.py`, v4.1) tiene **70/70 tests** y la suite unittest (`tests/test_renombrador.py`, **12**) sigue en verde; el commit lo describe como "tests ampliados (82+30+62 verdes)".
+
+   **Definición formal de contadores (2026-08-17):**
+
+   Los 5 contadores del resumen se derivan de un **único pase `Counter(item["state"] for item in plan)`** en `_update_sync_state_finish` (~línea 3542). Semántica formal:
+
+   | Contador | Fórmula | Significado |
+   |---|---|---|
+   | **Fotografías** | `len(m.photos)` | Archivos de imagen en la carpeta seleccionada |
+   | **Registros** | `len(m.names)` | Filas del Excel/CSV cargado |
+   | **Correspondencias** | `sum(1 for item in plan if item["src"] is not None)` | Registros con foto emparejada (renombrables) |
+   | **Conflictos** | `sum(1 for item in plan if item["state"] in _BLOCKING_STATES)` | Registros en estados bloqueantes: `existe`, `conflicto`, `duplicado`, `ambiguo`, `error` |
+   | **Estado** | derivado de Conflictos | `✓ Listo para renombrar` si Conflictos=0, `⚠ …` si >0 |
+
+   **Invariante de integridad:** `Correspondencias + sin_foto = Registros` (cada registro o tiene foto emparejada o no tiene; no hay estado intermedio).
+
+   `_BLOCKING_STATES = {"existe", "conflicto", "duplicado", "ambiguo", "error"}` (definido a nivel de módulo, línea ~828).
+
+   **Distribución real del dataset 269 (modo matching):**
+   - Registros=269, Fotografías=269, Correspondencias=267, Conflictos=0
+   - ok=83, ya_correcto=184, not_found=2 (los 2 missing: `0053_EC_C7_XII_372_R.jpg`, `0055_EC_C7_VI_146_P.jpg`)
+   - 2 archivos huérfanos: `0053_EC_RS_372_F.jpg.JPG`, `0059_EC_RS_109_P.jpg.JPG`
+
+   **Tests de verificación:**
+   - `tests/test_reconciliacion.py` (20): diagnóstico del dataset 269 + invariantes de integridad (suma de estados, un solo estado por registro, correspondencias+sin_foto=registros, estados exhaustivos, contadores derivados de un solo modelo)
+   - `tests/test_sinteticos_reconciliacion.py` (39): 8 escenarios sintéticos (perfect match, swap, ciclo, cadena, existe, reuso, sin_foto, foto_sin_registro) + invariantes parametrizados
+   - `tests/test_rename_real_seguro.py` (7): renombrado real en `tmp/` con ciclo A→B→C→A y swap A↔B, verificación de contenido + rollback on phase 2 error
 
   ---
 
@@ -594,12 +678,90 @@
 
   ---
 
+  ### 2026-08-14 — Renombrar de Fotos → Image Sync v4.1 + 3 fixes y panel de registro (commit `13d28cc`)
+
+  **Cambio de producto:** la herramienta se auto-titula **"MetaTag v8.9 — Image Sync"**
+  (cabecera "Image Sync", subtítulo "Sincroniza los nombres de las fotografías con
+  los registros del Excel"). El botón lanzador en `metatag_v8.py` pasó de "🖼
+  Renombrador de Fotos" a **"Image Sync"**. El archivo y las clases (`RenameModel`,
+  `AppController`, `MainView`) conservan su nombre por compatibilidad.
+
+  **Cambios principales en `src/renombrar_fotos_gui.py` (v4.1):**
+  - **9 estados de plan** (`ok / ya_correcto / existe / conflicto / duplicado /
+    not_found / sin_foto / ambiguo / error`): nuevo `existe` (destino externo que
+    bloquea, nunca se sobreescribe) y nuevo `sin_foto` (posicional: registros sin
+    imagen). `_enable_batch_swaps` clasifica colisiones internas resoluble vs.
+    archivo externo.
+  - **`rename_blocked(plan)`** fuente única (UI + `on_rename` + Ctrl+Enter): en
+    posicional bloquea por conteo o por filas bloqueantes; en matching seguro por
+    conflictos reales (deja pasar `not_found` que se omite).
+  - **Panel "6 · Registro"** de log en vivo (`_emit`/`on_log` con buffer de 20 líneas).
+  - **Indicador de pasos ①…⑤** con pin tras finalizar.
+  - **Resumen de 5 celdas** (Fotografías/Registros/Correspondencias/Conflictos/Estado).
+  - **Validación de caracteres inválidos**, **`_normalize_excel_value`** robusto y
+    **`skipped_rows`** (avisa exactamente qué fila de Excel quedó vacía).
+  - **Backup JSON** (`write_backup` + checkbox "Crear registro/backup").
+  - **Guardas** contra cargas concurrentes + recálculo en hilo de fondo (`_sync_gen`).
+  - **`_matcher._invalidate(folder)`** en `load_photos` para no dejar caché obsoleta.
+  - Fix responsividad (#3, tamaño/minsize adaptativos) y robustez (#5, excepciones en
+    hilos de fondo con diálogo de error).
+
+  **3 fixes adicionales:**
+  1. **`PreviewTable._rebind_slot`** ahora usa `self._cv.coords(item, 0, logical*ROW_H)`
+     para posicionar cada fila física en su coordenada lógica (sin eso todas quedaban
+     encima de la primera y el scroll parecía no desplazar la tabla).
+  2. **`metatag_theme.py`**: `CustomTkinterThemeAdapter` añade tokens `state_bg`/`state_fg`
+     para los estados `existe` y `sin_foto` (derivados de los semánticos canónicos), por
+     lo que la tabla virtualizada colorea los 9 estados.
+  3. **`metatag_v8.py`**: fix en `launch_visor` — ahora busca `visor.py` en `src/` primero y
+     luego en `self.output_base` (antes solo en `output_base`), asegurando que `src/Visor.py`
+     se encuentre de forma fiable; además se re-bautizó el botón del renombrador a "Image Sync".
+
+  **Verificación:** suite pytest de la herramienta (`tests/test_renombrador_pytest.py`)
+  con **70/70 tests** (v4.1) y suite unittest (`tests/test_renombrador.py`, **12**) verdes;
+  el resto del proyecto mantiene sus **277 subtests** sin regresiones. El commit lo
+  describe como "tests ampliados (82+30+62 verdes)". Commit: `feat: renombrar Image Sync
+  + 3 fixes y panel de registro` (`13d28cc`).
+
+  ---
+
+  ### 2026-08-17 — Reconciliación de contadores: definición formal + tests de integridad
+
+  **Problema:** el informe de diagnóstico mostraba 171 ok + 64 ya_correcto + 34 sin_fotografía = 269, pero Correspondencias mostraba 237, dejando 2 registros sin explicar. Los contadores se calculaban con fórmulas independientes y no había una definición formal de qué significaba cada uno.
+
+  **Diagnóstico (Phase 1):** test reprodujo el problema exacto en `test_reconciliacion.py`. La distribución real del dataset 269 en modo matching es: ok=83, ya_correcto=184, not_found=2, total=269. El problema era que los contadores de la UI (Fotografías/Registros/Correspondencias/Conflictos) se calculaban por separado en lugar de derivarse de un modelo único.
+
+  **Cambios en `src/renombrar_fotos_gui.py`:**
+  1. **Definición formal de contadores** (docstrings en `_update_sync_state_finish` y `_build_summary`):
+     - Fotografías = `len(m.photos)` (archivos en la carpeta)
+     - Registros = `len(m.names)` (filas del Excel)
+     - Correspondencias = registros con `src is not None` (foto emparejada)
+     - Conflictos = registros en `_BLOCKING_STATES = {"existe", "conflicto", "duplicado", "ambiguo", "error"}`
+     - Estado = derivado de Conflictos (✓ si 0, ⚠ si >0)
+  2. **Refactor de contadores a modelo único** (~línea 3542): un solo `Counter(item["state"] for item in plan)` alimenta todos los contadores. Se eliminaron cálculos separados que producían inconsistencias.
+  3. **`Counter` añadido a imports** desde `collections` (línea 32).
+
+  **Tests nuevos:**
+  - `tests/test_reconciliacion.py` (20 tests): diagnóstico exacto del dataset 269 + invariantes de integridad (suma de estados = total, cada registro en un solo estado, correspondencias+sin_foto=registros, estados exhaustivos para ambos modos, valores exactos del dataset, contadores derivados de un solo modelo)
+  - `tests/test_sinteticos_reconciliacion.py` (39 tests): 8 escenarios sintéticos (perfect match, swap posicional, ciclo A→B→C→A, cadena, existe externo, reuso/duplicado, sin_foto, foto_sin_registro) + invariantes parametrizados sobre 8 configuraciones (names=0-7, photos=0-7)
+  - `tests/test_rename_real_seguro.py` (7 tests): renombrado real en directorio temporal (`tmp/`) — ciclo A→B→C→A (3 archivos verificados byte a byte), swap A↔B (2 archivos verificados), undo de ciclo/swap reporta conflictos (por diseño), rollback on phase 2 error (Path.rename monkeypatched), undo_stack vacío tras fallo parcial
+
+  **Invariante de integridad confirmado:** `Correspondencias + sin_foto = Registros` siempre se cumple (cada registro tiene o no tiene foto emparejada; no hay estado intermedio).
+
+  **Verificación:** 326/326 pytest + 99/99 unittest + 277 subtests = **0 fallos, 0 regresiones**. La suite completa incluye los tests existentes (70 renombrador_pytest, 12 renombrador unittest, 4 dataset_269, 14 metatag_matching, etc.) más los 66 nuevos de esta sesión.
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
   MetaTag v8.9.
 
   ### Trabajo actual
+  **Reconciliación de contadores — definición formal + tests de integridad (2026-08-17)** ✅ terminado: se definió formalmente el semántica de los 5 contadores del resumen de Image Sync (Fotografías, Registros, Correspondencias, Conflictos, Estado) y se refactorizó su cálculo para que todos deriven de un único `Counter(item["state"] for item in plan)` en `_update_sync_state_finish` (~línea 3542). Se crearon 66 tests nuevos (20 diagnóstico/integridad + 39 sintéticos + 7 renombrado real/rollback) y se verificó invariante `Correspondencias + sin_foto = Registros`. Suite completa: **326/326 pytest + 99/99 unittest + 277 subtests = 0 fallos, 0 regresiones**. Documentación formal de contadores añadida a `CONTEXTO_PROYECTO.md`.
+
+  **Image Sync v4.1 (2026-08-14, commit `13d28cc` — "feat: renombrar Image Sync + 3 fixes y panel de registro")** ✅ terminado: la herramienta se re-bautizó de "Renombrador de Fotos v4.0" a **"Image Sync"** (ventana titulada "MetaTag v8.9 — Image Sync"; botón lanzador en `metatag_v8.py` → "Image Sync"). Nuevos estados de plan `existe` (destino externo bloquea) y `sin_foto` (posicional: registros sin imagen) → **9 estados**; `rename_blocked(plan)` como fuente única (UI + Ctrl+Enter); **panel "6 · Registro"** de log en vivo (`on_log`/`_emit` con buffer de 20 líneas); indicador de pasos ①…⑤; resumen de 5 celdas; validación de caracteres inválidos; `_normalize_excel_value` robusto con `skipped_rows` (aviso de fila concreta); **backup JSON** (`.metatag_backup_*.json`, checkbox "Crear registro/backup"); guardas contra cargas concurrentes + recálculo en hilo de fondo (`_sync_gen`); `_matcher._invalidate`. **3 fixes:** `PreviewTable._rebind_slot` usa `coords()` para posicionar cada fila lógica (sin eso el scroll parecía no desplazar), tokens `state_bg`/`state_fg` para `existe`/`sin_foto` en `metatag_theme.py`, y fix del lanzador de `Visor.py` en `metatag_v8.py`. Verificación: **70/70 pytest de la herramienta v4.1 + 277 subtests** del resto del proyecto verdes (más 12 unittest sin regresiones).
+
   **FASE 3B.2 (2026-08-13) — Vista previa del Renombrador virtualizada** ✅ terminado: `PreviewTable` (`src/renombrar_fotos_gui.py`) abandonó el render widget-per-row por lotes asíncronos (código muerto eliminado: `_thumb_q`, `_schedule_thumbs`, `_load_chunk`, `_add_row`, `_refresh_visible_rows`) y pasó a un viewport de altura FIJA (clamp 0.45·screenheight entre 240–640 px) con `tk.Canvas` + `tk.Scrollbar` vertical propios, SIN rediseñar MainView (sigue dentro del `CTkScrollableFrame`, fila 13, `pack_propagate(False)`). Pool de slots O(viewport) (visible + 2·BUFFER, ≈21–31 widgets vivos de ~611) que se reciclan con `configure`; `_all_pairs` sigue siendo fuente de verdad; edición inline con entry+label en la misma celda cuyo trace escribe el modelo con sanitización `Path(value).name` y flag `_syncing` anti-feedback; commit pendiente al reciclar (`_commit_slot`); `set_edit_mode` ya NO re-renderiza; rueda sobre tabla devuelve `"break"` (desplaza solo la tabla, no la página del `SmoothScroller` exterior); tooltips de miniatura por fila lógica reusando el singleton `ImageTooltip._ACTIVE`; selección por índice lógico `_selected` (sobrevive scroll/filtro/tema). Benchmark ANTES→DESPUÉS (misma matriz, Tk real): render 1000 **19.54 s→0.67 s**; widgets 16017→611 (5000/10000 ANTES: **X Error BadAlloc**; DESPUÉS 5000: 675 ms, 10000: 651 ms); RSS 1000 225.7→93.9 MB; filtro 44.0→3.5 ms; upd_dup 1159→116 ms; edit 5231→0.9 ms; rerender 20.8 s→0.69 s; scroll 331→15 ms. Nuevo `tests/test_preview_table_virtualized.py` (28 tests: tamaños 0/1/<pool/=pool/pool+1/269/1000/5000/10000, scroll arriba/centro/abajo/clamp/break, filtro 0/1/tras-scroll, edición modelo/sanitizado/commit-scroll/sin-rebuild, 7 estados, update_dup_states, selección, rebuild-tema vía AppController, no-crecimiento lineal). Verificación: **237 pytest + 277 subtests** verdes (209 previos + 28 nuevos). Commit: `feat: virtualize renamer preview` (3B.2).
 
   **FASE 3B.1b (2026-08-13) — Regex precompiladas en el matching** ✅ terminado: los literales `re.match/re.sub/re.search/re.findall/re.split` del camino de matching (`metatag_matching.py`, `_find_image_ex`/`_normalize_numbers`/`_extract_id_suffix`/orden "numeral" de `metatag_v8.py`, y `_natural_key` del Renombrador) pasaron a patrones compilados una sola vez a nivel de módulo (`_RE_DUP_MARKER`, `_RE_DIGITS`, `_RE_LEADING_NUM`, `_RE_VIEW_SUFFIX`, `_RE_EDGE_SEP`, `_RE_NATURAL_SPLIT`) con literales idénticos: cero cambio de algoritmo. Equivalencia demostrada con `ImageMatcher` como oráculo: fixture `tests/fixtures/matching_baseline.json` generado del código ORIGINAL (git HEAD) sobre corpus sintético (45 casos: doble extensión, "(1)", cero-padding, bordes, mayúsculas, F/R/P, ambiguos, inexistentes, vacío, metachar) + dataset real (269); nuevo `tests/test_matching_equivalence.py` verifica que el optimizado reproduce EXACTAMENTE el original. Benchmark peor caso (100 not_found × 5000 archivos, corpus sintético `/tmp/opencode/data/fotos_5000`): **2.098 s → 1.586 s** (~24%) y llamadas a `re._compile` **1.505.602 → 1** (solo los 5 patrones al importar). Verificación: **209 pytest + 277 subtests** verdes (207 previos + 2 de equivalencia). Commit: `perf: ...` (3B.1b).
@@ -609,7 +771,7 @@
   **FASE 8 (2026-08-11) — Fuente de verdad técnica de temas + Renombrador sobre temas de MetaTag** ✅ terminado: nuevo `src/metatag_theme.py` (módulo puro) con los 3 temas canónicos verbatim, motor de fuentes idéntico al de `metatag_v8` (paridad byte a byte contra git HEAD) y adaptadores Tk/CustomTkinter sin inventar colores. `metatag_v8.py` importa los tokens desde ahí (cero cambio visual). El Renombrador abandonó `PALETTES`/modo claro/bypass y usa los 3 temas de MetaTag con reconstrucción completa de la UI preservando estado; fuentes con bases propias (9–18) escaladas con la lógica de MetaTag; branding "MetaTag v8.9 — Renombrador de Fotos". Verificación: **199 pytest + 277 subtests** verdes; smoke GUI real (arranque con estado antiguo `"dark"`, rebuild con preview/filtro, preservación de selecciones entre los 3 temas + fallback).
 
   ### Trabajo próximo
-  Completar la integración de configuración del renombrador dentro de `metatag_v8.py`: diálogo de configuración embebido (hoy se lanza la ventana completa de la herramienta), generación de correspondencias por matching desde la UI, simulación/dry-run, registro de operación y refinar conflictos a nivel de interfaz — sección 11.
+  Con Image Sync v4.1 consolidado y los contadores formalizados, continuar la integración completa dentro de `metatag_v8.py`: diálogo de configuración embebido (hoy se lanza la ventana completa de la herramienta), generación de correspondencias por matching desde la UI principal, un **dry-run real** que aplique cambios en disco (el botón "Simular" solo recalcula el plan sin tocar archivos), y refinar la detección de conflictos a nivel de interfaz principal — sección 11.
 
   ### Trabajo posterior
   Mejorar/separar el módulo de estadísticas.
@@ -631,13 +793,15 @@
   2. ✅ **Fases 4–6 — scroll de selección de columnas + tests del renombrador** (completado, 2026-08-10): helper `_build_scroll_picker_window` sin `bind_all`; tests de renombrador (11) y pickers (19, incl. matriz de resoluciones y limpieza de trazas). **82/82 verdes**. Commit `feat: fijar scroll de selección de columnas y añadir tests del renombrador`.
   3. ✅ **FASE A — seguridad del renombrador + matching seguro como port puro** (completado, 2026-08-10): `src/metatag_matching.py` port fiel de `_find_image_ex`; fallback posicional silencioso eliminado; estados unificados a `ambiguo`; verificación dataset 269 (267/0/2, 18/184/21/44). 97/97 + 46/46 verdes. Commit `fix: harden renamer safety and safe matching`.
   4. ✅ **FASE 7 — migración e integración del renombrador en MetaTag** (completado, 2026-08-10): `src/renombrar_fotos_gui.py` como ubicación única (`tools/renombrador/` eliminado), botón lanzador en HERRAMIENTAS AVANZADAS (subproceso independiente, sin withdraw ni callbacks), suite pytest en `tests/test_renombrador_pytest.py`, `requirements-renombrador.txt`. Commit `feat: integrar renombrador de fotografías en MetaTag`.
-  5. **Siguiente: completar la integración de configuración del renombrador en `metatag_v8.py`** (diálogo de configuración embebido, generación de correspondencias por matching desde la UI de MetaTag, simulación/dry-run, registro de operación, refinar conflictos a nivel de interfaz) — sección 11.
-  6. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1 + FASE A, 2026-08-10): `_find_image_ex` con detección de ambigüedades; `src/metatag_matching.py` es su port puro y fiel; tests `tests/test_matching.py`, `tests/test_dataset_269.py` y `tests/test_metatag_matching.py`.
-  7. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
-  8. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
-  9. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.
-  10. ✅ Procesamiento en segundo plano robustecido (Bloque 3, 2026-08-10): cancelación, detección de muerte inesperada, snapshot de Tk; tests `tests/test_queue.py` (17), 40/40 verdes.
-  11. Después, continuar con las mejoras del **módulo de estadísticas**.
+   5. ✅ **Image Sync v4.1 — re-bautizo + 3 fixes y panel de registro** (completado, 2026-08-14, commit `13d28cc`): herramienta "Renombrador de Fotos v4.0" → **"Image Sync"** (ventana "MetaTag v8.9 — Image Sync"); botón lanzador → "Image Sync"; nuevos estados `existe`/`sin_foto` (9 estados), `rename_blocked(plan)`, panel "Registro" en vivo, indicador ①…⑤, resumen de 5 celdas, validación de nombres, `_normalize_excel_value` + `skipped_rows`, backup JSON, guardas contra cargas concurrentes, `_matcher._invalidate`; 3 fixes (`coords()` en `PreviewTable._rebind_slot`, tokens `existe`/`sin_foto` en `metatag_theme.py`, lanzador de `Visor.py` en `metatag_v8.py`). **70/70 pytest de la herramienta v4.1 + 277 subtests** verdes.
+   6. ✅ **Reconciliación de contadores — definición formal + tests de integridad** (completado, 2026-08-17): semántica formal de los 5 contadores del resumen documentada; refactor a modelo único `Counter(item["state"] for item in plan)`; 66 tests nuevos (20 diagnóstico/integridad + 39 sintéticos + 7 renombrado real/rollback); invariante `Correspondencias + sin_foto = Registros` verificado; **326/326 pytest + 99/99 unittest + 277 subtests = 0 fallos, 0 regresiones**.
+   7. **Siguiente: completar la integración de configuración del Image Sync en `metatag_v8.py`** (diálogo de configuración embebido, generación de correspondencias por matching desde la UI de MetaTag, un dry-run real que aplique en disco, registro de operación, refinar conflictos a nivel de interfaz) — sección 11.
+  7. Comprobar que el **emparejamiento** sea seguro (evitar falsas coincidencias). ✅ Matching seguro implementado y probado (Bloque 1 + FASE A, 2026-08-10): `_find_image_ex` con detección de ambigüedades; `src/metatag_matching.py` es su port puro y fiel; tests `tests/test_matching.py`, `tests/test_dataset_269.py` y `tests/test_metatag_matching.py`.
+  8. Revisar **conflictos y casos límite** (duplicados, nombres vacíos, extensiones dobles, marcadores `(1)`).
+  9. Probar con el **dataset de 269 imágenes**. ✅ Correspondencias idénticas al original (267 ok, 2 missing, 2 huérfanas, 0 reusos).
+  10. ✅ Rendimiento de `ExcelGrid.redraw` optimizado (Bloque 2, 2026-08-10): `col_sel_map` precalculado una vez por columna visible; tests `tests/test_grid.py` (12), 23/23 verdes.
+  11. ✅ Procesamiento en segundo plano robustecido (Bloque 3, 2026-08-10): cancelación, detección de muerte inesperada, snapshot de Tk; tests `tests/test_queue.py` (17), 40/40 verdes.
+  12. Después, continuar con las mejoras del **módulo de estadísticas**.
 
   ---
 

@@ -18,6 +18,8 @@ try:
 except ImportError:
     MATPLOTLIB_OK = False
 
+from metatag_responsive import PROFILE
+
 # Exportación de gráficas: tamaño fijo independiente del tamaño de la ventana.
 EXPORT_FIG_SIZE = (12, 8)   # pulgadas
 EXPORT_DPI      = 200       # ppp
@@ -372,7 +374,9 @@ def show_stats(parent, df, img_col_var, current_scale, C, FONTS):
     except Exception:
         _dpi_screen = 96
     _fig_dpi = min(160, max(100, int(_dpi_screen * 1.25)))
-    fig = Figure(figsize=(8, 6), dpi=_fig_dpi, facecolor=S_BG)
+    _fig_w = 8 * PROFILE.font_scale
+    _fig_h = 6 * PROFILE.font_scale
+    fig = Figure(figsize=(_fig_w, _fig_h), dpi=_fig_dpi, facecolor=S_BG)
     canvas_widget = FigureCanvasTkAgg(fig, master=chart_frame)
     canvas_widget.get_tk_widget().pack(fill="both", expand=True)
 
@@ -402,7 +406,8 @@ def show_stats(parent, df, img_col_var, current_scale, C, FONTS):
                     ha="center", va="center", color=S_TEXT, fontsize=12)
 
         elif "Dona" in ctype or "Pastel" in ctype:
-            ax = fig.add_axes([0.22, 0.08, 0.56, 0.84])
+            ax = fig.add_axes([PROFILE.chart_left_margin, 0.08,
+                               PROFILE.chart_right_margin - PROFILE.chart_left_margin, 0.84])
             ax.set_facecolor(S_BG)
             counts_sorted = counts.sort_values(ascending=True)
             wedge_w = 0.45 if "Dona" in ctype else 1.0
