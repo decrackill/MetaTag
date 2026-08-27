@@ -1195,6 +1195,8 @@ class SmoothScroller:
                 self._canvas.unbind_all(ev)
             except Exception:
                 pass
+        self._running = False
+        self._target = None
 
     def _wheel_generic(self, e) -> None:
         self._scroll(-1 if e.delta > 0 else 1)
@@ -1766,10 +1768,44 @@ class PreviewTable(ctk.CTkFrame):
         for _ev in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
             tk.Frame.bind(self, _ev, self._on_wheel, add="+")
 
+        # Suspender SmoothScroller exterior cuando el cursor entra a la tabla.
+        # Sin esto, bind_all de SmoothScroller y _on_wheel de la tabla corren
+        # simultáneamente causando scroll doble (la página Y la tabla se mueven).
+        tk.Frame.bind(self, "<Enter>", self._disarm_outer_scroller, add="+")
+        tk.Frame.bind(self, "<Leave>", self._rearm_outer_scroller, add="+")
+
     def _bind_wheel(self, widget) -> None:
         """Vincula la rueda del ratón también en un sub-widget (label, entry)."""
         for _ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             widget.bind(_ev, self._on_wheel, add="+")
+
+    def _disarm_outer_scroller(self, _event=None) -> None:
+        """Desactiva bind_all de SmoothScroller mientras el cursor está en la tabla."""
+        for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                self.winfo_toplevel().unbind_all(ev)
+            except Exception:
+                pass
+
+    def _rearm_outer_scroller(self, _event=None) -> None:
+        """Reactiva SmoothScroller al salir de la tabla — busca el scroller del padre."""
+        parent = self.master
+        while parent is not None:
+            if isinstance(parent, ctk.CTkScrollableFrame):
+                pc = getattr(parent, "_parent_canvas", None)
+                if pc is not None:
+                    top, bot = pc.yview()
+                    if top <= 0.0 and bot >= 1.0:
+                        return
+                    def _up(_e, _c=pc): _c.yview_scroll(-1, "units")
+                    def _dn(_e, _c=pc): _c.yview_scroll(1, "units")
+                    def _gen(_e, _c=pc):
+                        _c.yview_scroll(-1 if _e.delta > 0 else 1, "units")
+                    pc.bind_all("<Button-4>", _up)
+                    pc.bind_all("<Button-5>", _dn)
+                    pc.bind_all("<MouseWheel>", _gen)
+                return
+            parent = getattr(parent, "master", None)
 
     # ── API pública ────────────────────────────────────────────────────────
     def render(self, pairs: list[tuple[str, str, Optional[Path], bool, str]],
@@ -1957,6 +1993,8 @@ class PreviewTable(ctk.CTkFrame):
             canvas.bind("<Configure>", self._on_canvas_resize, add="+")
             canvas.bind("<Enter>", self._close_tip, add="+")
             canvas.bind("<Leave>", self._close_tip, add="+")
+            canvas.bind("<Enter>", self._disarm_outer_scroller, add="+")
+            canvas.bind("<Leave>", self._rearm_outer_scroller, add="+")
             canvas.bind("<Motion>", self._on_motion, add="+")
             self._cv = canvas
             self._sb = sb
@@ -3295,12 +3333,13 @@ class AppController:
         self._update_sync_state(notify=False)
 
     def on_folder_path_changed(self, raw: str) -> None:
-        """El usuario escribió otra carpeta (Enter) o la eligió por el diálogo."""
+        """El usuario escribió otra carpeta (Enter) o la eligió por el diálogo.
+        Solo valida y guarda la ruta — NO carga nada automáticamente.
+        El usuario debe presionar 'Cargar fotos' para iniciar la carga."""
         path = Path(raw)
         if not raw or not path.is_dir():
             if raw:
                 self._view.set_folder_status("error", "La ruta no existe.")
-                self._update_sync_state(notify=False)
             return
         if self._model.folder_path == path:
             return
@@ -3311,19 +3350,18 @@ class AppController:
         self._model.sort_mode = self._view.get_sort_mode()
         self._model._plan = []
         _save_state({"last_folder": str(path), "sort": self._model.sort_mode})
-        self._loading_photos = True
-        self._view.set_btn_folder_load(False)
-        self._view.set_folder_status("loading", "Cargando fotos...")
-        threading.Thread(target=self._load_photos_bg, daemon=True).start()
+        self._view.set_folder_status("ok", "Ruta lista — presiona «Cargar fotos».")
+        self._view.set_btn_folder_load(True)
 
     def on_excel_path_changed(self, raw: str) -> None:
-        """El usuario escribió otro Excel (Enter) o lo eligió por el diálogo."""
+        """El usuario escribió otro Excel (Enter) o lo eligió por el diálogo.
+        Solo valida y guarda la ruta — NO carga hojas ni columnas automáticamente.
+        El usuario debe presionar 'Cargar Excel' para iniciar la carga."""
         path = Path(raw)
         valid_exts = {".xlsx", ".csv", ".tsv", ".txt"}
         if not raw or not path.is_file() or path.suffix.lower() not in valid_exts:
             if raw:
                 self._view.set_excel_status("error", f"Archivo no válido: {path.suffix or 'sin extensión'}")
-                self._update_sync_state(notify=False)
             return
         if self._model.excel_path == path:
             return
@@ -3333,24 +3371,8 @@ class AppController:
         self._model.excel_path = path
         self._model.clear_excel_data()
         _save_state({"last_excel": str(path)})
-        self._loading_excel = True
-        self._view.set_btn_excel_load(False)
-        try:
-            sheets = self._call_model(self._model.load_sheets,
-                                      lambda s, m: self._view.set_excel_status(s, f"Error leyendo Excel: {m}"))
-            if sheets is None:
-                return
-            if len(sheets) > 1:
-                self._view.set_excel_status("ok", f"{len(sheets)} hojas — elige una.")
-                self._view.show_sheets(sheets)
-                self._model.sheet_name = sheets[0]
-            else:
-                self._model.sheet_name = sheets[0] if sheets else None
-                self._view.hide_sheets()
-            self._load_columns()
-        finally:
-            self._loading_excel = False
-            self._view.set_btn_excel_load(True)
+        self._view.set_excel_status("ok", "Archivo listo — presiona «Cargar Excel».")
+        self._view.set_btn_excel_load(True)
 
     def on_simulate(self) -> None:
         """Refresca el plan y el resumen SIN tocar ningún archivo."""
