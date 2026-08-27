@@ -1933,11 +1933,11 @@ class PreviewTable(ctk.CTkFrame):
             (3, "Nuevo nombre","w",  8),
         ]
         for col, txt, sticky, padx in cols:
-            lbl = ctk.CTkLabel(hdr, text=txt, width=1,
+            ctk.CTkLabel(hdr, text=txt, width=1,
                          font=FONT_SM_BD, text_color=C["accent"],
-                         fg_color="transparent")
-            lbl.grid(row=0, column=col, sticky=sticky, padx=padx, pady=4)
-            self._bind_wheel(lbl)
+                         fg_color="transparent").grid(row=0, column=col,
+                                                      sticky=sticky, padx=padx,
+                                                      pady=4)
         self._hdr = hdr
 
     def _show_table(self) -> None:
@@ -2041,8 +2041,6 @@ class PreviewTable(ctk.CTkFrame):
         row.bind("<Enter>", self._close_tip, add="+")
         row.bind("<Leave>", self._close_tip, add="+")
         row.bind("<Motion>", self._on_slot_motion(slot), add="+")
-        for w in (num, state_lbl, orig, new_lbl, new_entry):
-            self._bind_wheel(w)
         var.trace_add("write", self._make_trace(slot))
         return slot
 
@@ -2399,6 +2397,7 @@ class MainView(ctk.CTk):
 
     def __init__(self, controller: "AppController") -> None:
         super().__init__()
+        PROFILE.init_from_tk(self)
         _init_fonts(self.winfo_screenwidth())
         self._ctrl = controller
         self.title("MetaTag v8.9 — Image Sync")
@@ -3097,8 +3096,9 @@ class MainView(ctk.CTk):
                      text_color=C["text"], fg_color="transparent",
                      wraplength=480, justify="center").pack(padx=20, pady=(0, 8))
 
+        _fs = compute_font_scale(self.winfo_screenwidth())
         tb_box = ctk.CTkTextbox(dlg, width=520, height=180,
-                                font=ctk.CTkFont("Courier New", scaled_size(10, _s, 8)),
+                                font=ctk.CTkFont("Courier New", scaled_size(10, _fs, 8)),
                                 fg_color=C["surface"], text_color=C["subtext"])
         tb_box.pack(padx=18, pady=(0, 10), fill="both", expand=True)
         tb_box.insert("end", details[:3000])

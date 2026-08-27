@@ -752,13 +752,29 @@
 
   ---
 
+  ### 2026-08-26 — Fixes: NameError _s + PROFILE.init_from_tk + .bat update
+
+  **Bug 1 — `NameError: name '_s' is not defined` en `_show_error_dialog` (`src/renombrar_fotos_gui.py` línea 3099):**
+  `_s` es una variable local de `_init_fonts()` (línea 129), no es global. Cuando cualquier excepción de Tk intentaba mostrar el diálogo de error (`_tk_error_handler` → `_show_error_dialog`), el propio diálogo fallaba con `NameError`. Fix: reemplazado por `_fs = compute_font_scale(self.winfo_screenwidth())`.
+
+  **Bug 2 — `PROFILE.init_from_tk(self)` nunca se llamaba en el Renombrador (`src/renombrar_fotos_gui.py` `MainView.__init__`):**
+  Aunque `PROFILE` se importaba desde `metatag_responsive` (línea 63), `PROFILE.init_from_tk(self)` nunca se invocaba en `MainView.__init__()`. `metatag_v8.py:423` y `Visor.py:311` sí lo hacían. Resultado: el renombrador siempre usaba valores por defecto de desktop (1920×1080) aunque la pantalla fuera de laptop. Fix: añadido `PROFILE.init_from_tk(self)` después de `super().__init__()`.
+
+  **Actualización de `instalar_y_abrir.bat`:**
+  - Añadido `customtkinter` a la lista de dependencias (requerido por Image Sync).
+  - Ampliada la sección auto-organizar con los archivos que faltaban: `metatag_matching.py`, `metatag_theme.py`, `metatag_responsive.py`, `metatag_xim.py`, `renombrar_fotos_gui.py`.
+
+  **Archivos modificados:** `src/renombrar_fotos_gui.py` (2 fixes), `instalar_y_abrir.bat` (dependencias + auto-organize).
+
+  ---
+
   ## 17. Estado actual del proyecto
 
   ### Estado general
   MetaTag v8.9.
 
   ### Trabajo actual
-  **Reconciliación de contadores — definición formal + tests de integridad (2026-08-17)** ✅ terminado: se definió formalmente el semántica de los 5 contadores del resumen de Image Sync (Fotografías, Registros, Correspondencias, Conflictos, Estado) y se refactorizó su cálculo para que todos deriven de un único `Counter(item["state"] for item in plan)` en `_update_sync_state_finish` (~línea 3542). Se crearon 66 tests nuevos (20 diagnóstico/integridad + 39 sintéticos + 7 renombrado real/rollback) y se verificó invariante `Correspondencias + sin_foto = Registros`. Suite completa: **326/326 pytest + 99/99 unittest + 277 subtests = 0 fallos, 0 regresiones**. Documentación formal de contadores añadida a `CONTEXTO_PROYECTO.md`.
+  **Fixes varios (2026-08-26)** ✅ terminado: corregido `NameError` de `_s` en `_show_error_dialog` del Renombrador (la variable local de `_init_fonts()` no era accesible desde `MainView`), añadido `PROFILE.init_from_tk(self)` en `MainView.__init__` para que el renombrador detecte correctamente el tamaño de pantalla (laptop_small/laptop_large/desktop), y actualizado `instalar_y_abrir.bat` con `customtkinter` y los archivos que faltaban en la sección auto-organizar.
 
   **Image Sync v4.1 (2026-08-14, commit `13d28cc` — "feat: renombrar Image Sync + 3 fixes y panel de registro")** ✅ terminado: la herramienta se re-bautizó de "Renombrador de Fotos v4.0" a **"Image Sync"** (ventana titulada "MetaTag v8.9 — Image Sync"; botón lanzador en `metatag_v8.py` → "Image Sync"). Nuevos estados de plan `existe` (destino externo bloquea) y `sin_foto` (posicional: registros sin imagen) → **9 estados**; `rename_blocked(plan)` como fuente única (UI + Ctrl+Enter); **panel "6 · Registro"** de log en vivo (`on_log`/`_emit` con buffer de 20 líneas); indicador de pasos ①…⑤; resumen de 5 celdas; validación de caracteres inválidos; `_normalize_excel_value` robusto con `skipped_rows` (aviso de fila concreta); **backup JSON** (`.metatag_backup_*.json`, checkbox "Crear registro/backup"); guardas contra cargas concurrentes + recálculo en hilo de fondo (`_sync_gen`); `_matcher._invalidate`. **3 fixes:** `PreviewTable._rebind_slot` usa `coords()` para posicionar cada fila lógica (sin eso el scroll parecía no desplazar), tokens `state_bg`/`state_fg` para `existe`/`sin_foto` en `metatag_theme.py`, y fix del lanzador de `Visor.py` en `metatag_v8.py`. Verificación: **70/70 pytest de la herramienta v4.1 + 277 subtests** del resto del proyecto verdes (más 12 unittest sin regresiones).
 

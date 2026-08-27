@@ -16,12 +16,17 @@ if not exist "%~dp0src" (
     if exist "%~dp0metatag_v8.py" (
         mkdir "%~dp0src"
         echo  [INFO] Organizando archivos en carpeta src/...
-        move "%~dp0metatag_v8.py"      "%~dp0src\"
-        move "%~dp0metatag_graficas.py" "%~dp0src\"
-        move "%~dp0metatag_widgets.py"  "%~dp0src\"
-        move "%~dp0metatag_writer.py"   "%~dp0src\"
-        move "%~dp0Visor.py"            "%~dp0src\"
-        move "%~dp0editor_casillas_backup.py" "%~dp0src\" 2>nul
+        move "%~dp0metatag_v8.py"                  "%~dp0src\"
+        move "%~dp0metatag_graficas.py"             "%~dp0src\"
+        move "%~dp0metatag_widgets.py"              "%~dp0src\"
+        move "%~dp0metatag_writer.py"               "%~dp0src\"
+        move "%~dp0metatag_theme.py"                "%~dp0src\"
+        move "%~dp0metatag_matching.py"             "%~dp0src\"
+        move "%~dp0metatag_responsive.py"           "%~dp0src\"
+        move "%~dp0metatag_xim.py"                  "%~dp0src\"
+        move "%~dp0renombrar_fotos_gui.py"          "%~dp0src\"
+        move "%~dp0Visor.py"                        "%~dp0src\"
+        move "%~dp0editor_casillas_backup.py"       "%~dp0src\" 2>nul
         echo  [OK] Archivos movidos a src/.
     )
 )
@@ -62,7 +67,7 @@ if not exist "%~dp0%PROGRAMA%" (
 )
 
 echo  Verificando librerias necesarias...
-set LIBRERIAS=pandas openpyxl pillow piexif matplotlib numpy reportlab
+set LIBRERIAS=pandas openpyxl pillow piexif matplotlib numpy reportlab customtkinter
 
 for %%L in (%LIBRERIAS%) do (
     %PYTHON_CMD% -c "import %%L" >nul 2>&1
