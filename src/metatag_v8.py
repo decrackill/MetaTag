@@ -972,15 +972,31 @@ class MetaTagApp(tk.Tk):
                 "Error",
                 f"No se encontró el Renombrador de Fotos en:\n{renombrador}")
         try:
-            subprocess.Popen([sys.executable, str(renombrador)])
+            proc = subprocess.Popen(
+                [sys.executable, str(renombrador)],
+                stderr=subprocess.PIPE, text=True)
         except Exception as e:
             logging.error("Error al lanzar el Renombrador: %s", e, exc_info=True)
-            messagebox.showerror(
+            return messagebox.showerror(
                 "Error al abrir el Renombrador",
                 "No se pudo lanzar el Renombrador de Fotos.\n\n"
                 f"{e}\n\n"
                 "Revisa que esté instalado CustomTkinter "
                 "(pip install customtkinter).")
+        # Verificar si el proceso muere rápido (import fallido, etc.)
+        try:
+            _err = proc.stderr.read(4096) if proc.stderr else ""
+            rc = proc.wait(timeout=3)
+            if rc != 0 and _err.strip():
+                logging.error("Renombrador falló (rc=%s): %s", rc, _err)
+                return messagebox.showerror(
+                    "Error al abrir el Renombrador",
+                    f"El Renombrador se cerró inmediatamente (código {rc}).\n\n"
+                    f"{_err.strip()[-600:]}\n\n"
+                    "Revisa que esté instalado CustomTkinter "
+                    "(pip install customtkinter).")
+        except subprocess.TimeoutExpired:
+            pass  # sigue corriendo, todo bien
 
     def _set_mode(self, mode):
         self.process_mode.set(mode)
