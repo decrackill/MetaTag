@@ -8,6 +8,10 @@ __pycache__/
 *.xlsm
 *.json
 /data/
+/ Metadatos_Escritos/
+/tests/
+docs/FASE_*
+requirements-renombrador.txt
 Finales 1 a 103/
 *_progress.json
 *.tmp

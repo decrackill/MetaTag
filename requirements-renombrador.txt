@@ -1,4 +1,0 @@
-customtkinter
-pandas
-openpyxl
-pillow
