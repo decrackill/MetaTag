@@ -50,7 +50,7 @@ if [ ! -f "$PY" ]; then
 fi
 
 # Instalar dependencias
-LIBRERIAS="pillow piexif reportlab pandas openpyxl numpy matplotlib"
+LIBRERIAS="pillow piexif reportlab pandas openpyxl numpy matplotlib customtkinter"
 
 echo "  Verificando librerias necesarias..."
 for LIB in $LIBRERIAS; do
