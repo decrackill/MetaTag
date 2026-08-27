@@ -752,7 +752,7 @@
 
   ---
 
-  ### 2026-08-26 — Fixes: NameError _s + PROFILE.init_from_tk + .bat update
+  ### 2026-08-26 — Fixes: NameError _s + PROFILE.init_from_tk + .bat + Bug A (doble carga) + Bug B (scroll doble)
 
   **Bug 1 — `NameError: name '_s' is not defined` en `_show_error_dialog` (`src/renombrar_fotos_gui.py` línea 3099):**
   `_s` es una variable local de `_init_fonts()` (línea 129), no es global. Cuando cualquier excepción de Tk intentaba mostrar el diálogo de error (`_tk_error_handler` → `_show_error_dialog`), el propio diálogo fallaba con `NameError`. Fix: reemplazado por `_fs = compute_font_scale(self.winfo_screenwidth())`.
@@ -760,11 +760,18 @@
   **Bug 2 — `PROFILE.init_from_tk(self)` nunca se llamaba en el Renombrador (`src/renombrar_fotos_gui.py` `MainView.__init__`):**
   Aunque `PROFILE` se importaba desde `metatag_responsive` (línea 63), `PROFILE.init_from_tk(self)` nunca se invocaba en `MainView.__init__()`. `metatag_v8.py:423` y `Visor.py:311` sí lo hacían. Resultado: el renombrador siempre usaba valores por defecto de desktop (1920×1080) aunque la pantalla fuera de laptop. Fix: añadido `PROFILE.init_from_tk(self)` después de `super().__init__()`.
 
+  **Bug A — "Doble carga" al usar el explorador (commit `b554daf`):**
+  `PathSelector._browse()` → `_notify()` → `on_folder_path_changed` / `on_excel_path_changed` lanzaban carga automática (hilos de fondo) sin esperar a que el usuario presionara "Cargar fotos" / "Cargar Excel". Resultado: elegir por explorador ya cargaba todo, haciendo los botones redundantes y confusos. Fix: ambos métodos ahora solo validan y guardan la ruta, muestran un estado "presiona el botón", y dejan los botones como único trigger.
+
+  **Bug B — Scroll doble (SmoothScroller vs PreviewTable) (commit `b554daf`):**
+  `SmoothScroller._arm` usa `bind_all` a nivel app que permanecía activo cuando el cursor estaba sobre `PreviewTable` (hijo del `CTkScrollableFrame`), causando scroll simultáneo de la página y la tabla. Fix: `PreviewTable.__init__` vincula `<Enter>`/`<Leave>` para desarmar/rearmar el SmoothScroller exterior; nuevos métodos `_disarm_outer_scroller` y `_rearm_outer_scroller`; `SmoothScroller._disarm` ahora resetea `_running`/`_target` para detener inercia; binds `<Enter>`/`<Leave>` también en canvas interno de la tabla.
+
   **Actualización de `instalar_y_abrir.bat`:**
   - Añadido `customtkinter` a la lista de dependencias (requerido por Image Sync).
   - Ampliada la sección auto-organizar con los archivos que faltaban: `metatag_matching.py`, `metatag_theme.py`, `metatag_responsive.py`, `metatag_xim.py`, `renombrar_fotos_gui.py`.
 
-  **Archivos modificados:** `src/renombrar_fotos_gui.py` (2 fixes), `instalar_y_abrir.bat` (dependencias + auto-organize).
+  **Archivos modificados:** `src/renombrar_fotos_gui.py` (2 fixes iniciales + Bug A + Bug B), `instalar_y_abrir.bat` (dependencias + auto-organize).
+  **Commits:** `e2d80d5` (fixes iniciales) + `b554daf` (Bug A + Bug B).
 
   ---
 
@@ -774,7 +781,7 @@
   MetaTag v8.9.
 
   ### Trabajo actual
-  **Fixes varios (2026-08-26)** ✅ terminado: corregido `NameError` de `_s` en `_show_error_dialog` del Renombrador (la variable local de `_init_fonts()` no era accesible desde `MainView`), añadido `PROFILE.init_from_tk(self)` en `MainView.__init__` para que el renombrador detecte correctamente el tamaño de pantalla (laptop_small/laptop_large/desktop), y actualizado `instalar_y_abrir.bat` con `customtkinter` y los archivos que faltaban en la sección auto-organizar.
+  **Fixes varios (2026-08-26)** ✅ terminado: corregido `NameError` de `_s` en `_show_error_dialog` del Renombrador (la variable local de `_init_fonts()` no era accesible desde `MainView`), añadido `PROFILE.init_from_tk(self)` en `MainView.__init__` para que el renombrador detecte correctamente el tamaño de pantalla (laptop_small/laptop_large/desktop), actualizado `instalar_y_abrir.bat` con `customtkinter` y los archivos que faltaban en la sección auto-organizar, fix de **Bug A** (doble carga automática: `on_folder_path_changed`/`on_excel_path_changed` ya no lanzan hilos al seleccionar por explorador, solo guardan la ruta), y fix de **Bug B** (scroll doble: SmoothScroller ahora se desactiva/reactiva al entrar/salir de PreviewTable para que cada zona scrollee independiente). Commits `e2d80d5` + `b554daf`.
 
   **Image Sync v4.1 (2026-08-14, commit `13d28cc` — "feat: renombrar Image Sync + 3 fixes y panel de registro")** ✅ terminado: la herramienta se re-bautizó de "Renombrador de Fotos v4.0" a **"Image Sync"** (ventana titulada "MetaTag v8.9 — Image Sync"; botón lanzador en `metatag_v8.py` → "Image Sync"). Nuevos estados de plan `existe` (destino externo bloquea) y `sin_foto` (posicional: registros sin imagen) → **9 estados**; `rename_blocked(plan)` como fuente única (UI + Ctrl+Enter); **panel "6 · Registro"** de log en vivo (`on_log`/`_emit` con buffer de 20 líneas); indicador de pasos ①…⑤; resumen de 5 celdas; validación de caracteres inválidos; `_normalize_excel_value` robusto con `skipped_rows` (aviso de fila concreta); **backup JSON** (`.metatag_backup_*.json`, checkbox "Crear registro/backup"); guardas contra cargas concurrentes + recálculo en hilo de fondo (`_sync_gen`); `_matcher._invalidate`. **3 fixes:** `PreviewTable._rebind_slot` usa `coords()` para posicionar cada fila lógica (sin eso el scroll parecía no desplazar), tokens `state_bg`/`state_fg` para `existe`/`sin_foto` en `metatag_theme.py`, y fix del lanzador de `Visor.py` en `metatag_v8.py`. Verificación: **70/70 pytest de la herramienta v4.1 + 277 subtests** del resto del proyecto verdes (más 12 unittest sin regresiones).
 
