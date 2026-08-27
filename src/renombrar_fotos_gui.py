@@ -1216,6 +1216,9 @@ class SmoothScroller:
             self._animate()
 
     def _animate(self) -> None:
+        if not self._running or self._target is None:
+            self._running = False
+            return
         top, _ = self._canvas.yview()
         new_top = top + (self._target - top) * self.EASE
         if abs(self._target - new_top) < 0.0008:
