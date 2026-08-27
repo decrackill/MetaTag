@@ -1743,6 +1743,7 @@ class PreviewTable(ctk.CTkFrame):
         self._tip: Optional[ctk.CTkToplevel] = None
         self._tip_job: Optional[str] = None
         self._hover_path: Optional[Path] = None
+        self._px: int = 0   # posición de scroll en px (fuente de verdad, no canvasy)
 
         # La altura la controla el padre (CTkScrollableFrame o similar).
         # En modo CTkScrollableFrame, calculamos altura desde la pantalla.
@@ -1827,6 +1828,7 @@ class PreviewTable(ctk.CTkFrame):
         self._filtered = list(range(len(self._all_pairs)))
         self._selected = {s for s in self._selected if s < len(self._all_pairs)}
         self._first = 0
+        self._px = 0
         self._notify_filter()
 
         if not self._all_pairs:
@@ -1935,19 +1937,19 @@ class PreviewTable(ctk.CTkFrame):
         total = n * self.ROW_H
         view_h = self._cv.winfo_height()
         max_px = max(0, total - view_h)
-        current_px = self._pixel_offset()
-        new_px = max(0, min(max_px, current_px + dy))
-        if new_px == current_px:
+        new_px = max(0, min(max_px, self._px + dy))
+        if new_px == self._px:
             return
+        # Actualizar _px ANTES de llamar al canvas para que eventos rápidos
+        # acumulen el desplazamiento correctamente sin esperar el lazy update.
+        self._px = new_px
         self._cv.yview_moveto(new_px / max_px if max_px else 0.0)
-        # Tras un scroll la fila bajo el cursor ya no es la misma: cerrar el
-        # tooltip evita que quede mostrando la foto de la fila ANTERIOR.
         self._close_tip()
         self._hover_path = None
         self._sync_viewport()
 
     def _pixel_offset(self) -> int:
-        return int(self._cv.canvasy(0))
+        return self._px
 
     # ── internos ──────────────────────────────────────────────────────────
     def _cancel_jobs(self) -> None:
@@ -2127,9 +2129,11 @@ class PreviewTable(ctk.CTkFrame):
             return
         total = n * self.ROW_H
         max_px = max(0, total - view_h)
-        if self._pixel_offset() > max_px:
+        # Clamp _px al rango válido (puede quedar fuera si cambió el contenido).
+        if self._px > max_px:
+            self._px = max_px
             self._cv.yview_moveto(max_px / total if total else 0.0)
-        first = max(0, int(self._pixel_offset() // self.ROW_H) - self.BUFFER)
+        first = max(0, int(self._px // self.ROW_H) - self.BUFFER)
         # El límite del pool es visible + 2 (+2 cubre filas parciales de
         # pantalla); `last` usa el MISMO tamaño para no dejar slots muertos.
         last = min(n, first + self._pool_size())
@@ -2226,6 +2230,7 @@ class PreviewTable(ctk.CTkFrame):
         view_h = self._view_height()
         max_px = max(0, total - view_h)
         if self._pixel_offset() > max_px:
+            self._px = max_px
             self._cv.yview_moveto(max_px / total if total else 0.0)
 
     @staticmethod
@@ -2237,6 +2242,8 @@ class PreviewTable(ctk.CTkFrame):
     # ── scroll / viewport ─────────────────────────────────────────────────
     def _on_sb(self, *args) -> None:
         self._cv.yview(*args)
+        if self._cv is not None:
+            self._px = int(self._cv.canvasy(0))
         self._close_tip()
         self._hover_path = None
         self._sync_viewport()
