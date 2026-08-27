@@ -971,6 +971,17 @@ class MetaTagApp(tk.Tk):
             return messagebox.showerror(
                 "Error",
                 f"No se encontró el Renombrador de Fotos en:\n{renombrador}")
+        # Verificar e instalar customtkinter si falta
+        try:
+            chk = subprocess.run(
+                [sys.executable, "-c", "import customtkinter"],
+                capture_output=True, text=True, timeout=30)
+            if chk.returncode != 0:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "customtkinter", "--quiet"],
+                    timeout=120)
+        except Exception:
+            pass
         try:
             proc = subprocess.Popen(
                 [sys.executable, str(renombrador)],
