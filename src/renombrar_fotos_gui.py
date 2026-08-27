@@ -1743,7 +1743,8 @@ class PreviewTable(ctk.CTkFrame):
         self._tip: Optional[ctk.CTkToplevel] = None
         self._tip_job: Optional[str] = None
         self._hover_path: Optional[Path] = None
-        self._px: int = 0   # posición de scroll en px (fuente de verdad, no canvasy)
+        self._px: int = 0       # posición de scroll en px (fuente de verdad, no canvasy)
+        self._sync_job: Optional[str] = None  # after_idle pendiente de _sync_viewport
 
         # La altura la controla el padre (CTkScrollableFrame o similar).
         # En modo CTkScrollableFrame, calculamos altura desde la pantalla.
@@ -1940,12 +1941,31 @@ class PreviewTable(ctk.CTkFrame):
         new_px = max(0, min(max_px, self._px + dy))
         if new_px == self._px:
             return
-        # Actualizar _px ANTES de llamar al canvas para que eventos rápidos
-        # acumulen el desplazamiento correctamente sin esperar el lazy update.
         self._px = new_px
+        # yview_moveto es lazy: Tkinter programa el movimiento del viewport
+        # pero NO lo ejecuta hasta el próximo ciclo de eventos.
+        # coords() es inmediato: si llamamos _sync_viewport aquí, los slots
+        # se reposicionan al nuevo _px pero el canvas sigue mostrando el
+        # viewport viejo → las filas "desaparecen" hasta el siguiente frame.
+        # Solución: mover el viewport primero, luego sincronizar en after_idle.
         self._cv.yview_moveto(new_px / max_px if max_px else 0.0)
         self._close_tip()
         self._hover_path = None
+        self._schedule_sync()
+
+    def _schedule_sync(self) -> None:
+        """Programa _sync_viewport para el siguiente idle, cancelando
+        cualquier sync pendiente anterior. Evita acumular N syncs cuando
+        llegan N eventos de scroll en el mismo frame."""
+        if getattr(self, "_sync_job", None):
+            try:
+                self.after_cancel(self._sync_job)
+            except Exception:
+                pass
+        self._sync_job = self.after_idle(self._do_sync)
+
+    def _do_sync(self) -> None:
+        self._sync_job = None
         self._sync_viewport()
 
     def _pixel_offset(self) -> int:
@@ -2242,11 +2262,13 @@ class PreviewTable(ctk.CTkFrame):
     # ── scroll / viewport ─────────────────────────────────────────────────
     def _on_sb(self, *args) -> None:
         self._cv.yview(*args)
-        if self._cv is not None:
-            self._px = int(self._cv.canvasy(0))
         self._close_tip()
         self._hover_path = None
-        self._sync_viewport()
+        def _after_sb():
+            if self._cv is not None:
+                self._px = int(self._cv.canvasy(0))
+            self._sync_viewport()
+        self.after_idle(_after_sb)
 
     def _on_wheel(self, event) -> Optional[str]:
         step = self.ROW_H * 3
